@@ -535,6 +535,7 @@ button:disabled {
 }
 
 .primary-button,
+.oauth-button,
 .text-button {
   height: 40px;
   border-radius: 8px;
@@ -545,6 +546,16 @@ button:disabled {
   border: 1px solid #111;
   background: #111;
   color: #fff;
+}
+
+.oauth-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid #d4d4d4;
+  background: #fff;
+  color: #111;
 }
 
 .text-button {

@@ -2,6 +2,7 @@ import type { Session, User } from "@supabase/supabase-js";
 import {
   BookOpen,
   ChevronLeft,
+  Chrome,
   Loader2,
   LogOut,
   Pause,
@@ -304,6 +305,23 @@ function App() {
     setBusy(false);
   };
 
+  const signInWithGoogle = async () => {
+    setBusy(true);
+    setNotice("");
+
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: window.location.origin
+      }
+    });
+
+    if (error) {
+      setNotice(error.message);
+      setBusy(false);
+    }
+  };
+
   const signOut = async () => {
     stopAudio();
     await supabase.auth.signOut();
@@ -594,6 +612,10 @@ function App() {
           <button className="primary-button" disabled={busy} type="submit">
             {busy ? "Working" : authMode === "sign-in" ? "Sign in" : "Create account"}
           </button>
+          <button className="oauth-button" disabled={busy} onClick={() => void signInWithGoogle()} type="button">
+            <Chrome size={17} aria-hidden="true" />
+            <span>Continue with Google</span>
+          </button>
           <button
             className="text-button"
             onClick={() => setAuthMode(authMode === "sign-in" ? "sign-up" : "sign-in")}
@@ -852,4 +874,3 @@ function App() {
 }
 
 export default App;
-
