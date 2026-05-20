@@ -26,13 +26,51 @@ The current quota is set to 100 MB per user for Supabase free-tier testing. Use 
 The database migration creates:
 
 - `public.books`
+- `public.billing_profiles`
 - a private `epubs` storage bucket
 - RLS policies for per-user book rows and files
+
+## Stripe Billing
+
+The app includes a Pro subscription checkout flow backed by Supabase Edge Functions. Pro status is stored in `public.billing_profiles`; it does not unlock product features yet.
+
+The current Stripe Pro product and price are:
+
+```text
+Product: prod_UYCCYmewCaj2oE
+Price: price_1TZ5v9LZ9T22BHizLUFDsKjM (£12.99/month)
+```
+
+Set these Supabase Edge Function secrets:
+
+```bash
+supabase secrets set \
+  STRIPE_SECRET_KEY=sk_... \
+  STRIPE_PRO_PRICE_ID=price_1TZ5v9LZ9T22BHizLUFDsKjM \
+  STRIPE_WEBHOOK_SECRET=whsec_... \
+  SITE_URL=https://reader.russell.systems
+```
+
+Deploy the functions:
+
+```bash
+supabase functions deploy create-checkout-session
+supabase functions deploy create-billing-portal
+supabase functions deploy stripe-webhook --no-verify-jwt
+```
+
+In Stripe, point a webhook endpoint at:
+
+```text
+https://<project-ref>.supabase.co/functions/v1/stripe-webhook
+```
+
+Subscribe it to `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, and `customer.subscription.deleted`.
 
 ## Production checklist
 
 - Add the production domain to Supabase Auth redirect URLs.
+- Keep `SITE_URL` set to the production app URL before deploying live billing.
 - Configure email templates or SMTP before inviting real users.
 - Raise the app and database quota constants when storage capacity is available.
 - Add Terms and Privacy pages before public launch.
-

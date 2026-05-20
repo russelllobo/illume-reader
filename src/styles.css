@@ -208,6 +208,42 @@ button:disabled {
   line-height: 1.25;
 }
 
+.billing-strip {
+  min-height: 44px;
+  margin-top: 16px;
+  padding: 8px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border-top: 1px solid #dedede;
+  border-bottom: 1px solid #dedede;
+}
+
+.billing-plan {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #111;
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.billing-plan span,
+.billing-plan small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.billing-plan small {
+  color: #777;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
 .catalog-list {
   width: min(760px, 100%);
   margin: 0 auto;
@@ -535,17 +571,38 @@ button:disabled {
 }
 
 .primary-button,
+.primary-small-button,
 .oauth-button,
+.secondary-button,
 .text-button {
   height: 40px;
   border-radius: 8px;
   font-weight: 700;
 }
 
+.primary-small-button,
+.secondary-button {
+  height: 30px;
+  padding: 0 10px;
+  font-size: 0.76rem;
+}
+
 .primary-button {
   border: 1px solid #111;
   background: #111;
   color: #fff;
+}
+
+.primary-small-button {
+  border: 1px solid #111;
+  background: #111;
+  color: #fff;
+}
+
+.secondary-button {
+  border: 1px solid #d4d4d4;
+  background: #fff;
+  color: #111;
 }
 
 .oauth-button {
@@ -585,6 +642,11 @@ button:disabled {
 
   .catalog-topbar {
     grid-template-columns: 1fr auto;
+  }
+
+  .billing-strip {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .reader-frame {

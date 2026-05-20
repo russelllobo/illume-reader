@@ -5,3 +5,4 @@ dist
 generated-images
 .agents
 skills-lock.json
+supabase/.temp

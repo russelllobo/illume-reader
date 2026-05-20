@@ -3,6 +3,8 @@ import {
   BookOpen,
   ChevronLeft,
   Chrome,
+  CreditCard,
+  Crown,
   Loader2,
   LogOut,
   Pause,
@@ -40,6 +42,15 @@ type BookRow = {
   storage_path: string;
   title: string;
   updated_at: string;
+  user_id: string;
+};
+type BillingProfile = {
+  cancel_at_period_end: boolean;
+  current_period_end: string | null;
+  plan: "free" | "pro";
+  status: string;
+  stripe_customer_id: string | null;
+  stripe_subscription_id: string | null;
   user_id: string;
 };
 
@@ -96,6 +107,7 @@ function App() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [catalogBooks, setCatalogBooks] = useState<BookRow[]>([]);
+  const [billingProfile, setBillingProfile] = useState<BillingProfile | null>(null);
   const [activeBookId, setActiveBookId] = useState("");
   const [view, setView] = useState<"catalog" | "reader">("catalog");
   const [book, setBook] = useState<ReaderBook | null>(null);
@@ -117,6 +129,7 @@ function App() {
   const current = book?.paragraphs[currentIndex];
   const progress = book ? ((currentIndex + 1) / book.paragraphs.length) * 100 : 0;
   const storageUsed = catalogBooks.reduce((total, item) => total + item.file_size, 0);
+  const isPro = billingProfile?.plan === "pro";
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -135,6 +148,7 @@ function App() {
   useEffect(() => {
     if (!user) {
       setCatalogBooks([]);
+      setBillingProfile(null);
       setBook(null);
       setView("catalog");
       setActiveBookId("");
@@ -142,7 +156,23 @@ function App() {
     }
 
     void loadLibrary(user);
+    void loadBillingProfile(user);
   }, [user?.id]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const checkout = params.get("checkout");
+
+    if (checkout === "success") {
+      setNotice("Thanks. Your Pro subscription is being confirmed.");
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+
+    if (checkout === "canceled") {
+      setNotice("Checkout was canceled.");
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
 
   useEffect(() => stopAudio, []);
 
@@ -201,6 +231,15 @@ function App() {
     }
 
     setBusy(false);
+  };
+
+  const loadBillingProfile = async (_user: User) => {
+    const { data, error } = await supabase
+      .from("billing_profiles")
+      .select("*")
+      .maybeSingle();
+
+    if (!error) setBillingProfile(data as BillingProfile | null);
   };
 
   const clearSpeechFallback = () => {
@@ -325,6 +364,52 @@ function App() {
   const signOut = async () => {
     stopAudio();
     await supabase.auth.signOut();
+  };
+
+  const startCheckout = async () => {
+    setBusy(true);
+    setNotice("");
+
+    const { data, error } = await supabase.functions.invoke("create-checkout-session", {
+      method: "POST"
+    });
+
+    if (error) {
+      setNotice(error.message);
+      setBusy(false);
+      return;
+    }
+
+    if (!data?.url) {
+      setNotice("Checkout did not return a Stripe URL.");
+      setBusy(false);
+      return;
+    }
+
+    window.location.assign(data.url);
+  };
+
+  const openBillingPortal = async () => {
+    setBusy(true);
+    setNotice("");
+
+    const { data, error } = await supabase.functions.invoke("create-billing-portal", {
+      method: "POST"
+    });
+
+    if (error) {
+      setNotice(error.message);
+      setBusy(false);
+      return;
+    }
+
+    if (!data?.url) {
+      setNotice("Billing portal did not return a Stripe URL.");
+      setBusy(false);
+      return;
+    }
+
+    window.location.assign(data.url);
   };
 
   const handleCatalogUpload = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -654,6 +739,22 @@ function App() {
         <section className="catalog-view" aria-label="Book library">
           <div className="catalog-header">
             <h1>Books</h1>
+            <div className="billing-strip">
+              <div className="billing-plan">
+                {isPro ? <Crown size={17} aria-hidden="true" /> : <CreditCard size={17} aria-hidden="true" />}
+                <span>{isPro ? "Pro plan" : "Free plan"}</span>
+                {billingProfile?.status && <small>{billingProfile.status}</small>}
+              </div>
+              {billingProfile?.stripe_customer_id ? (
+                <button className="secondary-button" disabled={busy} onClick={() => void openBillingPortal()} type="button">
+                  Manage billing
+                </button>
+              ) : (
+                <button className="primary-small-button" disabled={busy} onClick={() => void startCheckout()} type="button">
+                  Upgrade to Pro
+                </button>
+              )}
+            </div>
           </div>
           <div className="catalog-list">
             {catalogBooks.length ? (
