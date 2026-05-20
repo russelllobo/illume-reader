@@ -100,6 +100,13 @@ const safeFileName = (name: string) =>
     .replace(/^-|-$/g, "")
     .slice(0, 120) || "book.epub";
 
+const authRedirectUrl = () => {
+  const url = new URL(window.location.href);
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+};
+
 function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -196,6 +203,15 @@ function App() {
     if (playback !== "playing" || !current) return;
 
     stopAudio();
+    if (current.kind === "image") {
+      if (book && currentIndex < book.paragraphs.length - 1) {
+        advance();
+      } else {
+        setPlayback("idle");
+      }
+      return;
+    }
+
     speakBrowser(current);
   }, [currentIndex]);
 
@@ -279,6 +295,8 @@ function App() {
   };
 
   const speakBrowser = (paragraph: ReaderParagraph) => {
+    if (paragraph.kind === "image") return;
+
     window.speechSynthesis.cancel();
     clearSpeechFallback();
     lastSpeechBoundaryAt.current = 0;
@@ -349,7 +367,12 @@ function App() {
     const { error } =
       authMode === "sign-in"
         ? await supabase.auth.signInWithPassword(credentials)
-        : await supabase.auth.signUp(credentials);
+        : await supabase.auth.signUp({
+            ...credentials,
+            options: {
+              emailRedirectTo: authRedirectUrl()
+            }
+          });
 
     if (error) {
       setNotice(error.message);
@@ -367,7 +390,7 @@ function App() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: window.location.origin
+        redirectTo: authRedirectUrl()
       }
     });
 
@@ -569,6 +592,15 @@ function App() {
     if (!current) return;
     stopAudio();
     setPlayback("playing");
+    if (current.kind === "image") {
+      if (book && currentIndex < book.paragraphs.length - 1) {
+        advance();
+      } else {
+        setPlayback("idle");
+      }
+      return;
+    }
+
     speakBrowser(current);
   };
 
@@ -885,7 +917,16 @@ function App() {
                     {showChapterHeading && !isChapterHeading && (
                       <h2 className="reader-chapter-title">{paragraph.chapterTitle}</h2>
                     )}
-                    {isChapterHeading ? (
+                    {paragraph.kind === "image" && paragraph.image ? (
+                      <figure
+                        className={["reader-image", isActive ? "active" : ""].filter(Boolean).join(" ")}
+                        onClick={() => moveTo(index)}
+                        ref={setParagraphRef(paragraph.id)}
+                      >
+                        <img alt={paragraph.image.alt} src={paragraph.image.src} />
+                        {paragraph.image.alt && <figcaption>{paragraph.image.alt}</figcaption>}
+                      </figure>
+                    ) : isChapterHeading ? (
                       <h2
                         className={[
                           "reader-chapter-title",

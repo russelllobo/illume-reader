@@ -4,8 +4,12 @@ export type ReaderParagraph = {
   id: string;
   chapterIndex: number;
   chapterTitle: string;
-  kind?: "heading" | "paragraph" | "quote" | "list";
+  kind?: "heading" | "paragraph" | "quote" | "list" | "image";
   text: string;
+  image?: {
+    alt: string;
+    src: string;
+  };
 };
 
 type ReaderBlockKind = NonNullable<ReaderParagraph["kind"]>;
@@ -51,9 +55,40 @@ const resolvePath = (basePath: string, href: string) => {
   return parts.join("/");
 };
 
-const withoutHash = (href: string) => href.split("#")[0];
+const withoutHashOrQuery = (href: string) => href.split("#")[0].split("?")[0];
 
 const normaliseSpace = (text: string) => text.replace(/\s+/g, " ").trim();
+
+const safeDecodePath = (path: string) => {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
+};
+
+const imageMimeFromPath = (path: string) => {
+  const extension = path.split(".").pop()?.toLowerCase();
+
+  switch (extension) {
+    case "avif":
+      return "image/avif";
+    case "gif":
+      return "image/gif";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "png":
+      return "image/png";
+    case "svg":
+    case "svgz":
+      return "image/svg+xml";
+    case "webp":
+      return "image/webp";
+    default:
+      return "application/octet-stream";
+  }
+};
 
 const getRootFilePath = async (zip: JSZip) => {
   const container = await zip.file("META-INF/container.xml")?.async("text");
@@ -72,26 +107,75 @@ const getChapterTitle = (doc: Document, fallback: string) => {
   return heading || title || fallback;
 };
 
-const collectParagraphs = (doc: Document) => {
+const readImageAsDataUrl = async (
+  zip: JSZip,
+  imagePath: string,
+  assetMimeByPath: Map<string, string>
+) => {
+  const decodedPath = safeDecodePath(imagePath);
+  const file = zip.file(imagePath) ?? zip.file(decodedPath);
+  if (!file) return "";
+
+  const mime = assetMimeByPath.get(imagePath) ?? assetMimeByPath.get(decodedPath) ?? imageMimeFromPath(imagePath);
+  const data = await file.async("base64");
+  return `data:${mime};base64,${data}`;
+};
+
+const collectParagraphs = async (
+  zip: JSZip,
+  docPath: string,
+  doc: Document,
+  assetMimeByPath: Map<string, string>
+) => {
   const nodes = Array.from(
-    doc.body?.querySelectorAll("h1, h2, h3, h4, h5, h6, p, li") ?? []
+    doc.body?.querySelectorAll("h1, h2, h3, h4, h5, h6, p, li, img, image") ?? []
   );
+  const blocks: Array<Pick<ReaderParagraph, "image" | "kind" | "text">> = [];
 
-  return nodes
-    .map((node) => {
-      const text = normaliseSpace(node.textContent ?? "");
-      const tag = node.tagName.toLowerCase();
-      const kind: ReaderBlockKind = tag.startsWith("h")
-        ? "heading"
-        : tag === "li"
-          ? "list"
-          : node.closest("blockquote")
-            ? "quote"
-            : "paragraph";
+  for (const node of nodes) {
+    const tag = node.tagName.toLowerCase();
 
-      return { kind, text };
-    })
-    .filter(({ kind, text }) => (kind === "heading" ? text.length > 0 : text.length > 35));
+    if (tag === "img" || tag === "image") {
+      const rawSrc =
+        node.getAttribute("src") ||
+        node.getAttribute("href") ||
+        node.getAttribute("xlink:href") ||
+        "";
+      if (!rawSrc) continue;
+
+      const alt = normaliseSpace(
+        node.getAttribute("alt") || node.getAttribute("title") || node.getAttribute("aria-label") || ""
+      );
+      const src = rawSrc.startsWith("data:") || /^https?:\/\//i.test(rawSrc)
+        ? rawSrc
+        : await readImageAsDataUrl(zip, resolvePath(docPath, withoutHashOrQuery(rawSrc)), assetMimeByPath);
+
+      if (src) {
+        blocks.push({
+          kind: "image",
+          text: alt,
+          image: { alt, src }
+        });
+      }
+
+      continue;
+    }
+
+    const text = normaliseSpace(node.textContent ?? "");
+    const kind: ReaderBlockKind = tag.startsWith("h")
+      ? "heading"
+      : tag === "li"
+        ? "list"
+        : node.closest("blockquote")
+          ? "quote"
+          : "paragraph";
+
+    if (kind === "heading" ? text.length > 0 : text.length > 35) {
+      blocks.push({ kind, text });
+    }
+  }
+
+  return blocks;
 };
 
 const getElementText = (root: Element, selector: string) =>
@@ -127,7 +211,7 @@ const getNcxEntries = async (
       if (!title || !src) return null;
 
       return {
-        href: resolvePath(resolvedNcxPath, withoutHash(src)),
+        href: resolvePath(resolvedNcxPath, withoutHashOrQuery(src)),
         title
       };
     })
@@ -161,7 +245,7 @@ const getNavEntries = async (
       if (!title || !href) return null;
 
       return {
-        href: resolvePath(navPath, withoutHash(href)),
+        href: resolvePath(navPath, withoutHashOrQuery(href)),
         title
       };
     })
@@ -177,11 +261,17 @@ export const parseEpub = async (file: File): Promise<ReaderBook> => {
 
   const opf = parseXml(opfText);
   const manifest = new Map<string, string>();
+  const assetMimeByPath = new Map<string, string>();
 
   Array.from(opf.querySelectorAll("manifest > item")).forEach((item) => {
     const id = item.getAttribute("id");
     const href = item.getAttribute("href");
-    if (id && href) manifest.set(id, resolvePath(opfPath, href));
+    const mediaType = item.getAttribute("media-type");
+    if (id && href) {
+      const path = resolvePath(opfPath, href);
+      manifest.set(id, path);
+      if (mediaType?.startsWith("image/")) assetMimeByPath.set(path, mediaType);
+    }
   });
 
   const title = textFrom(opf, ["metadata title", "dc\\:title", "title"]) || file.name;
@@ -228,7 +318,7 @@ export const parseEpub = async (file: File): Promise<ReaderBook> => {
     if (!html) continue;
 
     const doc = parseXml(html, "text/html");
-    const chapterParagraphs = collectParagraphs(doc);
+    const chapterParagraphs = await collectParagraphs(zip, path, doc, assetMimeByPath);
 
     if (!chapterParagraphs.length) continue;
 
@@ -251,7 +341,8 @@ export const parseEpub = async (file: File): Promise<ReaderBook> => {
         chapterIndex: currentChapterIndex,
         chapterTitle,
         kind: paragraph.kind,
-        text: paragraph.text
+        text: paragraph.text,
+        image: paragraph.image
       });
     });
   }

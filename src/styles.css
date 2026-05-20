@@ -470,6 +470,39 @@ button:disabled {
   background: #333;
 }
 
+.reader-image {
+  margin: 30px 0 34px;
+  cursor: pointer;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.reader-image img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  max-height: min(68vh, 720px);
+  margin: 0 auto;
+  border-radius: 6px;
+  object-fit: contain;
+}
+
+.reader-image figcaption {
+  max-width: 520px;
+  margin: 10px auto 0;
+  color: #555;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.reader-image:hover {
+  opacity: 0.92;
+}
+
+.reader-image.active img {
+  box-shadow: 0 0 0 3px #111;
+}
+
 .progress-wrap {
   height: 4px;
   overflow: hidden;
