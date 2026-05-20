@@ -115,6 +115,7 @@ function App() {
   const [playback, setPlayback] = useState<PlaybackState>("idle");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [checkoutResult, setCheckoutResult] = useState<"success" | "canceled" | "">("");
   const [speechHighlight, setSpeechHighlight] = useState<SpeechHighlight | null>(null);
   const parsedBooks = useRef(new Map<string, ReaderBook>());
   const readingSurfaceRef = useRef<HTMLElement | null>(null);
@@ -164,15 +165,30 @@ function App() {
     const checkout = params.get("checkout");
 
     if (checkout === "success") {
+      setCheckoutResult("success");
       setNotice("Thanks. Your Pro subscription is being confirmed.");
       window.history.replaceState({}, "", window.location.pathname);
     }
 
     if (checkout === "canceled") {
+      setCheckoutResult("canceled");
       setNotice("Checkout was canceled.");
       window.history.replaceState({}, "", window.location.pathname);
     }
   }, []);
+
+  useEffect(() => {
+    if (checkoutResult !== "success" || !user) return;
+
+    let attempts = 0;
+    const interval = window.setInterval(() => {
+      attempts += 1;
+      void loadBillingProfile(user);
+      if (attempts >= 8) window.clearInterval(interval);
+    }, 2500);
+
+    return () => window.clearInterval(interval);
+  }, [checkoutResult, user?.id]);
 
   useEffect(() => stopAudio, []);
 
