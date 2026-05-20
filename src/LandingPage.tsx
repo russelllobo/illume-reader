@@ -62,12 +62,14 @@ export function LandingPage({
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentWordIndex, setCurrentWordIndex] = useState(-1);
+  const [wpm, setWpm] = useState(275);
 
   // Interval timer for simulated word tracking
   useEffect(() => {
     if (!isPlaying) return;
 
-    // ~275 Words Per Minute (218ms per word)
+    const intervalMs = Math.round(60000 / wpm);
+
     const timer = setInterval(() => {
       setCurrentWordIndex((prev) => {
         if (prev >= passageWords.length - 1) {
@@ -75,10 +77,18 @@ export function LandingPage({
         }
         return prev + 1;
       });
-    }, 218);
+    }, intervalMs);
 
     return () => clearInterval(timer);
-  }, [isPlaying]);
+  }, [isPlaying, wpm]);
+
+  const handleWpmDecrease = () => {
+    setWpm((prev) => Math.max(150, prev - 25));
+  };
+
+  const handleWpmIncrease = () => {
+    setWpm((prev) => Math.min(600, prev + 25));
+  };
 
   const toggleDemo = () => {
     if (!isPlaying && currentWordIndex === -1) {
@@ -138,15 +148,15 @@ export function LandingPage({
           <div className="hero-content">
             <div className="hero-badge">
               <Sparkles size={13} />
-              <span>Sensory-Bound Reading Engine</span>
+              <span>Sensory-Bound Cognitive Engine</span>
             </div>
             <h1 className="hero-title">
               Read 3x Faster.<br />
-              Remember Everything.<br />
-              <span>Become Smarter.</span>
+              Eliminate Waning Focus.<br />
+              <span>Master Cognitive Leverage.</span>
             </h1>
             <p className="hero-desc">
-              Unleash hyper-focus. By combining visual reading with synchronized audio pacing, Reader locks your attention, completely eliminates distractions, and helps you master complex subjects in a fraction of the time.
+              Welcome to your intellectual sanctuary. By bridging visual word tracking with synchronized vocal pacing, Reader binds your full attention, completely dissolving external distractions and eyes trailing off. Read more, retain deep context, and compound your knowledge.
             </p>
             <div className="hero-actions">
               <button onClick={() => handleOpenAuth("sign-up")} className="btn-primary">
@@ -199,6 +209,13 @@ export function LandingPage({
                   <button onClick={toggleDemo} className="mock-btn-play" title={isPlaying ? "Pause" : "Play"}>
                     {isPlaying ? <Pause size={13} fill="currentColor" /> : <Play size={13} fill="currentColor" />}
                   </button>
+                  <div className={`soundwave-container ${isPlaying ? "playing" : ""}`} title="Active Audio Sync">
+                    <div className="soundwave-bar" />
+                    <div className="soundwave-bar" />
+                    <div className="soundwave-bar" />
+                    <div className="soundwave-bar" />
+                    <div className="soundwave-bar" />
+                  </div>
                   <div className="mock-progress-bar">
                     <div 
                       className="mock-progress-fill" 
@@ -208,7 +225,27 @@ export function LandingPage({
                   <span className="mock-progress-time">{currentPercent}%</span>
                 </div>
                 <div className="mock-controls">
-                  <span style={{ fontSize: '0.65rem', color: '#64748b', fontWeight: 'bold' }}>275 WPM</span>
+                  <div className="wpm-stepper">
+                    <button 
+                      onClick={handleWpmDecrease} 
+                      className="wpm-btn" 
+                      disabled={wpm <= 150} 
+                      title="Decrease Speed"
+                      type="button"
+                    >
+                      −
+                    </button>
+                    <span className="wpm-value">{wpm} WPM</span>
+                    <button 
+                      onClick={handleWpmIncrease} 
+                      className="wpm-btn" 
+                      disabled={wpm >= 600} 
+                      title="Increase Speed"
+                      type="button"
+                    >
+                      +
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
