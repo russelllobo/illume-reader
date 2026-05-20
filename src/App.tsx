@@ -17,6 +17,8 @@ import {
 import { ChangeEvent, FormEvent, KeyboardEvent, PointerEvent, useEffect, useRef, useState } from "react";
 import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
 import { supabase } from "./supabase";
+import { LandingPage } from "./LandingPage";
+
 
 type PlaybackState = "idle" | "playing" | "paused";
 type SpeechHighlight = {
@@ -721,44 +723,18 @@ function App() {
 
   if (!session) {
     return (
-      <main className="auth-shell">
-        <form className="auth-panel" onSubmit={handleAuth}>
-          <BookOpen size={26} aria-hidden="true" />
-          <h1>Reader Library</h1>
-          <input
-            autoComplete="email"
-            onChange={(event) => setEmail(event.target.value)}
-            placeholder="Email"
-            required
-            type="email"
-            value={email}
-          />
-          <input
-            autoComplete={authMode === "sign-in" ? "current-password" : "new-password"}
-            minLength={6}
-            onChange={(event) => setPassword(event.target.value)}
-            placeholder="Password"
-            required
-            type="password"
-            value={password}
-          />
-          <button className="primary-button" disabled={busy} type="submit">
-            {busy ? "Working" : authMode === "sign-in" ? "Sign in" : "Create account"}
-          </button>
-          <button className="oauth-button" disabled={busy} onClick={() => void signInWithGoogle()} type="button">
-            <Chrome size={17} aria-hidden="true" />
-            <span>Continue with Google</span>
-          </button>
-          <button
-            className="text-button"
-            onClick={() => setAuthMode(authMode === "sign-in" ? "sign-up" : "sign-in")}
-            type="button"
-          >
-            {authMode === "sign-in" ? "Create an account" : "Use an existing account"}
-          </button>
-        </form>
-        {notice && <div className="notice">{notice}</div>}
-      </main>
+      <LandingPage
+        handleAuth={handleAuth}
+        signInWithGoogle={signInWithGoogle}
+        email={email}
+        setEmail={setEmail}
+        password={password}
+        setPassword={setPassword}
+        authMode={authMode}
+        setAuthMode={setAuthMode}
+        busy={busy}
+        notice={notice}
+      />
     );
   }
 
