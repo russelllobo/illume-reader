@@ -244,6 +244,13 @@ button:disabled {
   text-transform: capitalize;
 }
 
+.billing-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .catalog-list {
   width: min(760px, 100%);
   margin: 0 auto;
@@ -647,6 +654,10 @@ button:disabled {
   .billing-strip {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .billing-actions {
+    justify-content: flex-start;
   }
 
   .reader-frame {

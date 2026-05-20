@@ -743,17 +743,21 @@ function App() {
               <div className="billing-plan">
                 {isPro ? <Crown size={17} aria-hidden="true" /> : <CreditCard size={17} aria-hidden="true" />}
                 <span>{isPro ? "Pro plan" : "Free plan"}</span>
+                <small>Pro GBP 12.99/month</small>
                 {billingProfile?.status && <small>{billingProfile.status}</small>}
               </div>
-              {billingProfile?.stripe_customer_id ? (
-                <button className="secondary-button" disabled={busy} onClick={() => void openBillingPortal()} type="button">
-                  Manage billing
-                </button>
-              ) : (
-                <button className="primary-small-button" disabled={busy} onClick={() => void startCheckout()} type="button">
-                  Upgrade to Pro
-                </button>
-              )}
+              <div className="billing-actions">
+                {!isPro && (
+                  <button className="primary-small-button" disabled={busy} onClick={() => void startCheckout()} type="button">
+                    Upgrade to Pro
+                  </button>
+                )}
+                {billingProfile?.stripe_customer_id && (
+                  <button className="secondary-button" disabled={busy} onClick={() => void openBillingPortal()} type="button">
+                    Manage billing
+                  </button>
+                )}
+              </div>
             </div>
           </div>
           <div className="catalog-list">
