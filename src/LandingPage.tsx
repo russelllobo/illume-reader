@@ -3,7 +3,6 @@ import {
   BookOpen,
   Bookmark,
   Brain,
-  Check,
   Loader2,
   Play,
   Pause,
@@ -27,14 +26,13 @@ interface LandingPageProps {
 }
 
 const passageWords = [
-  "When", "you", "start", "a", "new", "habit,", "it", "should",
-  "take", "less", "than", "two", "minutes", "to", "do.", "This",
-  "allows", "you", "to", "start", "the", "habit", "even", "on",
-  "days", "when", "you", "don't", "feel", "like", "it.", "You",
-  "can", "often", "maintain", "a", "habit", "by", "scaling", "it",
-  "down", "rather", "than", "giving", "it", "up.", "The", "key",
-  "is", "to", "make", "it", "easy", "to", "start,", "and", "easy",
-  "to", "keep", "going."
+  "Begin", "each", "day", "by", "telling", "yourself:", "today", "I",
+  "shall", "meet", "interference,", "ingratitude,", "insolence,", "disloyalty,",
+  "ill-will,", "and", "selfishness.", "All", "of", "them", "come", "from",
+  "ignorance", "of", "what", "is", "good", "and", "evil.", "But", "I",
+  "have", "seen", "the", "beauty", "of", "good,", "and", "the", "ugliness",
+  "of", "evil,", "and", "know", "that", "the", "wrongdoer", "has", "a",
+  "nature", "related", "to", "my", "own."
 ];
 
 function GoogleIcon() {
@@ -73,8 +71,8 @@ export function LandingPage({
   notice
 }: LandingPageProps) {
   const [isAuthOpen, setIsAuthOpen] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [currentWordIndex, setCurrentWordIndex] = useState(-1);
+  const [isPlaying, setIsPlaying] = useState(true);
+  const [currentWordIndex, setCurrentWordIndex] = useState(0);
   const [wpm, setWpm] = useState(275);
 
   // Interval timer for simulated word tracking
@@ -122,6 +120,7 @@ export function LandingPage({
   const currentPercent = currentWordIndex >= 0 
     ? Math.round(((currentWordIndex + 1) / passageWords.length) * 100) 
     : 0;
+  const activeVisualIndex = currentWordIndex < 34 ? 0 : 1;
 
   return (
     <div className="landing-theme">
@@ -130,14 +129,13 @@ export function LandingPage({
         <header className="landing-header">
           <a href="#" className="landing-logo">
             <BookOpen className="landing-logo-icon" size={24} />
-            <span>Readwise Flow</span>
+            <span>reader</span>
           </a>
           <nav className="landing-nav">
             <div className="landing-nav-links" style={{ display: "flex", gap: "24px" }}>
               <a href="#features" className="landing-nav-link">Features</a>
               <a href="#comparison" className="landing-nav-link">How It Works</a>
               <a href="#testimonials" className="landing-nav-link">Pricing</a>
-              <a href="#footer" className="landing-nav-link">Resources</a>
             </div>
             <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
               <button 
@@ -169,7 +167,7 @@ export function LandingPage({
               to <span>Read More Books</span>
             </h1>
             <p className="hero-desc">
-              Stay engaged with immersive reading tools, intelligent prompts, and active recall features that help you absorb more from every book.
+              A reading app that narrates your books, tracks the words as you listen, and pairs the text with immersive visuals so every chapter feels easier to enter.
             </p>
             <div className="hero-actions">
               <button onClick={() => handleOpenAuth("sign-up")} className="btn-primary">
@@ -190,7 +188,7 @@ export function LandingPage({
               </div>
               <div className="rating-text">
                 <span className="rating-stars">★★★★★ </span>
-                <span>Join 50,000+ readers leveling up their minds</span>
+                <span>Join 1,000+ readers building a more immersive reading habit</span>
               </div>
             </div>
           </div>
@@ -203,7 +201,7 @@ export function LandingPage({
                   <div className="chrome-dot yellow" />
                   <div className="chrome-dot green" />
                 </div>
-                <div className="chrome-address-bar">readwise.io/flow</div>
+                <div className="chrome-address-bar">reader.app</div>
                 <div className="chrome-actions">
                   <span style={{ fontSize: "0.75rem", fontWeight: 600, color: "var(--text-muted)", cursor: "pointer" }}>Aa</span>
                 </div>
@@ -212,24 +210,24 @@ export function LandingPage({
                 <aside className="mock-sidebar">
                   <div className="mock-sidebar-brand">
                     <BookOpen size={12} className="landing-logo-icon" />
-                    <span>Flow</span>
+                    <span>reader</span>
                   </div>
                   <div className="mock-sidebar-list">
-                    <div className="mock-sidebar-item"><BookOpen size={10} /> <span>Library</span></div>
-                    <div className="mock-sidebar-item active"><BookOpen size={10} /> <span>Now Reading</span></div>
-                    <div className="mock-sidebar-item"><Brain size={10} /> <span>Insights</span></div>
-                    <div className="mock-sidebar-item"><Check size={10} /> <span>Review</span></div>
-                    <div className="mock-sidebar-item"><Target size={10} /> <span>Goals</span></div>
+                    <div className="mock-sidebar-item"><BookOpen size={10} /> <span>Contents</span></div>
+                    <div className="mock-sidebar-item active"><BookOpen size={10} /> <span>Book I</span></div>
+                    <div className="mock-sidebar-item"><BookOpen size={10} /> <span>Book II</span></div>
+                    <div className="mock-sidebar-item"><BookOpen size={10} /> <span>Book III</span></div>
+                    <div className="mock-sidebar-item"><BookOpen size={10} /> <span>Notes</span></div>
                   </div>
                 </aside>
                 
                 <div className="mock-content-panel">
                   <div className="mock-book-header">
-                    <span>Atomic Habits — James Clear</span>
-                    <span>Chapter 3 of 20 (32%)</span>
+                    <span>Meditations — Marcus Aurelius</span>
+                    <span>Book II (18%)</span>
                   </div>
                   <h3 style={{ fontFamily: "var(--font-serif)", fontSize: "1.1rem", fontWeight: 700, margin: "14px 0 6px", color: "var(--text-primary)" }}>
-                    The Two-Minute Rule
+                    Morning Reflection
                   </h3>
                   <div className="mock-book-paragraph">
                     {passageWords.slice(0, 31).map((word, idx) => {
@@ -271,68 +269,22 @@ export function LandingPage({
                     })}
                   </div>
 
-                  {/* Annotated stuck note matching mockup */}
-                  <div style={{
-                    border: "1px solid var(--border-color)",
-                    borderRadius: "8px",
-                    padding: "10px 12px",
-                    background: "#ffffff",
-                    marginTop: "16px",
-                    boxShadow: "0 2px 6px rgba(0,0,0,0.02)"
-                  }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
-                      <span style={{ fontSize: "0.65rem", fontWeight: 700, color: "var(--text-secondary)" }}>This stuck with me</span>
-                      <span style={{ fontSize: "0.6rem", color: "var(--text-muted)", cursor: "pointer" }}>•••</span>
-                    </div>
-                    <p style={{
-                      fontFamily: "var(--font-serif)",
-                      fontSize: "0.75rem",
-                      fontStyle: "italic",
-                      color: "var(--text-primary)",
-                      margin: "0 0 6px 0",
-                      lineHeight: "1.4"
-                    }}>
-                      Small habits → big identity change. Make it easy, then build momentum.
-                    </p>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={{ fontSize: "0.6rem", background: "var(--bg-neutral)", padding: "2px 6px", borderRadius: "4px", color: "var(--text-muted)", fontWeight: 600 }}>#habits</span>
-                      <span style={{ fontSize: "0.6rem", color: "var(--text-muted)" }}>Today, 10:34 AM</span>
-                    </div>
-                  </div>
                 </div>
 
                 <div className="mock-right-panel">
-                  <div className="panel-title">Reflections</div>
-                  <div className="reflections-box">
-                    <div className="reflections-q">What's one small action you can take based on this?</div>
-                    <textarea 
-                      className="reflections-a"
-                      rows={3}
-                      value="I will prepare my workout clothes the night before."
-                      readOnly
+                  <div className="visual-stage">
+                    <img
+                      src="/landing/marcus-meet-the-day.webp"
+                      alt="AI-generated cartoon visual of Marcus Aurelius preparing to meet the day"
+                      className={`visual-panel-image ${activeVisualIndex === 0 ? "active" : ""}`}
                     />
-                    <button className="reflections-save" type="button">Save</button>
-                  </div>
-
-                  <div className="panel-title" style={{ marginTop: "12px" }}>Key Takeaways</div>
-                  <div className="takeaway-box">
-                    <div className="takeaway-item">
-                      <Target size={12} className="takeaway-icon" />
-                      <div>
-                        <strong>Start tiny:</strong> Make habits so small they're impossible to fail.
-                      </div>
-                    </div>
-                    <div className="takeaway-item">
-                      <Brain size={12} className="takeaway-icon" />
-                      <div>
-                        <strong>Consistency &gt; intensity:</strong> Show up, even if it's for 2 minutes.
-                      </div>
-                    </div>
-                    <div className="takeaway-item">
-                      <Sparkles size={12} className="takeaway-icon" />
-                      <div>
-                        <strong>Your identity drives your habits:</strong> Focus on becoming a reader.
-                      </div>
+                    <img
+                      src="/landing/marcus-shared-nature.webp"
+                      alt="AI-generated cartoon visual of Marcus Aurelius recognizing shared humanity"
+                      className={`visual-panel-image ${activeVisualIndex === 1 ? "active" : ""}`}
+                    />
+                    <div className="visual-magic">
+                      <Sparkles size={12} />
                     </div>
                   </div>
                 </div>
@@ -389,8 +341,8 @@ export function LandingPage({
         {/* Features Grid Section */}
         <section id="features" className="science-section">
           <div className="science-header">
-            <div className="section-badge">Why Readers Love Readwise Flow</div>
-            <h2 className="section-title">Everything you need to read better</h2>
+            <div className="section-badge">Why readers love reader</div>
+            <h2 className="section-title">Everything you need to stay inside the book</h2>
           </div>
           <div className="science-grid">
             <div className="science-card">
@@ -399,34 +351,34 @@ export function LandingPage({
               </div>
               <h3 className="card-title">Active Reading</h3>
               <p className="card-desc">
-                Highlight, annotate, and interact with the text to stay focused and engaged from start to finish.
+                Follow along as narration highlights the exact words being read, so your eyes and ears stay in sync.
               </p>
             </div>
             <div className="science-card">
               <div className="card-icon-box purple">
                 <Brain size={22} />
               </div>
-              <h3 className="card-title">Deeper Comprehension</h3>
+              <h3 className="card-title">Immersive Visuals</h3>
               <p className="card-desc">
-                Intelligent prompts and reflections help you connect ideas and understand more deeply.
+                Pair chapters with atmospheric images that make setting, tone, and ideas easier to feel.
               </p>
             </div>
             <div className="science-card">
               <div className="card-icon-box green">
                 <Target size={22} />
               </div>
-              <h3 className="card-title">Habit-Building</h3>
+              <h3 className="card-title">Reading Progress</h3>
               <p className="card-desc">
-                Track your progress, set goals, and build a reading habit that lasts—one day at a time.
+                Keep your library, current position, and pace synced so it is simple to return to any book.
               </p>
             </div>
             <div className="science-card">
               <div className="card-icon-box orange">
                 <Bookmark size={22} />
               </div>
-              <h3 className="card-title">Insight Capture</h3>
+              <h3 className="card-title">Private EPUB Library</h3>
               <p className="card-desc">
-                Save key takeaways, flashcards, and quotes so your best ideas stay with you.
+                Upload your own EPUBs and read them in a focused, narration-first space.
               </p>
             </div>
           </div>
@@ -477,7 +429,7 @@ export function LandingPage({
             <div className="comp-card active-reading">
               <div className="comp-card-header">
                 <h3 style={{ color: "var(--accent-cobalt)" }}>Immersive Reading</h3>
-                <p>Engaging, effective, and transformative.</p>
+                <p>Narrated, visual, and easy to keep following.</p>
               </div>
               <div className="comp-visual">
                 {/* SVG outline illustration of active reading */}
@@ -502,15 +454,15 @@ export function LandingPage({
                 </div>
                 <div className="comp-bullet">
                   <div className="bullet-icon check">✓</div>
-                  <div className="bullet-text">Remember what truly matters</div>
+                  <div className="bullet-text">Hear natural narration</div>
                 </div>
                 <div className="comp-bullet">
                   <div className="bullet-icon check">✓</div>
-                  <div className="bullet-text">Apply ideas to your life</div>
+                  <div className="bullet-text">See visuals that match the text</div>
                 </div>
                 <div className="comp-bullet">
                   <div className="bullet-icon check">✓</div>
-                  <div className="bullet-text">Build a habit that compounds</div>
+                  <div className="bullet-text">Pick up where you left off</div>
                 </div>
               </div>
             </div>
@@ -527,7 +479,7 @@ export function LandingPage({
           <div className="testimonials-grid">
             <div className="testimonial-card">
               <p className="testimonial-quote">
-                I used to forget 90% of what I read. Now I retain more, think deeper, and actually apply what I learn.
+                The narration keeps me moving through dense chapters, and the word tracking stops me drifting off.
               </p>
               <div className="testimonial-user">
                 <img src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=80&h=80&q=80" alt="Sarah K." className="rating-avatar" style={{ marginLeft: 0 }} />
@@ -540,7 +492,7 @@ export function LandingPage({
 
             <div className="testimonial-card">
               <p className="testimonial-quote">
-                Readwise Flow turned reading into an active, daily habit. I'm reading more books than ever—and loving it.
+                reader makes my EPUB library feel alive. The visuals give each book a sense of place without getting in the way.
               </p>
               <div className="testimonial-user">
                 <img src="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=80&h=80&q=80" alt="Michael T." className="rating-avatar" style={{ marginLeft: 0 }} />
@@ -553,7 +505,7 @@ export function LandingPage({
 
             <div className="testimonial-card">
               <p className="testimonial-quote">
-                The reflections and key takeaways help me learn faster and share ideas with confidence.
+                I can listen, read, and follow the same passage at once. It is especially good for classics I used to bounce off.
               </p>
               <div className="testimonial-user">
                 <img src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=80&h=80&q=80" alt="Priya S." className="rating-avatar" style={{ marginLeft: 0 }} />
@@ -581,9 +533,9 @@ export function LandingPage({
         {/* CTA Banner Section */}
         <section className="cta-banner">
           <div className="cta-content">
-            <h2 className="cta-title">Ready to read smarter<br />and become your best self?</h2>
+            <h2 className="cta-title">Ready to make reading<br />feel more immersive?</h2>
             <p className="cta-desc">
-              Join thousands of readers who are learning more, remembering more, and living better.
+              Join 1,000+ readers using narration, visual context, and synced progress to spend more time with their books.
             </p>
           </div>
           <div className="cta-actions">
@@ -604,17 +556,11 @@ export function LandingPage({
             <div className="footer-brand">
               <div className="footer-brand-logo">
                 <BookOpen size={20} className="landing-logo-icon" />
-                <span>Readwise Flow</span>
+                <span>reader</span>
               </div>
               <p className="footer-brand-desc">
-                The smarter way to read, learn, and grow every day.
+                A narrated, visual reading app for your personal EPUB library.
               </p>
-              <div className="footer-social-row">
-                <a href="#" className="footer-social-icon">Twitter</a>
-                <a href="#" className="footer-social-icon">Instagram</a>
-                <a href="#" className="footer-social-icon">YouTube</a>
-                <a href="#" className="footer-social-icon">LinkedIn</a>
-              </div>
             </div>
 
             <div className="footer-col">
@@ -623,49 +569,9 @@ export function LandingPage({
                 <a href="#" className="footer-col-link">Features</a>
                 <a href="#" className="footer-col-link">How It Works</a>
                 <a href="#" className="footer-col-link">Pricing</a>
-                <a href="#" className="footer-col-link">Roadmap</a>
               </div>
             </div>
 
-            <div className="footer-col">
-              <span className="footer-col-title">Resources</span>
-              <div className="footer-col-links">
-                <a href="#" className="footer-col-link">Blog</a>
-                <a href="#" className="footer-col-link">Reading Guides</a>
-                <a href="#" className="footer-col-link">Help Center</a>
-                <a href="#" className="footer-col-link">Templates</a>
-              </div>
-            </div>
-
-            <div className="footer-col">
-              <span className="footer-col-title">Company</span>
-              <div className="footer-col-links">
-                <a href="#" className="footer-col-link">About Us</a>
-                <a href="#" className="footer-col-link">Careers</a>
-                <a href="#" className="footer-col-link">Privacy</a>
-                <a href="#" className="footer-col-link">Terms</a>
-              </div>
-            </div>
-
-            <div className="footer-newsletter">
-              <span className="footer-col-title">Stay in the loop</span>
-              <p>Get reading tips, product updates, and more.</p>
-              <form className="newsletter-form" onSubmit={(e) => e.preventDefault()}>
-                <input 
-                  type="email" 
-                  placeholder="Enter your email" 
-                  className="newsletter-input" 
-                  required
-                />
-                <button type="submit" className="newsletter-btn" aria-label="Subscribe">
-                  <ArrowRight size={14} />
-                </button>
-              </form>
-            </div>
-          </div>
-
-          <div className="footer-bottom">
-            <div>© {new Date().getFullYear()} Readwise Flow. All rights reserved.</div>
           </div>
         </footer>
 
