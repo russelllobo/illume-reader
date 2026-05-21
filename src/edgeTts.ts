@@ -1,5 +1,4 @@
 import { Communicate } from "edge-tts-universal/browser";
-import { supabaseFunctionUrl, supabasePublishableKey } from "./supabase";
 
 type WordRange = {
   end: number;
@@ -63,7 +62,13 @@ const audioChunkToArrayBuffer = (chunk: Uint8Array): ArrayBuffer =>
 const shouldUseLocalProxy = () =>
   window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
 
-const edgeTtsEndpoint = () => (shouldUseLocalProxy() ? "/api/edge-tts" : supabaseFunctionUrl("edge-tts"));
+const configuredEdgeTtsEndpoint = import.meta.env.VITE_EDGE_TTS_URL as string | undefined;
+
+const edgeTtsEndpoint = () => {
+  if (shouldUseLocalProxy()) return "/api/edge-tts";
+  if (configuredEdgeTtsEndpoint) return configuredEdgeTtsEndpoint;
+  return "/api/edge-tts";
+};
 
 export const createEdgeTtsPlayer = ({
   onBoundary,
@@ -232,7 +237,6 @@ export const createEdgeTtsPlayer = ({
     const response = await fetch(edgeTtsEndpoint(), {
       body: JSON.stringify({ text, voice }),
       headers: {
-        Authorization: `Bearer ${supabasePublishableKey}`,
         "Content-Type": "application/json"
       },
       method: "POST"
