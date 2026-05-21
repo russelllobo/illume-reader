@@ -726,6 +726,34 @@ const cacheReaderImage = async (image: CachedReaderImage) => {
   });
 };
 
+const deleteCachedReaderImagesForBook = async (bookId: string) => {
+  const db = await openReaderImageDb();
+  if (!db) return;
+
+  await new Promise<void>((resolve) => {
+    const transaction = db.transaction(READER_IMAGE_STORE_NAME, "readwrite");
+    const store = transaction.objectStore(READER_IMAGE_STORE_NAME);
+    const request = store.openCursor();
+
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return;
+
+      const image = cursor.value as CachedReaderImage | undefined;
+      if (image?.bookId === bookId) cursor.delete();
+      cursor.continue();
+    };
+    transaction.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    transaction.onerror = () => {
+      db.close();
+      resolve();
+    };
+  });
+};
+
 const getCachedBookFile = async (row: BookRow) => {
   if (!("caches" in window)) return null;
 
@@ -1518,15 +1546,19 @@ function App() {
     setBusy(true);
     setNotice("");
 
-    const { error } = await supabase.from("books").delete().eq("id", row.id);
+    const { error } = await supabase.functions.invoke("delete-reader-book", {
+      method: "POST",
+      body: { bookId: row.id }
+    });
+
     if (error) {
       setNotice(error.message);
       setBusy(false);
       return;
     }
 
-    await supabase.storage.from(EPUB_BUCKET).remove([row.storage_path]);
     void deleteCachedBookFile(row.id);
+    void deleteCachedReaderImagesForBook(row.id);
     parsedBooks.current.delete(row.id);
     void loadReaderImageUsage();
     setCatalogBooks((items) => items.filter((item) => item.id !== row.id));

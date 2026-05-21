@@ -31,10 +31,11 @@ Set this function secret:
 supabase secrets set OPENAI_API_KEY=sk-...
 ```
 
-Deploy the image generation function:
+Deploy the reader Edge Functions:
 
 ```bash
 supabase functions deploy generate-reader-image
+supabase functions deploy delete-reader-book
 ```
 
 The database migration creates:
