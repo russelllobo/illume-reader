@@ -12,12 +12,17 @@ import {
   RotateCcw,
   RotateCw,
   Trash2,
-  Upload
+  Upload,
+  Download,
+  Info,
+  Plus,
+  Check
 } from "lucide-react";
 import { ChangeEvent, FormEvent, KeyboardEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
 import { supabase } from "./supabase";
 import { LandingPage } from "./LandingPage";
+
 
 
 type PlaybackState = "idle" | "playing" | "paused";
@@ -88,6 +93,83 @@ const READER_IMAGE_ACCOUNT_LIMIT = 100;
 const USER_STORAGE_QUOTA_BYTES = Number(
   import.meta.env.VITE_USER_STORAGE_QUOTA_BYTES ?? 104_857_600
 );
+
+type ClassicBook = {
+  id: string;
+  title: string;
+  author: string;
+  coverUrl: string;
+  downloadUrl: string;
+  summary: string;
+};
+
+const CURATED_CLASSICS: ClassicBook[] = [
+  {
+    id: "jane-austen-pride-and-prejudice",
+    title: "Pride and Prejudice",
+    author: "Jane Austen",
+    coverUrl: "https://standardebooks.org/ebooks/jane-austen/pride-and-prejudice/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/jane-austen/pride-and-prejudice/downloads/jane-austen_pride-and-prejudice.epub",
+    summary: "A classic romantic novel of manners following Elizabeth Bennet as she navigates issues of manners, upbringing, morality, education, and marriage in the society of the landed gentry of the British Regency."
+  },
+  {
+    id: "mary-shelley-frankenstein",
+    title: "Frankenstein",
+    author: "Mary Shelley",
+    coverUrl: "https://standardebooks.org/ebooks/mary-shelley/frankenstein/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/mary-shelley/frankenstein/downloads/mary-shelley_frankenstein.epub",
+    summary: "The iconic Gothic novel telling the story of Victor Frankenstein, a young scientist who creates a sapient creature in an unorthodox scientific experiment, and the tragic consequences that follow."
+  },
+  {
+    id: "bram-stoker-dracula",
+    title: "Dracula",
+    author: "Bram Stoker",
+    coverUrl: "https://standardebooks.org/ebooks/bram-stoker/dracula/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/bram-stoker/dracula/downloads/bram-stoker_dracula.epub",
+    summary: "The seminal vampire horror novel that introduced Count Dracula and established many conventions of subsequent vampire fantasy, structured as an epistolary sequence of diary entries and letters."
+  },
+  {
+    id: "lewis-carroll-alices-adventures-in-wonderland",
+    title: "Alice’s Adventures in Wonderland",
+    author: "Lewis Carroll",
+    coverUrl: "https://standardebooks.org/ebooks/lewis-carroll/alices-adventures-in-wonderland/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/lewis-carroll/alices-adventures-in-wonderland/downloads/lewis-carroll_alices-adventures-in-wonderland.epub",
+    summary: "A fantastical tale of a young girl named Alice who falls through a rabbit hole into a subterranean fantasy world populated by peculiar, anthropomorphic creatures."
+  },
+  {
+    id: "arthur-conan-doyle-the-adventures-of-sherlock-holmes",
+    title: "The Adventures of Sherlock Holmes",
+    author: "Arthur Conan Doyle",
+    coverUrl: "https://standardebooks.org/ebooks/arthur-conan-doyle/the-adventures-of-sherlock-holmes/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/arthur-conan-doyle/the-adventures-of-sherlock-holmes/downloads/arthur-conan-doyle_the-adventures-of-sherlock-holmes.epub",
+    summary: "A collection of twelve stories featuring the consulting detective Sherlock Holmes and his narrator companion Dr. John H. Watson, showcasing Holmes' brilliant analytical deduction skills."
+  },
+  {
+    id: "f-scott-fitzgerald-the-great-gatsby",
+    title: "The Great Gatsby",
+    author: "F. Scott Fitzgerald",
+    coverUrl: "https://standardebooks.org/ebooks/f-scott-fitzgerald/the-great-gatsby/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/f-scott-fitzgerald/the-great-gatsby/downloads/f-scott-fitzgerald_the-great-gatsby.epub",
+    summary: "Set in the Jazz Age on Long Island, near New York City, the novel depicts first-person narrator Nick Carraway's interactions with mysterious millionaire Jay Gatsby and Gatsby's obsession to reunite with his former love, Daisy Buchanan."
+  },
+  {
+    id: "franz-kafka-the-metamorphosis",
+    title: "The Metamorphosis",
+    author: "Franz Kafka",
+    coverUrl: "https://standardebooks.org/ebooks/franz-kafka/the-metamorphosis/david-wyllie/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/franz-kafka/the-metamorphosis/david-wyllie/downloads/franz-kafka_the-metamorphosis_david-wyllie.epub",
+    summary: "Gregor Samsa, a traveling salesman, wakes up one morning to find himself inexplicably transformed into a monstrous insect-like creature, dealing with the psychological and familial fallout."
+  },
+  {
+    id: "oscar-wilde-the-picture-of-dorian-gray",
+    title: "The Picture of Dorian Gray",
+    author: "Oscar Wilde",
+    coverUrl: "https://standardebooks.org/ebooks/oscar-wilde/the-picture-of-dorian-gray/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/oscar-wilde/the-picture-of-dorian-gray/downloads/oscar-wilde_the-picture-of-dorian-gray.epub",
+    summary: "A philosophical novel about Dorian Gray, a handsome young man who sells his soul so that a painted portrait of him will age and record his moral decay, while his physical body remains forever young and beautiful."
+  }
+];
+
 
 const wordRangeFromBoundary = (text: string, charIndex: number, charLength = 0) => {
   if (!Number.isFinite(charIndex) || charIndex < 0 || charIndex >= text.length) return null;
@@ -183,6 +265,26 @@ const getCoverInitials = (title: string) =>
     .map((word) => word[0]?.toUpperCase())
     .join("") || "EP";
 
+function BookCover({ book }: { book: BookRow }) {
+  const [hasError, setHasError] = useState(false);
+
+  return (
+    <span className="catalog-cover-art">
+      {!book.cover_url || hasError ? (
+        <span className="generated-cover" style={{ background: getBookHue(book) }}>
+          <span className="fallback-title">{book.title}</span>
+        </span>
+      ) : (
+        <img
+          alt={book.title}
+          src={book.cover_url}
+          onError={() => setHasError(true)}
+        />
+      )}
+    </span>
+  );
+}
+
 const authRedirectUrl = () => {
   const url = new URL(window.location.href);
   url.search = "";
@@ -233,9 +335,9 @@ const shrinkCoverDataUrl = async (coverUrl: string) => {
     return coverUrl;
   }
 
-  const maxWidth = 420;
+  // Always resize and compress to keep database payloads highly efficient (~8KB-15KB)
+  const maxWidth = 240;
   const scale = Math.min(1, maxWidth / image.naturalWidth);
-  if (scale === 1 && coverUrl.length < 450_000) return coverUrl;
 
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
@@ -245,7 +347,7 @@ const shrinkCoverDataUrl = async (coverUrl: string) => {
   if (!context) return coverUrl;
 
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL("image/jpeg", 0.84);
+  return canvas.toDataURL("image/jpeg", 0.75);
 };
 
 const bookCacheRequest = (bookId: string) =>
@@ -386,6 +488,13 @@ function App() {
   const progressSaveTimer = useRef<number | null>(null);
   const coverLookupRef = useRef(new Set<string>());
 
+  const [exploreTab, setExploreTab] = useState<"curated" | "new">("curated");
+  const [feedBooks, setFeedBooks] = useState<ClassicBook[]>([]);
+  const [feedLoading, setFeedLoading] = useState(false);
+  const [feedError, setFeedError] = useState("");
+  const [importingClassicId, setImportingClassicId] = useState<string | null>(null);
+  const [activeSynopsisId, setActiveSynopsisId] = useState<string | null>(null);
+
   const user = session?.user ?? null;
   const current = book?.paragraphs[currentIndex];
   const progress = book ? ((currentIndex + 1) / book.paragraphs.length) * 100 : 0;
@@ -463,6 +572,82 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (exploreTab !== "new" || feedBooks.length > 0 || feedLoading) return;
+
+    const fetchFeed = async () => {
+      setFeedLoading(true);
+      setFeedError("");
+      try {
+        const feedUrl = "https://standardebooks.org/feeds/atom/new-releases";
+        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(feedUrl)}`;
+        
+        const response = await fetch(proxyUrl);
+        if (!response.ok) throw new Error("CORS proxy returned an error.");
+        
+        const text = await response.text();
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(text, "text/xml");
+        
+        const parseError = doc.querySelector("parsererror");
+        if (parseError) throw new Error("Failed to parse Atom feed XML.");
+        
+        const entries = Array.from(doc.querySelectorAll("entry"));
+        const parsed: ClassicBook[] = entries.map((entry, index) => {
+          const title = entry.querySelector("title")?.textContent?.trim() || "Untitled";
+          const author = entry.querySelector("author name")?.textContent?.trim() || "Unknown Author";
+          
+          let summary = entry.querySelector("summary")?.textContent?.trim() || "";
+          if (!summary) {
+            const content = entry.querySelector("content")?.textContent || "";
+            summary = content.replace(/<[^>]*>/g, "").trim();
+          }
+          if (summary.length > 200) {
+            summary = summary.slice(0, 197) + "...";
+          }
+          
+          let coverUrl = "";
+          const thumbnailNode = entry.getElementsByTagName("media:thumbnail")[0] || 
+                                entry.querySelector("thumbnail") ||
+                                Array.from(entry.getElementsByTagName("*")).find(el => el.localName === "thumbnail");
+          if (thumbnailNode) {
+            coverUrl = thumbnailNode.getAttribute("url") || "";
+          }
+          
+          if (!coverUrl) {
+            const entryId = entry.querySelector("id")?.textContent?.trim() || "";
+            if (entryId.startsWith("https://standardebooks.org/ebooks/")) {
+              coverUrl = `${entryId}/downloads/cover-thumbnail.jpg`;
+            }
+          }
+          
+          const links = Array.from(entry.querySelectorAll("link"));
+          const epubLink = links.find(l => l.getAttribute("type") === "application/epub+zip" && l.getAttribute("title")?.toLowerCase().includes("compatible")) ||
+                           links.find(l => l.getAttribute("type") === "application/epub+zip");
+          const downloadUrl = epubLink ? epubLink.getAttribute("href") || "" : "";
+          
+          return {
+            id: `feed-${index}-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+            title,
+            author,
+            coverUrl,
+            downloadUrl,
+            summary
+          };
+        });
+
+        setFeedBooks(parsed.filter(b => b.downloadUrl));
+      } catch (err) {
+        console.error("Error loading Standard Ebooks feed:", err);
+        setFeedError("Could not load new releases. Please try again later.");
+      } finally {
+        setFeedLoading(false);
+      }
+    };
+
+    void fetchFeed();
+  }, [exploreTab, feedBooks.length, feedLoading]);
+
+  useEffect(() => {
     if (!user) {
       setCatalogBooks([]);
       setBillingProfile(null);
@@ -493,7 +678,10 @@ function App() {
         setCatalogBooks((items) =>
           items.map((item) => (item.id === catalogBook.id ? { ...item, cover_url: coverUrl } : item))
         );
-        void supabase.from("books").update({ cover_url: coverUrl }).eq("id", catalogBook.id);
+        const { error: updateError } = await supabase.from("books").update({ cover_url: coverUrl }).eq("id", catalogBook.id);
+        if (updateError) {
+          console.error("Failed to save Open Library cover to database:", updateError);
+        }
       }
     };
 
@@ -963,6 +1151,84 @@ function App() {
     window.location.assign(data.url);
   };
 
+  const importEpubFile = async (file: File) => {
+    if (!user) return;
+
+    if (!file.name.toLowerCase().endsWith(".epub")) {
+      throw new Error("Please select an EPUB file.");
+    }
+
+    if (storageUsed + file.size > USER_STORAGE_QUOTA_BYTES) {
+      throw new Error(`This upload would exceed your ${formatBytes(USER_STORAGE_QUOTA_BYTES)} library limit.`);
+    }
+
+    const parsed = await parseEpub(file);
+    const embeddedCoverUrl = parsed.coverUrl ? await shrinkCoverDataUrl(parsed.coverUrl) : "";
+    const coverUrl = embeddedCoverUrl || await getOpenLibraryCoverUrl(parsed.title, parsed.author);
+    const id = crypto.randomUUID();
+    const storagePath = `${user.id}/${id}/${safeFileName(file.name)}`;
+
+    const upload = await supabase.storage.from(EPUB_BUCKET).upload(storagePath, file, {
+      contentType: file.type || "application/epub+zip",
+      upsert: false
+    });
+
+    if (upload.error) throw upload.error;
+
+    const newBook = {
+      id,
+      user_id: user.id,
+      title: parsed.title,
+      author: parsed.author,
+      cover_url: coverUrl || null,
+      storage_path: storagePath,
+      file_name: file.name,
+      file_size: file.size,
+      mime_type: file.type || "application/epub+zip",
+      paragraph_count: parsed.paragraphs.length,
+      chapter_count: parsed.chapters.length,
+      current_index: 0,
+      last_opened_at: new Date().toISOString()
+    };
+    const { data, error } = await supabase.from("books").insert(newBook).select("*").single();
+
+    if (error) {
+      await supabase.storage.from(EPUB_BUCKET).remove([storagePath]);
+      throw error;
+    }
+
+    const row = data as BookRow;
+    parsedBooks.current.set(row.id, parsed);
+    void cacheBookFile(row, file);
+    setCatalogBooks((items) => [row, ...items]);
+    openParsedBook(row, parsed, 0);
+  };
+
+  const addClassicToLibrary = async (classic: ClassicBook) => {
+    if (!user) return;
+    stopAudio();
+    setPlayback("idle");
+    setNotice("");
+    setImportingClassicId(classic.id);
+    setBusy(true);
+
+    try {
+      const response = await fetch(classic.downloadUrl);
+      if (!response.ok) throw new Error("Could not download ebook from Standard Ebooks.");
+
+      const blob = await response.blob();
+      const filename = `${safeFileName(classic.title)}.epub`;
+      const file = new File([blob], filename, { type: "application/epub+zip" });
+
+      await importEpubFile(file);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Failed to import classic book.");
+    } finally {
+      setImportingClassicId(null);
+      setBusy(false);
+    }
+  };
+
   const handleCatalogUpload = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file || !user) return;
@@ -973,54 +1239,7 @@ function App() {
     setBusy(true);
 
     try {
-      if (!file.name.toLowerCase().endsWith(".epub")) {
-        throw new Error("Please upload an EPUB file.");
-      }
-
-      if (storageUsed + file.size > USER_STORAGE_QUOTA_BYTES) {
-        throw new Error(`This upload would exceed your ${formatBytes(USER_STORAGE_QUOTA_BYTES)} library limit.`);
-      }
-
-      const parsed = await parseEpub(file);
-      const embeddedCoverUrl = parsed.coverUrl ? await shrinkCoverDataUrl(parsed.coverUrl) : "";
-      const coverUrl = embeddedCoverUrl || await getOpenLibraryCoverUrl(parsed.title, parsed.author);
-      const id = crypto.randomUUID();
-      const storagePath = `${user.id}/${id}/${safeFileName(file.name)}`;
-
-      const upload = await supabase.storage.from(EPUB_BUCKET).upload(storagePath, file, {
-        contentType: file.type || "application/epub+zip",
-        upsert: false
-      });
-
-      if (upload.error) throw upload.error;
-
-      const newBook = {
-        id,
-        user_id: user.id,
-        title: parsed.title,
-        author: parsed.author,
-        cover_url: coverUrl || null,
-        storage_path: storagePath,
-        file_name: file.name,
-        file_size: file.size,
-        mime_type: file.type || "application/epub+zip",
-        paragraph_count: parsed.paragraphs.length,
-        chapter_count: parsed.chapters.length,
-        current_index: 0,
-        last_opened_at: new Date().toISOString()
-      };
-      const { data, error } = await supabase.from("books").insert(newBook).select("*").single();
-
-      if (error) {
-        await supabase.storage.from(EPUB_BUCKET).remove([storagePath]);
-        throw error;
-      }
-
-      const row = data as BookRow;
-      parsedBooks.current.set(row.id, parsed);
-      void cacheBookFile(row, file);
-      setCatalogBooks((items) => [row, ...items]);
-      openParsedBook(row, parsed, 0);
+      await importEpubFile(file);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not upload this EPUB.");
     } finally {
@@ -1072,7 +1291,10 @@ function App() {
         const coverUrl = await shrinkCoverDataUrl(parsed.coverUrl);
         row = { ...row, cover_url: coverUrl };
         setCatalogBooks((items) => items.map((item) => (item.id === row.id ? row : item)));
-        void supabase.from("books").update({ cover_url: coverUrl }).eq("id", row.id);
+        const { error: updateError } = await supabase.from("books").update({ cover_url: coverUrl }).eq("id", row.id);
+        if (updateError) {
+          console.error("Failed to save book cover to database:", updateError);
+        }
       }
       parsedBooks.current.set(row.id, parsed);
       openParsedBook(row, parsed);
@@ -1362,21 +1584,7 @@ function App() {
                     onClick={() => void openBook(catalogBook)}
                     type="button"
                   >
-                    <span className="catalog-cover-art">
-                      <span className="generated-cover" style={{ background: getBookHue(catalogBook) }}>
-                        <span>{getCoverInitials(catalogBook.title)}</span>
-                        <small>{catalogBook.title}</small>
-                      </span>
-                      {catalogBook.cover_url && (
-                        <img
-                          alt=""
-                          src={catalogBook.cover_url}
-                          onError={(event) => {
-                            event.currentTarget.style.display = "none";
-                          }}
-                        />
-                      )}
-                    </span>
+                    <BookCover book={catalogBook} />
                     <span className="catalog-book-copy">
                       <strong>{catalogBook.title}</strong>
                       <small>
@@ -1399,6 +1607,155 @@ function App() {
               <div className="empty-library">
                 <BookOpen size={22} aria-hidden="true" />
                 <span>Your library is empty.</span>
+              </div>
+            )}
+          </div>
+
+          {/* Explore Classics Section */}
+          <div className="explore-divider">
+            <span>Explore Classics</span>
+          </div>
+
+          <div className="explore-section">
+            <div className="explore-header">
+              <div className="explore-tabs-container">
+                <div className="explore-tabs">
+                  <button
+                    className={`explore-tab ${exploreTab === "curated" ? "active" : ""}`}
+                    onClick={() => setExploreTab("curated")}
+                    type="button"
+                  >
+                    Timeless Masterpieces
+                  </button>
+                  <button
+                    className={`explore-tab ${exploreTab === "new" ? "active" : ""}`}
+                    onClick={() => setExploreTab("new")}
+                    type="button"
+                  >
+                    Standard Ebooks Releases
+                  </button>
+                </div>
+              </div>
+              <p className="explore-subtitle">
+                {exploreTab === "curated" 
+                  ? "Timeless, high-quality public domain masterpieces curated for instant reading."
+                  : "Browse the latest high-quality digital editions directly from Standard Ebooks."}
+              </p>
+            </div>
+
+            {exploreTab === "new" && feedLoading && (
+              <div className="explore-loading">
+                <Loader2 className="spin" size={24} />
+                <span>Fetching live catalog from Standard Ebooks...</span>
+              </div>
+            )}
+
+            {exploreTab === "new" && feedError && (
+              <div className="explore-error">
+                <p>{feedError}</p>
+                <button 
+                  className="secondary-button btn-retry"
+                  onClick={() => {
+                    setFeedBooks([]); // clear to trigger reloading
+                  }}
+                  type="button"
+                >
+                  Retry Loading
+                </button>
+              </div>
+            )}
+
+            {((exploreTab === "curated") || (exploreTab === "new" && !feedLoading && !feedError)) && (
+              <div className="explore-grid">
+                {(exploreTab === "curated" ? CURATED_CLASSICS : feedBooks).map((classicBook) => {
+                  const alreadyAdded = catalogBooks.some(
+                    (cb) => cb.title.toLowerCase().trim() === classicBook.title.toLowerCase().trim()
+                  );
+                  const isImporting = importingClassicId === classicBook.id;
+                  const showSynopsis = activeSynopsisId === classicBook.id;
+
+                  return (
+                    <div className="explore-card" key={classicBook.id}>
+                      <div className="explore-cover-container">
+                        <img 
+                          className="explore-cover" 
+                          src={classicBook.coverUrl} 
+                          alt={classicBook.title} 
+                          loading="lazy"
+                        />
+                        <div className="explore-cover-overlay">
+                          <button
+                            className="explore-action-btn primary-action"
+                            disabled={busy || isImporting}
+                            onClick={() => void addClassicToLibrary(classicBook)}
+                            title={alreadyAdded ? "Open from Library" : "Add to Library & Read"}
+                            type="button"
+                          >
+                            {isImporting ? (
+                              <Loader2 className="spin" size={16} />
+                            ) : alreadyAdded ? (
+                              <Check size={16} />
+                            ) : (
+                              <Plus size={16} />
+                            )}
+                            <span>{alreadyAdded ? "In Library" : "Add to Library"}</span>
+                          </button>
+                          
+                          <button
+                            className={`explore-action-btn secondary-action ${showSynopsis ? "active" : ""}`}
+                            onClick={() => setActiveSynopsisId(showSynopsis ? null : classicBook.id)}
+                            title="Show Synopsis"
+                            type="button"
+                          >
+                            <Info size={16} />
+                            <span>Synopsis</span>
+                          </button>
+                        </div>
+                      </div>
+                      
+                      <div className="explore-meta">
+                        <h3 className="explore-title" title={classicBook.title}>{classicBook.title}</h3>
+                        <p className="explore-author">{classicBook.author}</p>
+                      </div>
+
+                      {showSynopsis && (
+                        <div className="explore-synopsis-popover">
+                          <div className="popover-header">
+                            <h4>Synopsis</h4>
+                            <button 
+                              className="popover-close" 
+                              onClick={() => setActiveSynopsisId(null)}
+                              type="button"
+                            >
+                              &times;
+                            </button>
+                          </div>
+                          <p className="popover-text">{classicBook.summary || "No synopsis available."}</p>
+                          <div className="popover-footer">
+                            <button
+                              className="popover-add-btn"
+                              disabled={busy || isImporting}
+                              onClick={() => {
+                                void addClassicToLibrary(classicBook);
+                                setActiveSynopsisId(null);
+                              }}
+                              type="button"
+                            >
+                              {isImporting ? (
+                                <Loader2 className="spin" size={14} />
+                              ) : alreadyAdded ? (
+                                <Check size={14} />
+                              ) : (
+                                <Download size={14} />
+                              )}
+                              <span>{alreadyAdded ? "In Library" : "Download & Read Now"}</span>
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

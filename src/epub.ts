@@ -40,6 +40,15 @@ const textFrom = (root: ParentNode, selectors: string[]) => {
   return "";
 };
 
+const getElementTextNS = (root: Element, localNames: string[]) => {
+  let current: Element | null = root;
+  for (const name of localNames) {
+    if (!current) break;
+    current = current.getElementsByTagNameNS("*", name)[0] ?? null;
+  }
+  return current ? normaliseSpace(current.textContent ?? "") : "";
+};
+
 const resolvePath = (basePath: string, href: string) => {
   const parts = basePath.split("/");
   parts.pop();
@@ -96,7 +105,7 @@ const getRootFilePath = async (zip: JSZip) => {
   if (!container) throw new Error("This EPUB is missing META-INF/container.xml.");
 
   const doc = parseXml(container);
-  const rootPath = doc.querySelector("rootfile")?.getAttribute("full-path");
+  const rootPath = doc.getElementsByTagNameNS("*", "rootfile")[0]?.getAttribute("full-path");
   if (!rootPath) throw new Error("This EPUB does not declare a package file.");
 
   return rootPath;
@@ -114,7 +123,20 @@ const readImageAsDataUrl = async (
   assetMimeByPath: Map<string, string>
 ) => {
   const decodedPath = safeDecodePath(imagePath);
-  const file = zip.file(imagePath) ?? zip.file(decodedPath);
+  let file = zip.file(imagePath) ?? zip.file(decodedPath);
+
+  if (!file) {
+    const fileName = imagePath.split("/").pop();
+    if (fileName) {
+      const found = Object.keys(zip.files).find(
+        (key) => key.split("/").pop() === fileName
+      );
+      if (found) {
+        file = zip.file(found);
+      }
+    }
+  }
+
   if (!file) return "";
 
   const mime = assetMimeByPath.get(imagePath) ?? assetMimeByPath.get(decodedPath) ?? imageMimeFromPath(imagePath);
@@ -183,23 +205,32 @@ const getElementText = (root: Element, selector: string) =>
   normaliseSpace(root.querySelector(selector)?.textContent ?? "");
 
 const getCoverPath = (opfPath: string, opf: Document, manifest: Map<string, string>) => {
-  const coverId = Array.from(opf.querySelectorAll("metadata meta")).find(
-    (meta) => meta.getAttribute("name")?.toLowerCase() === "cover"
-  )?.getAttribute("content");
+  const metaElements = Array.from(opf.getElementsByTagNameNS("*", "meta"));
+  const coverId = metaElements.find((meta) => {
+    const name = meta.getAttribute("name")?.toLowerCase();
+    const property = meta.getAttribute("property")?.toLowerCase();
+    return name === "cover" || property === "cover" || property === "dc:cover";
+  })?.getAttribute("content");
 
   if (coverId) {
-    const coverPath = manifest.get(coverId);
+    const manifestEntry = Array.from(manifest.entries()).find(
+      ([id]) => id.toLowerCase() === coverId.toLowerCase()
+    );
+    const coverPath = manifestEntry ? manifestEntry[1] : undefined;
     if (coverPath) return coverPath;
   }
 
-  const coverItem = Array.from(opf.querySelectorAll("manifest > item")).find((item) => {
+  const items = Array.from(opf.getElementsByTagNameNS("*", "item"));
+  const coverItem = items.find((item) => {
     const properties = (item.getAttribute("properties") ?? "").split(/\s+/);
     const id = item.getAttribute("id")?.toLowerCase() ?? "";
     const href = item.getAttribute("href")?.toLowerCase() ?? "";
     const mediaType = item.getAttribute("media-type") ?? "";
     return (
       mediaType.startsWith("image/") &&
-      (properties.includes("cover-image") || id.includes("cover") || href.includes("cover"))
+      (properties.includes("cover-image") ||
+        /cover|thumb|front|jacket/i.test(id) ||
+        /cover|thumb|front|jacket/i.test(href))
     );
   });
 
@@ -213,12 +244,12 @@ const getNcxEntries = async (
   opf: Document,
   manifest: Map<string, string>
 ) => {
-  const spine = opf.querySelector("spine");
+  const spine = opf.getElementsByTagNameNS("*", "spine")[0];
   const tocId = spine?.getAttribute("toc");
+  const items = Array.from(opf.getElementsByTagNameNS("*", "item"));
   const ncxPath =
     (tocId ? manifest.get(tocId) : "") ||
-    Array.from(opf.querySelectorAll("manifest > item"))
-      .find((item) => item.getAttribute("media-type") === "application/x-dtbncx+xml")
+    items.find((item) => item.getAttribute("media-type") === "application/x-dtbncx+xml")
       ?.getAttribute("href");
 
   if (!ncxPath) return [];
@@ -229,10 +260,10 @@ const getNcxEntries = async (
 
   const ncx = parseXml(ncxText);
 
-  return Array.from(ncx.querySelectorAll("navPoint"))
+  return Array.from(ncx.getElementsByTagNameNS("*", "navPoint"))
     .map((point): TocEntry | null => {
-      const title = getElementText(point, "navLabel text");
-      const src = point.querySelector("content")?.getAttribute("src");
+      const title = getElementTextNS(point, ["navLabel", "text"]);
+      const src = point.getElementsByTagNameNS("*", "content")[0]?.getAttribute("src");
 
       if (!title || !src) return null;
 
@@ -250,7 +281,8 @@ const getNavEntries = async (
   opf: Document,
   manifest: Map<string, string>
 ) => {
-  const navItem = Array.from(opf.querySelectorAll("manifest > item")).find((item) =>
+  const items = Array.from(opf.getElementsByTagNameNS("*", "item"));
+  const navItem = items.find((item) =>
     (item.getAttribute("properties") ?? "").split(/\s+/).includes("nav")
   );
   const navHref = navItem?.getAttribute("href");
@@ -289,7 +321,8 @@ export const parseEpub = async (file: File): Promise<ReaderBook> => {
   const manifest = new Map<string, string>();
   const assetMimeByPath = new Map<string, string>();
 
-  Array.from(opf.querySelectorAll("manifest > item")).forEach((item) => {
+  const items = Array.from(opf.getElementsByTagNameNS("*", "item"));
+  items.forEach((item) => {
     const id = item.getAttribute("id");
     const href = item.getAttribute("href");
     const mediaType = item.getAttribute("media-type");
@@ -300,16 +333,27 @@ export const parseEpub = async (file: File): Promise<ReaderBook> => {
     }
   });
 
-  const title = textFrom(opf, ["metadata title", "dc\\:title", "title"]) || file.name;
-  const author = textFrom(opf, ["metadata creator", "dc\\:creator", "creator"]);
+  const getMetadataValue = (opfDoc: Document, name: string) => {
+    const elements = Array.from(opfDoc.getElementsByTagNameNS("*", name));
+    if (elements.length > 0) {
+      return normaliseSpace(elements[0].textContent ?? "");
+    }
+    return "";
+  };
+
+  const title = getMetadataValue(opf, "title") || file.name;
+  const author = getMetadataValue(opf, "creator");
   const coverPath = getCoverPath(opfPath, opf, manifest);
   const coverUrl = coverPath ? await readImageAsDataUrl(zip, coverPath, assetMimeByPath) : "";
   const paragraphs: ReaderParagraph[] = [];
   const chapters: string[] = [];
 
-  const spineIds = Array.from(opf.querySelectorAll("spine > itemref"))
-    .map((item) => item.getAttribute("idref"))
-    .filter((idref): idref is string => Boolean(idref));
+  const spineEl = opf.getElementsByTagNameNS("*", "spine")[0];
+  const spineIds = spineEl
+    ? Array.from(spineEl.getElementsByTagNameNS("*", "itemref"))
+        .map((item) => item.getAttribute("idref"))
+        .filter((idref): idref is string => Boolean(idref))
+    : [];
 
   const spinePaths = spineIds
     .map((idref) => manifest.get(idref))
