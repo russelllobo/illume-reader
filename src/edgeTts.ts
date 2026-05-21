@@ -1,4 +1,5 @@
 import { Communicate } from "edge-tts-universal/browser";
+import { supabaseFunctionUrl, supabasePublishableKey } from "./supabase";
 
 type WordRange = {
   end: number;
@@ -59,6 +60,11 @@ const canStreamMp3 = () =>
 const audioChunkToArrayBuffer = (chunk: Uint8Array): ArrayBuffer =>
   chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) as ArrayBuffer;
 
+const shouldUseLocalProxy = () =>
+  window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+
+const edgeTtsEndpoint = () => (shouldUseLocalProxy() ? "/api/edge-tts" : supabaseFunctionUrl("edge-tts"));
+
 export const createEdgeTtsPlayer = ({
   onBoundary,
   onEnded,
@@ -80,11 +86,16 @@ export const createEdgeTtsPlayer = ({
   let streamEnded = false;
   let monitorTimer: number | null = null;
   let nextTimedRangeIndex = 0;
+  let startupTimer: number | null = null;
 
   const cleanup = () => {
     if (monitorTimer !== null) {
       window.clearInterval(monitorTimer);
       monitorTimer = null;
+    }
+    if (startupTimer !== null) {
+      window.clearTimeout(startupTimer);
+      startupTimer = null;
     }
     audio.pause();
     audio.removeAttribute("src");
@@ -138,6 +149,17 @@ export const createEdgeTtsPlayer = ({
     });
   };
 
+  const queueEstimatedBoundaries = () => {
+    if (timedRanges.length || !wordRanges.length) return;
+
+    wordRanges.forEach((range, index) => {
+      timedRanges.push({
+        ...range,
+        startsAt: index * 0.31
+      });
+    });
+  };
+
   const pumpSourceBuffer = () => {
     if (!sourceBuffer || sourceBuffer.updating) return;
 
@@ -176,6 +198,7 @@ export const createEdgeTtsPlayer = ({
     objectUrl = URL.createObjectURL(mediaSource);
     audio.src = objectUrl;
     audio.onended = finish;
+    void audio.play().catch(fail);
 
     await new Promise<void>((resolve, reject) => {
       if (!mediaSource) {
@@ -202,7 +225,44 @@ export const createEdgeTtsPlayer = ({
     startBoundaryMonitor();
   };
 
-  const run = async () => {
+  const runProxy = async () => {
+    await startStreamingAudio();
+    queueEstimatedBoundaries();
+
+    const response = await fetch(edgeTtsEndpoint(), {
+      body: JSON.stringify({ text, voice }),
+      headers: {
+        Authorization: `Bearer ${supabasePublishableKey}`,
+        "Content-Type": "application/json"
+      },
+      method: "POST"
+    });
+
+    if (!response.ok) {
+      const details = await response.json().catch(() => null);
+      throw new Error(details?.error ?? "Edge TTS proxy failed.");
+    }
+    if (!response.body) throw new Error("Local Edge TTS proxy returned no audio stream.");
+
+    const reader = response.body.getReader();
+    while (!cancelled) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value?.byteLength) continue;
+
+      if (startupTimer !== null) {
+        window.clearTimeout(startupTimer);
+        startupTimer = null;
+      }
+
+      appendStreamingChunk(value);
+    }
+
+    streamEnded = true;
+    pumpSourceBuffer();
+  };
+
+  const runBrowserEdge = async () => {
     const useStreaming = canStreamMp3();
     if (useStreaming) await startStreamingAudio();
 
@@ -220,11 +280,16 @@ export const createEdgeTtsPlayer = ({
       if (cancelled) return;
 
       if (chunk.type === "audio" && chunk.data) {
+        if (startupTimer !== null) {
+          window.clearTimeout(startupTimer);
+          startupTimer = null;
+        }
+
         if (useStreaming) {
           appendStreamingChunk(chunk.data);
           if (!startedPlayback) {
             startedPlayback = true;
-            await audio.play();
+            if (audio.paused) await audio.play();
           }
         } else {
           bufferedChunks.push(chunk.data);
@@ -242,6 +307,19 @@ export const createEdgeTtsPlayer = ({
     } else {
       await playBufferedAudio();
     }
+  };
+
+  const run = async () => {
+    startupTimer = window.setTimeout(() => {
+      fail(new Error("Edge TTS did not start quickly enough."));
+    }, 10_000);
+
+    if (canStreamMp3()) {
+      await runProxy();
+      return;
+    }
+
+    await runBrowserEdge();
   };
 
   void run().catch(fail);

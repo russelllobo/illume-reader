@@ -8,4 +8,5 @@ if (!supabaseUrl || !supabaseKey) {
 }
 
 export const supabase = createClient(supabaseUrl, supabaseKey);
-
+export const supabaseFunctionUrl = (name: string) => `${supabaseUrl}/functions/v1/${name}`;
+export const supabasePublishableKey = supabaseKey;

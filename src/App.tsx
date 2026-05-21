@@ -157,8 +157,8 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "franz-kafka-the-metamorphosis",
     title: "The Metamorphosis",
     author: "Franz Kafka",
-    coverUrl: "https://standardebooks.org/ebooks/franz-kafka/the-metamorphosis/willa-muir_edwin-muir/downloads/cover-thumbnail.jpg",
-    downloadUrl: "https://standardebooks.org/ebooks/franz-kafka/the-metamorphosis/willa-muir_edwin-muir/downloads/franz-kafka_the-metamorphosis_willa-muir_edwin-muir.epub",
+    coverUrl: "https://www.gutenberg.org/cache/epub/5200/pg5200.cover.medium.jpg",
+    downloadUrl: "https://www.gutenberg.org/ebooks/5200.epub.images",
     summary: "Gregor Samsa, a traveling salesman, wakes up one morning to find himself inexplicably transformed into a monstrous insect-like creature, dealing with the psychological fallout."
   },
   {
@@ -293,8 +293,8 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "alexandre-dumas-the-count-of-monte-cristo",
     title: "The Count of Monte Cristo",
     author: "Alexandre Dumas",
-    coverUrl: "https://standardebooks.org/ebooks/alexandre-dumas/the-count-of-monte-cristo/anonymous/downloads/cover-thumbnail.jpg",
-    downloadUrl: "https://standardebooks.org/ebooks/alexandre-dumas/the-count-of-monte-cristo/anonymous/downloads/alexandre-dumas_the-count-of-monte-cristo_anonymous.epub",
+    coverUrl: "https://standardebooks.org/ebooks/alexandre-dumas/the-count-of-monte-cristo/chapman-and-hall/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/alexandre-dumas/the-count-of-monte-cristo/chapman-and-hall/downloads/alexandre-dumas_the-count-of-monte-cristo_chapman-and-hall.epub",
     summary: "Following Edmond Dantès, a young French sailor who is falsely accused of treason, escapes from prison, and seeks retribution against his betrayers."
   },
   {
@@ -333,8 +333,8 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "franz-kafka-the-trial",
     title: "The Trial",
     author: "Franz Kafka",
-    coverUrl: "https://standardebooks.org/ebooks/franz-kafka/the-trial/david-wyllie/downloads/cover-thumbnail.jpg",
-    downloadUrl: "https://standardebooks.org/ebooks/franz-kafka/the-trial/david-wyllie/downloads/franz-kafka_the-trial_david-wyllie.epub",
+    coverUrl: "https://www.gutenberg.org/cache/epub/7849/pg7849.cover.medium.jpg",
+    downloadUrl: "https://www.gutenberg.org/ebooks/7849.epub.images",
     summary: "Following Josef K., a respectable bank officer who is suddenly arrested and must defend himself against a charge about which he can obtain no information, translated by David Wyllie."
   },
   {
