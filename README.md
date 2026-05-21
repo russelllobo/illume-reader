@@ -23,6 +23,20 @@ VITE_USER_STORAGE_QUOTA_BYTES=104857600
 
 The current quota is set to 100 MB per user for Supabase free-tier testing. Use `2147483648` for a 2 GB per-user quota after moving to a paid storage plan.
 
+Image mode uses a Supabase Edge Function so the OpenAI key stays server-side. It stores generated images in the private `reader-images` storage bucket and records metadata in `public.reader_images` so future reads reuse existing images before calling OpenAI again. New image generation is limited to Pro users and capped at 100 images per account for now.
+
+Set this function secret:
+
+```bash
+supabase secrets set OPENAI_API_KEY=sk-...
+```
+
+Deploy the image generation function:
+
+```bash
+supabase functions deploy generate-reader-image
+```
+
 The database migration creates:
 
 - `public.books`

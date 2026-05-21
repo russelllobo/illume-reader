@@ -4,6 +4,7 @@ import {
   ChevronLeft,
   CreditCard,
   Crown,
+  Image as ImageIcon,
   Loader2,
   LogOut,
   Pause,
@@ -13,7 +14,7 @@ import {
   Trash2,
   Upload
 } from "lucide-react";
-import { ChangeEvent, FormEvent, KeyboardEvent, PointerEvent, useEffect, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, KeyboardEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
 import { supabase } from "./supabase";
 import { LandingPage } from "./LandingPage";
@@ -29,6 +30,27 @@ type SpeechHighlight = {
 type WordRange = {
   end: number;
   start: number;
+};
+type ReaderImageChunk = {
+  endWord: number;
+  index: number;
+  startWord: number;
+  text: string;
+};
+type ReaderImageState = {
+  error?: string;
+  prompt?: string;
+  src?: string;
+  status: "loading" | "ready" | "error";
+};
+type CachedReaderImage = {
+  bookId: string;
+  createdAt: string;
+  endWord: number;
+  key: string;
+  prompt?: string;
+  src: string;
+  startWord: number;
 };
 type BookRow = {
   author: string;
@@ -59,6 +81,10 @@ type BillingProfile = {
 
 const EPUB_BUCKET = "epubs";
 const BOOK_CACHE_NAME = "epub-vision-reader-books-v1";
+const READER_IMAGE_DB_NAME = "epub-vision-reader-images";
+const READER_IMAGE_STORE_NAME = "images";
+const READER_IMAGE_CHUNK_WORDS = 1000;
+const READER_IMAGE_ACCOUNT_LIMIT = 100;
 const USER_STORAGE_QUOTA_BYTES = Number(
   import.meta.env.VITE_USER_STORAGE_QUOTA_BYTES ?? 104_857_600
 );
@@ -82,6 +108,36 @@ const wordRangesFromText = (text: string): WordRange[] =>
     start: match.index ?? 0,
     end: (match.index ?? 0) + match[0].length
   }));
+
+const wordsFromText = (text: string) => Array.from(text.matchAll(/\S+/g)).map((match) => match[0]);
+
+const bookWords = (book: ReaderBook) =>
+  book.paragraphs.flatMap((paragraph) => (paragraph.kind === "image" ? [] : wordsFromText(paragraph.text)));
+
+const buildReaderImageChunks = (book: ReaderBook, startOffset = 0, chunkSize = READER_IMAGE_CHUNK_WORDS): ReaderImageChunk[] => {
+  const allWords = bookWords(book);
+  const safeStartOffset = Math.max(0, Math.min(startOffset, Math.max(0, allWords.length - 1)));
+  const chunks: ReaderImageChunk[] = [];
+
+  for (let offset = safeStartOffset; offset < allWords.length; offset += chunkSize) {
+    const words = allWords.slice(offset, offset + chunkSize);
+    if (!words.length) break;
+    chunks.push({
+      endWord: offset + words.length,
+      index: chunks.length,
+      startWord: offset + 1,
+      text: words.join(" ")
+    });
+  }
+
+  return chunks;
+};
+
+const wordOffsetForParagraph = (book: ReaderBook, targetIndex: number) =>
+  book.paragraphs.slice(0, targetIndex).reduce((total, paragraph) => {
+    if (paragraph.kind === "image") return total;
+    return total + wordsFromText(paragraph.text).length;
+  }, 0);
 
 const formatBytes = (bytes: number) => {
   if (bytes < 1024) return `${bytes} B`;
@@ -195,6 +251,56 @@ const shrinkCoverDataUrl = async (coverUrl: string) => {
 const bookCacheRequest = (bookId: string) =>
   new Request(`${window.location.origin}/__book-cache/${encodeURIComponent(bookId)}`);
 
+const readerImageCacheKey = (bookId: string, chunk: Pick<ReaderImageChunk, "endWord" | "startWord">) =>
+  `${bookId}:${chunk.startWord}:${chunk.endWord}`;
+
+const openReaderImageDb = () =>
+  new Promise<IDBDatabase | null>((resolve) => {
+    if (!("indexedDB" in window)) {
+      resolve(null);
+      return;
+    }
+
+    const request = window.indexedDB.open(READER_IMAGE_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore(READER_IMAGE_STORE_NAME, { keyPath: "key" });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => resolve(null);
+  });
+
+const getCachedReaderImage = async (bookId: string, chunk: ReaderImageChunk) => {
+  const db = await openReaderImageDb();
+  if (!db) return null;
+
+  return new Promise<CachedReaderImage | null>((resolve) => {
+    const transaction = db.transaction(READER_IMAGE_STORE_NAME, "readonly");
+    const request = transaction.objectStore(READER_IMAGE_STORE_NAME).get(readerImageCacheKey(bookId, chunk));
+    request.onsuccess = () => resolve((request.result as CachedReaderImage | undefined) ?? null);
+    request.onerror = () => resolve(null);
+    transaction.oncomplete = () => db.close();
+    transaction.onerror = () => db.close();
+  });
+};
+
+const cacheReaderImage = async (image: CachedReaderImage) => {
+  const db = await openReaderImageDb();
+  if (!db) return;
+
+  await new Promise<void>((resolve) => {
+    const transaction = db.transaction(READER_IMAGE_STORE_NAME, "readwrite");
+    transaction.objectStore(READER_IMAGE_STORE_NAME).put(image);
+    transaction.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    transaction.onerror = () => {
+      db.close();
+      resolve();
+    };
+  });
+};
+
 const getCachedBookFile = async (row: BookRow) => {
   if (!("caches" in window)) return null;
 
@@ -263,10 +369,17 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [checkoutResult, setCheckoutResult] = useState<"success" | "canceled" | "">("");
   const [speechHighlight, setSpeechHighlight] = useState<SpeechHighlight | null>(null);
+  const [readerImageMode, setReaderImageMode] = useState(false);
+  const [readerImageAnchorWordOffset, setReaderImageAnchorWordOffset] = useState(0);
+  const [readerImages, setReaderImages] = useState<Record<number, ReaderImageState>>({});
+  const [readerImageCount, setReaderImageCount] = useState(0);
   const parsedBooks = useRef(new Map<string, ReaderBook>());
   const readingSurfaceRef = useRef<HTMLElement | null>(null);
   const paragraphRefs = useRef(new Map<string, HTMLElement>());
   const chapterRefs = useRef(new Map<number, HTMLButtonElement>());
+  const imageRequestsRef = useRef(new Set<number>());
+  const readerImageModeRef = useRef(false);
+  const readerImageRunRef = useRef(0);
   const pendingScrollIndex = useRef<number | null>(null);
   const speechFallbackRef = useRef<number | null>(null);
   const lastSpeechBoundaryAt = useRef(0);
@@ -278,6 +391,62 @@ function App() {
   const progress = book ? ((currentIndex + 1) / book.paragraphs.length) * 100 : 0;
   const storageUsed = catalogBooks.reduce((total, item) => total + item.file_size, 0);
   const isPro = billingProfile?.plan === "pro";
+  const currentReaderWordOffset = useMemo(
+    () => (book ? wordOffsetForParagraph(book, currentIndex) : 0),
+    [book, currentIndex]
+  );
+  const readerImageStartOffset = readerImageMode ? readerImageAnchorWordOffset : currentReaderWordOffset;
+  const readerImageChunks = useMemo(
+    () => (book ? buildReaderImageChunks(book, readerImageStartOffset) : []),
+    [book, readerImageStartOffset]
+  );
+  const activeReaderImageChunkIndex = useMemo(() => {
+    if (!book || !readerImageChunks.length) return -1;
+    const relativeWordOffset = Math.max(0, currentReaderWordOffset - readerImageStartOffset);
+    return Math.min(readerImageChunks.length - 1, Math.floor(relativeWordOffset / READER_IMAGE_CHUNK_WORDS));
+  }, [book, currentReaderWordOffset, readerImageChunks, readerImageStartOffset]);
+  const visibleReaderImageIndexes = useMemo(() => {
+    if (!readerImageMode || activeReaderImageChunkIndex < 0) return new Set<number>();
+    return new Set([activeReaderImageChunkIndex, activeReaderImageChunkIndex + 1]);
+  }, [activeReaderImageChunkIndex, readerImageMode]);
+  const isReaderImageLoading =
+    readerImageMode &&
+    activeReaderImageChunkIndex >= 0 &&
+    [readerImages[activeReaderImageChunkIndex], readerImages[activeReaderImageChunkIndex + 1]].some(
+      (image) => image?.status === "loading"
+    );
+  const readerImageInsertions = useMemo(() => {
+    const insertions = new Map<number, ReaderImageChunk[]>();
+    if (!book || !readerImageMode || !readerImageChunks.length) return insertions;
+
+    let wordOffset = 0;
+    let chunkIndex = 0;
+
+    book.paragraphs.forEach((paragraph, paragraphIndex) => {
+      const wordCount = paragraph.kind === "image" ? 0 : wordsFromText(paragraph.text).length;
+      const paragraphStart = wordOffset;
+      const paragraphEnd = wordOffset + wordCount;
+
+      while (
+        chunkIndex < readerImageChunks.length &&
+        wordCount > 0 &&
+        readerImageChunks[chunkIndex].startWord - 1 >= paragraphStart &&
+        readerImageChunks[chunkIndex].startWord - 1 < paragraphEnd
+      ) {
+        const chunk = readerImageChunks[chunkIndex];
+        if (visibleReaderImageIndexes.has(chunk.index) || readerImages[chunk.index]) {
+          const items = insertions.get(paragraphIndex) ?? [];
+          items.push(chunk);
+          insertions.set(paragraphIndex, items);
+        }
+        chunkIndex += 1;
+      }
+
+      wordOffset = paragraphEnd;
+    });
+
+    return insertions;
+  }, [book, readerImageChunks, readerImageMode, readerImages, visibleReaderImageIndexes]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -297,6 +466,7 @@ function App() {
     if (!user) {
       setCatalogBooks([]);
       setBillingProfile(null);
+      setReaderImageCount(0);
       setBook(null);
       setView("catalog");
       setActiveBookId("");
@@ -306,6 +476,7 @@ function App() {
 
     void loadLibrary(user);
     void loadBillingProfile(user);
+    void loadReaderImageUsage();
   }, [user?.id]);
 
   useEffect(() => {
@@ -410,6 +581,11 @@ function App() {
   }, [activeBookId, book, currentIndex, view]);
 
   useEffect(() => {
+    if (!readerImageMode || activeReaderImageChunkIndex < 0) return;
+    void ensureReaderImages(activeReaderImageChunkIndex);
+  }, [activeReaderImageChunkIndex, readerImageMode]);
+
+  useEffect(() => {
     if (!activeBookId || !book || view !== "reader") return;
 
     const flushProgress = () => {
@@ -433,6 +609,128 @@ function App() {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [activeBookId, book, currentIndex, view]);
+
+  const generateReaderImage = async (chunk: ReaderImageChunk, runId = readerImageRunRef.current) => {
+    if (!book || !activeBookId) return;
+    if (!readerImageModeRef.current || runId !== readerImageRunRef.current) return;
+    if (imageRequestsRef.current.has(chunk.index)) return;
+
+    imageRequestsRef.current.add(chunk.index);
+
+    try {
+      const cachedImage = await getCachedReaderImage(activeBookId, chunk);
+      if (!readerImageModeRef.current || runId !== readerImageRunRef.current) return;
+      if (cachedImage?.src) {
+        setReaderImages((items) => ({
+          ...items,
+          [chunk.index]: {
+            prompt: cachedImage.prompt,
+            src: cachedImage.src,
+            status: "ready"
+          }
+        }));
+        return;
+      }
+
+      setReaderImages((items) => ({
+        ...items,
+        [chunk.index]: { status: "loading" }
+      }));
+
+      const { data, error } = await supabase.functions.invoke("generate-reader-image", {
+        method: "POST",
+        body: {
+          author: book.author,
+          bookId: activeBookId,
+          bookTitle: book.title,
+          chunkIndex: chunk.index,
+          endWord: chunk.endWord,
+          startWord: chunk.startWord,
+          text: chunk.text
+        }
+      });
+
+      if (!readerImageModeRef.current || runId !== readerImageRunRef.current) return;
+      if (error) throw error;
+      if (!data?.imageUrl) throw new Error("Image generation returned no image.");
+
+      const prompt = typeof data.prompt === "string" ? data.prompt : undefined;
+      if (typeof data.imageCount === "number") setReaderImageCount(data.imageCount);
+      void cacheReaderImage({
+        bookId: activeBookId,
+        createdAt: new Date().toISOString(),
+        endWord: chunk.endWord,
+        key: readerImageCacheKey(activeBookId, chunk),
+        prompt,
+        src: data.imageUrl,
+        startWord: chunk.startWord
+      });
+
+      setReaderImages((items) => ({
+        ...items,
+        [chunk.index]: {
+          prompt,
+          src: data.imageUrl,
+          status: "ready"
+        }
+      }));
+    } catch (error) {
+      if (!readerImageModeRef.current || runId !== readerImageRunRef.current) return;
+      setReaderImages((items) => ({
+        ...items,
+        [chunk.index]: {
+          error: error instanceof Error ? error.message : "Could not generate this image.",
+          status: "error"
+        }
+      }));
+    } finally {
+      if (runId === readerImageRunRef.current) imageRequestsRef.current.delete(chunk.index);
+    }
+  };
+
+  const ensureReaderImages = async (chunkIndex: number) => {
+    const runId = readerImageRunRef.current;
+    const targets = [chunkIndex, chunkIndex + 1]
+      .map((index) => readerImageChunks[index])
+      .filter((chunk): chunk is ReaderImageChunk => Boolean(chunk));
+
+    await Promise.all(
+      targets.map((chunk) => {
+        const existing = readerImages[chunk.index];
+        if (existing?.status === "ready" || existing?.status === "loading") return Promise.resolve();
+        return generateReaderImage(chunk, runId);
+      })
+    );
+  };
+
+  const stopReaderImageMode = () => {
+    readerImageRunRef.current += 1;
+    readerImageModeRef.current = false;
+    imageRequestsRef.current.clear();
+    setReaderImageMode(false);
+    setReaderImages({});
+  };
+
+  const toggleReaderImageMode = () => {
+    if (readerImageMode) {
+      stopReaderImageMode();
+      return;
+    }
+
+    if (!book || activeReaderImageChunkIndex < 0) return;
+    const startOffset = wordOffsetForParagraph(book, currentIndex);
+    const anchoredChunks = buildReaderImageChunks(book, startOffset);
+    if (!anchoredChunks.length) return;
+
+    const runId = readerImageRunRef.current + 1;
+    readerImageRunRef.current = runId;
+    readerImageModeRef.current = true;
+    imageRequestsRef.current.clear();
+    setReaderImages({});
+    setReaderImageAnchorWordOffset(startOffset);
+    setReaderImageMode(true);
+    void Promise.all(anchoredChunks.slice(0, 2).map((chunk) => generateReaderImage(chunk, runId)));
+  };
 
   const loadLibrary = async (_user: User) => {
     setBusy(true);
@@ -460,6 +758,14 @@ function App() {
       .maybeSingle();
 
     if (!error) setBillingProfile(data as BillingProfile | null);
+  };
+
+  const loadReaderImageUsage = async () => {
+    const { count, error } = await supabase
+      .from("reader_images")
+      .select("id", { count: "exact", head: true });
+
+    if (!error) setReaderImageCount(count ?? 0);
   };
 
   const saveReadingProgress = async (bookId: string, index: number) => {
@@ -727,6 +1033,12 @@ function App() {
     stopAudio();
     setPlayback("idle");
     setNotice("");
+    readerImageRunRef.current += 1;
+    readerImageModeRef.current = false;
+    setReaderImageMode(false);
+    setReaderImageAnchorWordOffset(0);
+    setReaderImages({});
+    imageRequestsRef.current.clear();
     setActiveBookId(row.id);
     setBook(parsed);
     const safeIndex = Math.max(0, Math.min(targetIndex, parsed.paragraphs.length - 1));
@@ -786,6 +1098,7 @@ function App() {
     await supabase.storage.from(EPUB_BUCKET).remove([row.storage_path]);
     void deleteCachedBookFile(row.id);
     parsedBooks.current.delete(row.id);
+    void loadReaderImageUsage();
     setCatalogBooks((items) => items.filter((item) => item.id !== row.id));
 
     if (activeBookId === row.id) {
@@ -904,6 +1217,33 @@ function App() {
     );
   };
 
+  const renderGeneratedReaderImage = (chunk: ReaderImageChunk) => {
+    const image = readerImages[chunk.index];
+
+    return (
+      <figure
+        className={`reader-generated-image ${chunk.index % 2 === 0 ? "left" : "right"}`}
+        key={`generated-${chunk.index}`}
+      >
+        {image?.status === "ready" && image.src ? (
+          <img alt={`Generated visual for words ${chunk.startWord} to ${chunk.endWord}`} src={image.src} />
+        ) : (
+          <div className={image?.status === "error" ? "reader-generated-placeholder error" : "reader-generated-placeholder"}>
+            {image?.status === "loading" ? (
+              <Loader2 className="spin" size={22} aria-hidden="true" />
+            ) : (
+              <ImageIcon size={22} aria-hidden="true" />
+            )}
+            <span>{image?.status === "error" ? image.error ?? "Image failed" : "Generating image"}</span>
+          </div>
+        )}
+        <figcaption>
+          Words {chunk.startWord}-{chunk.endWord}
+        </figcaption>
+      </figure>
+    );
+  };
+
   const scrubToPointer = (event: PointerEvent<HTMLDivElement>) => {
     if (!book) return;
     const bounds = event.currentTarget.getBoundingClientRect();
@@ -990,6 +1330,9 @@ function App() {
                 {isPro ? <Crown size={17} aria-hidden="true" /> : <CreditCard size={17} aria-hidden="true" />}
                 <span>{isPro ? "Pro plan" : "Free plan"}</span>
                 <small>Pro GBP 12.99/month</small>
+                <small>
+                  Images {readerImageCount}/{READER_IMAGE_ACCOUNT_LIMIT}
+                </small>
                 {billingProfile?.status && <small>{billingProfile.status}</small>}
               </div>
               <div className="billing-actions">
@@ -1105,7 +1448,7 @@ function App() {
           </nav>
         </aside>
 
-        <div className="main-spread reader-only">
+        <div className={readerImageMode ? "main-spread reader-only image-mode" : "main-spread reader-only"}>
           <section
             className="reading-surface"
             aria-live="polite"
@@ -1126,6 +1469,7 @@ function App() {
 
                 return (
                   <div className="reader-block" key={paragraph.id}>
+                    {readerImageInsertions.get(index)?.map((chunk) => renderGeneratedReaderImage(chunk))}
                     {showChapterHeading && !isChapterHeading && (
                       <h2 className="reader-chapter-title">{paragraph.chapterTitle}</h2>
                     )}
@@ -1258,6 +1602,26 @@ function App() {
             title="Next paragraph"
           >
             <RotateCw size={21} aria-hidden="true" />
+          </button>
+        </div>
+        <div className="image-mode-control">
+          <button
+            className={readerImageMode ? "secondary-button active" : "secondary-button"}
+            disabled={!readerImageMode && !readerImageChunks.length}
+            onClick={toggleReaderImageMode}
+            title={
+              readerImageMode
+                ? "Stop generating reading images"
+                : "Show reader images"
+            }
+            type="button"
+          >
+            {isReaderImageLoading ? (
+              <Loader2 className="spin" size={16} aria-hidden="true" />
+            ) : (
+              <ImageIcon size={16} aria-hidden="true" />
+            )}
+            <span>{readerImageMode ? "Image mode" : "Generate image"}</span>
           </button>
         </div>
       </footer>

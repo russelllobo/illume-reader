@@ -11,6 +11,8 @@ const requiredEnv = (name: string) => {
 const planFromStatus = (status: string) =>
   ["active", "trialing"].includes(status) ? "pro" : "free";
 
+const isPaidStatus = (status: string) => ["active", "trialing"].includes(status);
+
 Deno.serve(async (req) => {
   if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
 
@@ -38,7 +40,8 @@ Deno.serve(async (req) => {
       const subscriptionId = typeof session.subscription === "string" ? session.subscription : "";
       if (subscriptionId) {
         const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-        await upsertSubscription(adminClient, subscription, session.client_reference_id ?? undefined);
+        const latestSubscription = await latestBillableSubscription(stripe, subscription);
+        await upsertSubscription(adminClient, latestSubscription, session.client_reference_id ?? undefined);
       }
     }
 
@@ -47,7 +50,9 @@ Deno.serve(async (req) => {
       event.type === "customer.subscription.updated" ||
       event.type === "customer.subscription.deleted"
     ) {
-      await upsertSubscription(adminClient, event.data.object as Stripe.Subscription);
+      const subscription = event.data.object as Stripe.Subscription;
+      const latestSubscription = await latestBillableSubscription(stripe, subscription);
+      await upsertSubscription(adminClient, latestSubscription);
     }
 
     return new Response(JSON.stringify({ received: true }), {
@@ -57,6 +62,22 @@ Deno.serve(async (req) => {
     return new Response(error instanceof Error ? error.message : "Webhook error", { status: 400 });
   }
 });
+
+async function latestBillableSubscription(stripe: Stripe, subscription: Stripe.Subscription) {
+  if (isPaidStatus(subscription.status)) return subscription;
+
+  const customerId = typeof subscription.customer === "string" ? subscription.customer : subscription.customer.id;
+  const activeSubscriptions = await stripe.subscriptions.list({
+    customer: customerId,
+    limit: 100,
+    status: "all"
+  });
+  const paidSubscription = activeSubscriptions.data
+    .filter((candidate) => isPaidStatus(candidate.status))
+    .sort((a, b) => b.created - a.created)[0];
+
+  return paidSubscription ?? subscription;
+}
 
 async function upsertSubscription(
   adminClient: any,

@@ -143,6 +143,10 @@ button:disabled {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.main-spread.reader-only.image-mode {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .chapter-sidebar {
   min-height: 0;
   padding: 21px 0 18px 20px;
@@ -477,6 +481,7 @@ button:disabled {
 }
 
 .reader-block {
+  position: relative;
   scroll-margin-top: 42px;
 }
 
@@ -603,6 +608,62 @@ button:disabled {
   box-shadow: 0 0 0 3px #111;
 }
 
+.reader-generated-image {
+  width: 260px;
+  min-width: 0;
+  margin: 0;
+  position: absolute;
+  top: 0;
+  z-index: 1;
+}
+
+.reader-generated-image.left {
+  right: calc(100% + 34px);
+}
+
+.reader-generated-image.right {
+  left: calc(100% + 34px);
+}
+
+.reader-generated-image img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 5;
+  border-radius: 8px;
+  object-fit: cover;
+  box-shadow: 0 18px 54px rgba(0, 0, 0, 0.14);
+}
+
+.reader-generated-image figcaption {
+  margin-top: 10px;
+  color: #666;
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.reader-generated-placeholder {
+  width: 100%;
+  aspect-ratio: 4 / 5;
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  padding: 18px;
+  border: 1px dashed #cfcfcf;
+  border-radius: 8px;
+  background: #f5f5f5;
+  color: #6a6a6a;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.reader-generated-placeholder.error {
+  border-color: #e2b7b7;
+  background: #fff5f5;
+  color: #8a1f1f;
+}
+
 .progress-wrap {
   height: 4px;
   overflow: hidden;
@@ -670,6 +731,21 @@ button:disabled {
   align-items: center;
   justify-content: center;
   gap: 22px;
+}
+
+.image-mode-control {
+  justify-self: end;
+}
+
+.image-mode-control .secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.image-mode-control .secondary-button.active {
+  border-color: #111;
 }
 
 .rail-icon {
@@ -836,6 +912,10 @@ button:disabled {
     overflow-y: auto;
   }
 
+  .main-spread.reader-only.image-mode {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .chapter-sidebar {
     padding-left: 14px;
   }
@@ -848,6 +928,15 @@ button:disabled {
   .reader-copy {
     min-height: auto;
     padding: 12px 4px 36px;
+  }
+
+  .reader-generated-image,
+  .reader-generated-image.left,
+  .reader-generated-image.right {
+    position: static;
+    width: min(420px, 100%);
+    min-width: 0;
+    margin: 8px auto 28px;
   }
 
   .control-rail {
@@ -909,7 +998,8 @@ button:disabled {
   }
 
   .font-mode-toggle,
-  .transport {
+  .transport,
+  .image-mode-control {
     justify-self: center;
   }
 
