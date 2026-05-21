@@ -12,6 +12,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.106.0",
     "@vitejs/plugin-react": "^5.1.1",
+    "edge-tts-universal": "^1.4.0",
     "jszip": "^3.10.1",
     "lucide-react": "^0.561.0",
     "react": "^19.2.1",

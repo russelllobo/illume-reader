@@ -2728,12 +2728,15 @@ body:has(.landing-theme) {
   background: rgba(255, 255, 255, 0.2);
   color: #fff;
   border: 1px solid rgba(255, 255, 255, 0.3);
+  text-decoration: none;
 }
 
 .explore-action-btn.secondary-action:hover,
 .explore-action-btn.secondary-action.active {
   background: rgba(255, 255, 255, 0.35);
   transform: translateY(-1px);
+  color: #fff;
+  text-decoration: none;
 }
 
 /* Explore Meta */

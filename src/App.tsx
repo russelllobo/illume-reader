@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { ChangeEvent, FormEvent, KeyboardEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
+import { createEdgeTtsPlayer, EdgeTtsPlayer } from "./edgeTts";
 import { supabase } from "./supabase";
 import { LandingPage } from "./LandingPage";
 
@@ -110,7 +111,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     author: "Jane Austen",
     coverUrl: "https://standardebooks.org/ebooks/jane-austen/pride-and-prejudice/downloads/cover-thumbnail.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/jane-austen/pride-and-prejudice/downloads/jane-austen_pride-and-prejudice.epub",
-    summary: "A classic romantic novel of manners following Elizabeth Bennet as she navigates issues of manners, upbringing, morality, education, and marriage in the society of the landed gentry of the British Regency."
+    summary: "A classic romantic novel of manners following Elizabeth Bennet as she navigates issues of manners, upbringing, morality, education, and marriage in the British Regency gentry."
   },
   {
     id: "mary-shelley-frankenstein",
@@ -118,7 +119,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     author: "Mary Shelley",
     coverUrl: "https://standardebooks.org/ebooks/mary-shelley/frankenstein/downloads/cover-thumbnail.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/mary-shelley/frankenstein/downloads/mary-shelley_frankenstein.epub",
-    summary: "The iconic Gothic novel telling the story of Victor Frankenstein, a young scientist who creates a sapient creature in an unorthodox scientific experiment, and the tragic consequences that follow."
+    summary: "The iconic Gothic novel telling the story of Victor Frankenstein, a young scientist who creates a sapient creature in an unorthodox scientific experiment, and its tragic consequences."
   },
   {
     id: "bram-stoker-dracula",
@@ -126,14 +127,14 @@ const CURATED_CLASSICS: ClassicBook[] = [
     author: "Bram Stoker",
     coverUrl: "https://standardebooks.org/ebooks/bram-stoker/dracula/downloads/cover-thumbnail.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/bram-stoker/dracula/downloads/bram-stoker_dracula.epub",
-    summary: "The seminal vampire horror novel that introduced Count Dracula and established many conventions of subsequent vampire fantasy, structured as an epistolary sequence of diary entries and letters."
+    summary: "The seminal vampire horror novel that introduced Count Dracula and established many conventions of subsequent vampire fantasy, structured as an epistolary sequence of diaries."
   },
   {
     id: "lewis-carroll-alices-adventures-in-wonderland",
     title: "Alice’s Adventures in Wonderland",
     author: "Lewis Carroll",
-    coverUrl: "https://standardebooks.org/ebooks/lewis-carroll/alices-adventures-in-wonderland/downloads/cover-thumbnail.jpg",
-    downloadUrl: "https://standardebooks.org/ebooks/lewis-carroll/alices-adventures-in-wonderland/downloads/lewis-carroll_alices-adventures-in-wonderland.epub",
+    coverUrl: "https://standardebooks.org/ebooks/lewis-carroll/alices-adventures-in-wonderland/john-tenniel/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/lewis-carroll/alices-adventures-in-wonderland/john-tenniel/downloads/lewis-carroll_alices-adventures-in-wonderland_john-tenniel.epub",
     summary: "A fantastical tale of a young girl named Alice who falls through a rabbit hole into a subterranean fantasy world populated by peculiar, anthropomorphic creatures."
   },
   {
@@ -142,7 +143,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     author: "Arthur Conan Doyle",
     coverUrl: "https://standardebooks.org/ebooks/arthur-conan-doyle/the-adventures-of-sherlock-holmes/downloads/cover-thumbnail.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/arthur-conan-doyle/the-adventures-of-sherlock-holmes/downloads/arthur-conan-doyle_the-adventures-of-sherlock-holmes.epub",
-    summary: "A collection of twelve stories featuring the consulting detective Sherlock Holmes and his narrator companion Dr. John H. Watson, showcasing Holmes' brilliant analytical deduction skills."
+    summary: "A collection of twelve stories featuring the consulting detective Sherlock Holmes and his companion Dr. John H. Watson, showcasing Holmes' brilliant analytical deduction skills."
   },
   {
     id: "f-scott-fitzgerald-the-great-gatsby",
@@ -150,15 +151,15 @@ const CURATED_CLASSICS: ClassicBook[] = [
     author: "F. Scott Fitzgerald",
     coverUrl: "https://standardebooks.org/ebooks/f-scott-fitzgerald/the-great-gatsby/downloads/cover-thumbnail.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/f-scott-fitzgerald/the-great-gatsby/downloads/f-scott-fitzgerald_the-great-gatsby.epub",
-    summary: "Set in the Jazz Age on Long Island, near New York City, the novel depicts first-person narrator Nick Carraway's interactions with mysterious millionaire Jay Gatsby and Gatsby's obsession to reunite with his former love, Daisy Buchanan."
+    summary: "Set in the Jazz Age on Long Island, the novel depicts narrator Nick Carraway's interactions with mysterious millionaire Jay Gatsby and Gatsby's obsession to reunite with Daisy Buchanan."
   },
   {
     id: "franz-kafka-the-metamorphosis",
     title: "The Metamorphosis",
     author: "Franz Kafka",
-    coverUrl: "https://standardebooks.org/ebooks/franz-kafka/the-metamorphosis/david-wyllie/downloads/cover-thumbnail.jpg",
-    downloadUrl: "https://standardebooks.org/ebooks/franz-kafka/the-metamorphosis/david-wyllie/downloads/franz-kafka_the-metamorphosis_david-wyllie.epub",
-    summary: "Gregor Samsa, a traveling salesman, wakes up one morning to find himself inexplicably transformed into a monstrous insect-like creature, dealing with the psychological and familial fallout."
+    coverUrl: "https://standardebooks.org/ebooks/franz-kafka/the-metamorphosis/willa-muir_edwin-muir/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/franz-kafka/the-metamorphosis/willa-muir_edwin-muir/downloads/franz-kafka_the-metamorphosis_willa-muir_edwin-muir.epub",
+    summary: "Gregor Samsa, a traveling salesman, wakes up one morning to find himself inexplicably transformed into a monstrous insect-like creature, dealing with the psychological fallout."
   },
   {
     id: "oscar-wilde-the-picture-of-dorian-gray",
@@ -166,24 +167,346 @@ const CURATED_CLASSICS: ClassicBook[] = [
     author: "Oscar Wilde",
     coverUrl: "https://standardebooks.org/ebooks/oscar-wilde/the-picture-of-dorian-gray/downloads/cover-thumbnail.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/oscar-wilde/the-picture-of-dorian-gray/downloads/oscar-wilde_the-picture-of-dorian-gray.epub",
-    summary: "A philosophical novel about Dorian Gray, a handsome young man who sells his soul so that a painted portrait of him will age and record his moral decay, while his physical body remains forever young and beautiful."
+    summary: "A philosophical novel about Dorian Gray, a handsome young man who sells his soul so that a painted portrait of him will age and record his decay, while he remains forever young."
+  },
+  {
+    id: "herman-melville-moby-dick",
+    title: "Moby-Dick",
+    author: "Herman Melville",
+    coverUrl: "https://standardebooks.org/ebooks/herman-melville/moby-dick/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/herman-melville/moby-dick/downloads/herman-melville_moby-dick.epub",
+    summary: "The epic sailor Ishmael's narrative of the obsessive quest of Ahab, captain of the whaling ship Pequod, for revenge on Moby Dick, the giant white whale."
+  },
+  {
+    id: "charles-dickens-a-tale-of-two-cities",
+    title: "A Tale of Two Cities",
+    author: "Charles Dickens",
+    coverUrl: "https://standardebooks.org/ebooks/charles-dickens/a-tale-of-two-cities/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/charles-dickens/a-tale-of-two-cities/downloads/charles-dickens_a-tale-of-two-cities.epub",
+    summary: "Set in London and Paris before and during the French Revolution, the novel depicts the plight of the French peasantry and the demagogic excesses of the revolutionaries."
+  },
+  {
+    id: "joseph-conrad-heart-of-darkness",
+    title: "Heart of Darkness",
+    author: "Joseph Conrad",
+    coverUrl: "https://standardebooks.org/ebooks/joseph-conrad/heart-of-darkness/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/joseph-conrad/heart-of-darkness/downloads/joseph-conrad_heart-of-darkness.epub",
+    summary: "A powerful novella following Charles Marlow's voyage up the Congo River in the Congo Free State, exploring the hypocrisy of European imperialism and the darkness of human nature."
+  },
+  {
+    id: "h-g-wells-the-time-machine",
+    title: "The Time Machine",
+    author: "H. G. Wells",
+    coverUrl: "https://standardebooks.org/ebooks/h-g-wells/the-time-machine/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/h-g-wells/the-time-machine/downloads/h-g-wells_the-time-machine.epub",
+    summary: "The pioneering science fiction novella that popularized the concept of time travel using a vehicle, following a Victorian inventor's journey to the far future and the split of humanity."
+  },
+  {
+    id: "h-g-wells-the-war-of-the-worlds",
+    title: "The War of the Worlds",
+    author: "H. G. Wells",
+    coverUrl: "https://standardebooks.org/ebooks/h-g-wells/the-war-of-the-worlds/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/h-g-wells/the-war-of-the-worlds/downloads/h-g-wells_the-war-of-the-worlds.epub",
+    summary: "One of the earliest and most influential novels detailing an alien invasion, following a nameless narrator as Martians attack Victorian England with advanced technology."
+  },
+  {
+    id: "robert-louis-stevenson-the-strange-case-of-dr-jekyll-and-mr-hyde",
+    title: "The Strange Case of Dr. Jekyll and Mr. Hyde",
+    author: "Robert Louis Stevenson",
+    coverUrl: "https://standardebooks.org/ebooks/robert-louis-stevenson/the-strange-case-of-dr-jekyll-and-mr-hyde/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/robert-louis-stevenson/the-strange-case-of-dr-jekyll-and-mr-hyde/downloads/robert-louis-stevenson_the-strange-case-of-dr-jekyll-and-mr-hyde.epub",
+    summary: "A gothic novella about a London legal practitioner named John Gabriel Utterson who investigates strange occurrences between his old friend, Dr. Henry Jekyll, and the evil Edward Hyde."
+  },
+  {
+    id: "robert-louis-stevenson-treasure-island",
+    title: "Treasure Island",
+    author: "Robert Louis Stevenson",
+    coverUrl: "https://standardebooks.org/ebooks/robert-louis-stevenson/treasure-island/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/robert-louis-stevenson/treasure-island/downloads/robert-louis-stevenson_treasure-island.epub",
+    summary: "The classic adventure novel telling the story of 'buccaneers and buried gold', following young Jim Hawkins as he boards the Hispaniola to locate Captain Flint's treasure."
+  },
+  {
+    id: "charlotte-bronte-jane-eyre",
+    title: "Jane Eyre",
+    author: "Charlotte Brontë",
+    coverUrl: "https://standardebooks.org/ebooks/charlotte-bronte/jane-eyre/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/charlotte-bronte/jane-eyre/downloads/charlotte-bronte_jane-eyre.epub",
+    summary: "Following the emotions and experiences of its eponymous heroine, including her growth to adulthood and her love for Mr. Rochester, the master of Thornfield Hall."
+  },
+  {
+    id: "emily-bronte-wuthering-heights",
+    title: "Wuthering Heights",
+    author: "Emily Brontë",
+    coverUrl: "https://standardebooks.org/ebooks/emily-bronte/wuthering-heights/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/emily-bronte/wuthering-heights/downloads/emily-bronte_wuthering-heights.epub",
+    summary: "A passionate story of obsessive love and revenge on the Yorkshire moors, following the tumultuous relationship between Heathcliff and Catherine Earnshaw."
+  },
+  {
+    id: "homer-the-odyssey",
+    title: "The Odyssey",
+    author: "Homer",
+    coverUrl: "https://standardebooks.org/ebooks/homer/the-odyssey/william-cullen-bryant/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/homer/the-odyssey/william-cullen-bryant/downloads/homer_the-odyssey_william-cullen-bryant.epub",
+    summary: "One of two major ancient Greek epic poems, following the Greek hero Odysseus, king of Ithaca, and his journey home after the fall of Troy, translated by William Cullen Bryant."
+  },
+  {
+    id: "homer-the-iliad",
+    title: "The Iliad",
+    author: "Homer",
+    coverUrl: "https://standardebooks.org/ebooks/homer/the-iliad/william-cullen-bryant/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/homer/the-iliad/william-cullen-bryant/downloads/homer_the-iliad_william-cullen-bryant.epub",
+    summary: "Set during the ten-year siege of the city of Troy by a coalition of Greek states, detailing the battle between Achilles and King Agamemnon, translated by William Cullen Bryant."
+  },
+  {
+    id: "fyodor-dostoevsky-crime-and-punishment",
+    title: "Crime and Punishment",
+    author: "Fyodor Dostoevsky",
+    coverUrl: "https://standardebooks.org/ebooks/fyodor-dostoevsky/crime-and-punishment/constance-garnett/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/fyodor-dostoevsky/crime-and-punishment/constance-garnett/downloads/fyodor-dostoevsky_crime-and-punishment_constance-garnett.epub",
+    summary: "Following Rodion Raskolnikov, an impoverished ex-student in Saint Petersburg who formulates a plan to kill an unscrupulous pawnbroker for her money, translated by Constance Garnett."
+  },
+  {
+    id: "fyodor-dostoevsky-the-brothers-karamazov",
+    title: "The Brothers Karamazov",
+    author: "Fyodor Dostoevsky",
+    coverUrl: "https://standardebooks.org/ebooks/fyodor-dostoevsky/the-brothers-karamazov/constance-garnett/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/fyodor-dostoevsky/the-brothers-karamazov/constance-garnett/downloads/fyodor-dostoevsky_the-brothers-karamazov_constance-garnett.epub",
+    summary: "A passionate philosophical novel that enters deeply into the questions of God, free will, and morality, detailing the drama of the Karamazov family, translated by Constance Garnett."
+  },
+  {
+    id: "henry-david-thoreau-walden",
+    title: "Walden",
+    author: "Henry David Thoreau",
+    coverUrl: "https://standardebooks.org/ebooks/henry-david-thoreau/walden/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/henry-david-thoreau/walden/downloads/henry-david-thoreau_walden.epub",
+    summary: "Thoreau's reflection upon simple living in natural surroundings, detailing his experiences over two years in a cabin he built near Walden Pond, Massachusetts."
+  },
+  {
+    id: "walt-whitman-leaves-of-grass",
+    title: "Leaves of Grass",
+    author: "Walt Whitman",
+    coverUrl: "https://standardebooks.org/ebooks/walt-whitman/leaves-of-grass/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/walt-whitman/leaves-of-grass/downloads/walt-whitman_leaves-of-grass.epub",
+    summary: "A landmark poetry collection in American literature, celebrating nature, humanity, individualism, and the sensual experience of the human spirit."
+  },
+  {
+    id: "alexandre-dumas-the-count-of-monte-cristo",
+    title: "The Count of Monte Cristo",
+    author: "Alexandre Dumas",
+    coverUrl: "https://standardebooks.org/ebooks/alexandre-dumas/the-count-of-monte-cristo/anonymous/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/alexandre-dumas/the-count-of-monte-cristo/anonymous/downloads/alexandre-dumas_the-count-of-monte-cristo_anonymous.epub",
+    summary: "Following Edmond Dantès, a young French sailor who is falsely accused of treason, escapes from prison, and seeks retribution against his betrayers."
+  },
+  {
+    id: "alexandre-dumas-the-three-musketeers",
+    title: "The Three Musketeers",
+    author: "Alexandre Dumas",
+    coverUrl: "https://standardebooks.org/ebooks/alexandre-dumas/the-three-musketeers/william-robson/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/alexandre-dumas/the-three-musketeers/william-robson/downloads/alexandre-dumas_the-three-musketeers_william-robson.epub",
+    summary: "The adventures of young d'Artagnan as he travels to Paris to join the Musketeers of the Guard, befriending Athos, Porthos, and Aramis, translated by William Robson."
+  },
+  {
+    id: "charles-dickens-great-expectations",
+    title: "Great Expectations",
+    author: "Charles Dickens",
+    coverUrl: "https://standardebooks.org/ebooks/charles-dickens/great-expectations/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/charles-dickens/great-expectations/downloads/charles-dickens_great-expectations.epub",
+    summary: "Pip, an orphan growing up in a humble blacksmith's household, is suddenly elevated to the rank of gentleman by an anonymous benefactor, navigating London high society."
+  },
+  {
+    id: "charles-dickens-oliver-twist",
+    title: "Oliver Twist",
+    author: "Charles Dickens",
+    coverUrl: "https://standardebooks.org/ebooks/charles-dickens/oliver-twist/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/charles-dickens/oliver-twist/downloads/charles-dickens_oliver-twist.epub",
+    summary: "The story of the orphan Oliver Twist, who starts his life in a workhouse and is then apprenticed with an undertaker, escaping to London and finding a gang of juvenile pickpockets."
+  },
+  {
+    id: "charles-dickens-a-christmas-carol",
+    title: "A Christmas Carol",
+    author: "Charles Dickens",
+    coverUrl: "https://standardebooks.org/ebooks/charles-dickens/a-christmas-carol/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/charles-dickens/a-christmas-carol/downloads/charles-dickens_a-christmas-carol.epub",
+    summary: "The transformation of Ebenezer Scrooge, a miserly old businessman, after he is visited by the ghosts of Christmas Past, Present, and Yet to Come."
+  },
+  {
+    id: "franz-kafka-the-trial",
+    title: "The Trial",
+    author: "Franz Kafka",
+    coverUrl: "https://standardebooks.org/ebooks/franz-kafka/the-trial/david-wyllie/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/franz-kafka/the-trial/david-wyllie/downloads/franz-kafka_the-trial_david-wyllie.epub",
+    summary: "Following Josef K., a respectable bank officer who is suddenly arrested and must defend himself against a charge about which he can obtain no information, translated by David Wyllie."
+  },
+  {
+    id: "james-joyce-dubliners",
+    title: "Dubliners",
+    author: "James Joyce",
+    coverUrl: "https://standardebooks.org/ebooks/james-joyce/dubliners/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/james-joyce/dubliners/downloads/james-joyce_dubliners.epub",
+    summary: "A collection of fifteen short stories depicting Irish middle-class life in and around Dublin in the early years of the 20th century, exploring moments of epiphany."
+  },
+  {
+    id: "james-joyce-a-portrait-of-the-artist-as-a-young-man",
+    title: "A Portrait of the Artist as a Young Man",
+    author: "James Joyce",
+    coverUrl: "https://standardebooks.org/ebooks/james-joyce/a-portrait-of-the-artist-as-a-young-man/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/james-joyce/a-portrait-of-the-artist-as-a-young-man/downloads/james-joyce_a-portrait-of-the-artist-as-a-young-man.epub",
+    summary: "A semi-autobiographical novel tracing the intellectual, philosophical, and aesthetic awakening of Stephen Dedalus, a young man who rebels against his Catholic upbringing."
+  },
+  {
+    id: "james-joyce-ulysses",
+    title: "Ulysses",
+    author: "James Joyce",
+    coverUrl: "https://standardebooks.org/ebooks/james-joyce/ulysses/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/james-joyce/ulysses/downloads/james-joyce_ulysses.epub",
+    summary: "A modern masterpiece chronicling the passage of Leopold Bloom through Dublin in the course of an ordinary day, establishing parallels to Homer's epic Odyssey."
+  },
+  {
+    id: "jonathan-swift-gullivers-travels",
+    title: "Gulliver’s Travels",
+    author: "Jonathan Swift",
+    coverUrl: "https://standardebooks.org/ebooks/jonathan-swift/gullivers-travels/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/jonathan-swift/gullivers-travels/downloads/jonathan-swift_gullivers-travels.epub",
+    summary: "A brilliant satire of human nature and traveler's tales, following Lemuel Gulliver's voyages to Lilliput, Brobdingnag, Laputa, and the land of the Houyhnhnms."
+  },
+  {
+    id: "kenneth-grahame-the-wind-in-the-willows",
+    title: "The Wind in the Willows",
+    author: "Kenneth Grahame",
+    coverUrl: "https://standardebooks.org/ebooks/kenneth-grahame/the-wind-in-the-willows/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/kenneth-grahame/the-wind-in-the-willows/downloads/kenneth-grahame_the-wind-in-the-willows.epub",
+    summary: "The charming adventures of Mole, Water Rat, Badger, and the eccentric Mr. Toad of Toad Hall, exploring the Thames Valley wilderness and themes of friendship."
+  },
+  {
+    id: "jack-london-the-call-of-the-wild",
+    title: "The Call of the Wild",
+    author: "Jack London",
+    coverUrl: "https://standardebooks.org/ebooks/jack-london/the-call-of-the-wild/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/jack-london/the-call-of-the-wild/downloads/jack-london_the-call-of-the-wild.epub",
+    summary: "Set in the Yukon Territory during the Klondike Gold Rush, following Buck, a domesticated dog who is stolen, sold into service, and reverts to wild instincts."
+  },
+  {
+    id: "jack-london-white-fang",
+    title: "White Fang",
+    author: "Jack London",
+    coverUrl: "https://standardebooks.org/ebooks/jack-london/white-fang/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/jack-london/white-fang/downloads/jack-london_white-fang.epub",
+    summary: "A companion novel to Call of the Wild, focusing on a wild wolf-dog's journey to domestication in the Yukon Territory during the Gold Rush."
+  },
+  {
+    id: "george-bernard-shaw-pygmalion",
+    title: "Pygmalion",
+    author: "George Bernard Shaw",
+    coverUrl: "https://standardebooks.org/ebooks/george-bernard-shaw/pygmalion/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/george-bernard-shaw/pygmalion/downloads/george-bernard-shaw_pygmalion.epub",
+    summary: "A brilliant play about Henry Higgins, a professor of phonetics, who makes a bet that he can train a bedraggled Cockney flower girl, Eliza Doolittle, to pass for a duchess."
+  },
+  {
+    id: "leo-tolstoy-anna-karenina",
+    title: "Anna Karenina",
+    author: "Leo Tolstoy",
+    coverUrl: "https://standardebooks.org/ebooks/leo-tolstoy/anna-karenina/constance-garnett/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/leo-tolstoy/anna-karenina/constance-garnett/downloads/leo-tolstoy_anna-karenina_constance-garnett.epub",
+    summary: "A complex novel in eight parts, tracing the tragic extramarital affair between the socialite Anna Karenina and the dashing cavalry officer Count Vronsky, translated by Constance Garnett."
+  },
+  {
+    id: "leo-tolstoy-war-and-peace",
+    title: "War and Peace",
+    author: "Leo Tolstoy",
+    coverUrl: "https://standardebooks.org/ebooks/leo-tolstoy/war-and-peace/louise-maude_aylmer-maude/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/leo-tolstoy/war-and-peace/louise-maude_aylmer-maude/downloads/leo-tolstoy_war-and-peace_louise-maude_aylmer-maude.epub",
+    summary: "An epic chronicle of the history of the French invasion of Russia and the impact of the Napoleonic era on Tsarist society through five Russian aristocratic families."
+  },
+  {
+    id: "oscar-wilde-the-importance-of-being-earnest",
+    title: "The Importance of Being Earnest",
+    author: "Oscar Wilde",
+    coverUrl: "https://standardebooks.org/ebooks/oscar-wilde/the-importance-of-being-earnest/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/oscar-wilde/the-importance-of-being-earnest/downloads/oscar-wilde_the-importance-of-being-earnest.epub",
+    summary: "A farcical comedy in which the protagonists maintain fictitious personae in order to escape burdensome social obligations, showcasing Wilde's sharp wit."
+  },
+  {
+    id: "jane-austen-sense-and-sensibility",
+    title: "Sense and Sensibility",
+    author: "Jane Austen",
+    coverUrl: "https://standardebooks.org/ebooks/jane-austen/sense-and-sensibility/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/jane-austen/sense-and-sensibility/downloads/jane-austen_sense-and-sensibility.epub",
+    summary: "Following the Dashwood sisters, Elinor (representing sense) and Marianne (representing sensibility), as they navigate romance, family, and financial hardship."
+  },
+  {
+    id: "jane-austen-emma",
+    title: "Emma",
+    author: "Jane Austen",
+    coverUrl: "https://standardebooks.org/ebooks/jane-austen/emma/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/jane-austen/emma/downloads/jane-austen_emma.epub",
+    summary: "Emma Woodhouse, beautiful, clever, and rich, has a very happy home and little to distress her. But she has an unfortunate habit of matchmaking in her small village."
+  },
+  {
+    id: "jane-austen-persuasion",
+    title: "Persuasion",
+    author: "Jane Austen",
+    coverUrl: "https://standardebooks.org/ebooks/jane-austen/persuasion/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/jane-austen/persuasion/downloads/jane-austen_persuasion.epub",
+    summary: "The story of Anne Elliot, who, years after breaking her engagement to naval captain Frederick Wentworth, meets him again and must navigate unresolved feelings."
+  },
+  {
+    id: "niccolo-machiavelli-the-prince",
+    title: "The Prince",
+    author: "Niccolò Machiavelli",
+    coverUrl: "https://standardebooks.org/ebooks/niccolo-machiavelli/the-prince/w-k-marriott/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/niccolo-machiavelli/the-prince/w-k-marriott/downloads/niccolo-machiavelli_the-prince_w-k-marriott.epub",
+    summary: "The classic political treatise on statecraft, describing how a ruler should acquire, maintain, and govern a principality, translated by W. K. Marriott."
+  },
+  {
+    id: "friedrich-nietzsche-beyond-good-and-evil",
+    title: "Beyond Good and Evil",
+    author: "Friedrich Nietzsche",
+    coverUrl: "https://standardebooks.org/ebooks/friedrich-nietzsche/beyond-good-and-evil/helen-zimmern/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/friedrich-nietzsche/beyond-good-and-evil/helen-zimmern/downloads/friedrich-nietzsche_beyond-good-and-evil_helen-zimmern.epub",
+    summary: "A fundamental critique of traditional morality and philosophy, introducing Nietzsche's concepts of the will to power and master-slave moralities."
+  },
+  {
+    id: "friedrich-nietzsche-thus-spoke-zarathustra",
+    title: "Thus Spoke Zarathustra",
+    author: "Friedrich Nietzsche",
+    coverUrl: "https://standardebooks.org/ebooks/friedrich-nietzsche/thus-spake-zarathustra/thomas-common/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/friedrich-nietzsche/thus-spake-zarathustra/thomas-common/downloads/friedrich-nietzsche_thus-spake-zarathustra_thomas-common.epub",
+    summary: "A philosophical novel containing the fictional travels and speeches of Zarathustra, introducing the concepts of the Übermensch and eternal recurrence."
+  },
+  {
+    id: "kahlil-gibran-the-prophet",
+    title: "The Prophet",
+    author: "Kahlil Gibran",
+    coverUrl: "https://standardebooks.org/ebooks/khalil-gibran/the-prophet/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/khalil-gibran/the-prophet/downloads/khalil-gibran_the-prophet.epub",
+    summary: "A book of 26 poetic essays delivered by the prophet Almustafa, offering spiritual insights on love, marriage, children, work, joy, sorrow, and death."
+  },
+  {
+    id: "frances-hodgson-burnett-the-secret-garden",
+    title: "The Secret Garden",
+    author: "Frances Hodgson Burnett",
+    coverUrl: "https://standardebooks.org/ebooks/frances-hodgson-burnett/the-secret-garden/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/frances-hodgson-burnett/the-secret-garden/downloads/frances-hodgson-burnett_the-secret-garden.epub",
+    summary: "Following Mary Lennox, a spoiled and unloved orphan who is sent to Yorkshire to live with her uncle, discovering a locked and neglected secret garden."
+  },
+  {
+    id: "j-m-barrie-peter-and-wendy",
+    title: "Peter and Wendy",
+    author: "J. M. Barrie",
+    coverUrl: "https://standardebooks.org/ebooks/j-m-barrie/peter-and-wendy/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/j-m-barrie/peter-and-wendy/downloads/j-m-barrie_peter-and-wendy.epub",
+    summary: "The classic fantasy story of Peter Pan, the boy who wouldn't grow up, as he takes Wendy Darling and her brothers to the magical island of Neverland."
+  },
+  {
+    id: "brothers-grimm-fairy-tales",
+    title: "Grimms’ Fairy Tales",
+    author: "Brothers Grimm",
+    coverUrl: "https://standardebooks.org/ebooks/jacob-grimm_wilhelm-grimm/household-tales/margaret-hunt/downloads/cover-thumbnail.jpg",
+    downloadUrl: "https://standardebooks.org/ebooks/jacob-grimm_wilhelm-grimm/household-tales/margaret-hunt/downloads/jacob-grimm_wilhelm-grimm_household-tales_margaret-hunt.epub",
+    summary: "A renowned collection of German folklore and fairy tales, including Cinderella, Hansel and Gretel, Rapunzel, Rumpelstiltskin, and Sleeping Beauty."
   }
 ];
 
-
-const wordRangeFromBoundary = (text: string, charIndex: number, charLength = 0) => {
-  if (!Number.isFinite(charIndex) || charIndex < 0 || charIndex >= text.length) return null;
-
-  let start = charIndex;
-  while (start < text.length && /\s/.test(text[start])) start += 1;
-  while (start > 0 && /\S/.test(text[start - 1])) start -= 1;
-
-  let end = charLength > 0 ? start + charLength : start;
-  while (end < text.length && /\S/.test(text[end])) end += 1;
-
-  if (end <= start) return null;
-  return { start, end: Math.min(end, text.length) };
-};
 
 const wordRangesFromText = (text: string): WordRange[] =>
   Array.from(text.matchAll(/\S+/g)).map((match) => ({
@@ -483,15 +806,10 @@ function App() {
   const readerImageModeRef = useRef(false);
   const readerImageRunRef = useRef(0);
   const pendingScrollIndex = useRef<number | null>(null);
-  const speechFallbackRef = useRef<number | null>(null);
-  const lastSpeechBoundaryAt = useRef(0);
+  const edgeTtsPlayerRef = useRef<EdgeTtsPlayer | null>(null);
   const progressSaveTimer = useRef<number | null>(null);
   const coverLookupRef = useRef(new Set<string>());
 
-  const [exploreTab, setExploreTab] = useState<"curated" | "new">("curated");
-  const [feedBooks, setFeedBooks] = useState<ClassicBook[]>([]);
-  const [feedLoading, setFeedLoading] = useState(false);
-  const [feedError, setFeedError] = useState("");
   const [importingClassicId, setImportingClassicId] = useState<string | null>(null);
   const [activeSynopsisId, setActiveSynopsisId] = useState<string | null>(null);
 
@@ -570,82 +888,6 @@ function App() {
 
     return () => data.subscription.unsubscribe();
   }, []);
-
-  useEffect(() => {
-    if (exploreTab !== "new" || feedBooks.length > 0 || feedLoading) return;
-
-    const fetchFeed = async () => {
-      setFeedLoading(true);
-      setFeedError("");
-      try {
-        const feedUrl = "https://standardebooks.org/feeds/atom/new-releases";
-        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(feedUrl)}`;
-        
-        const response = await fetch(proxyUrl);
-        if (!response.ok) throw new Error("CORS proxy returned an error.");
-        
-        const text = await response.text();
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(text, "text/xml");
-        
-        const parseError = doc.querySelector("parsererror");
-        if (parseError) throw new Error("Failed to parse Atom feed XML.");
-        
-        const entries = Array.from(doc.querySelectorAll("entry"));
-        const parsed: ClassicBook[] = entries.map((entry, index) => {
-          const title = entry.querySelector("title")?.textContent?.trim() || "Untitled";
-          const author = entry.querySelector("author name")?.textContent?.trim() || "Unknown Author";
-          
-          let summary = entry.querySelector("summary")?.textContent?.trim() || "";
-          if (!summary) {
-            const content = entry.querySelector("content")?.textContent || "";
-            summary = content.replace(/<[^>]*>/g, "").trim();
-          }
-          if (summary.length > 200) {
-            summary = summary.slice(0, 197) + "...";
-          }
-          
-          let coverUrl = "";
-          const thumbnailNode = entry.getElementsByTagName("media:thumbnail")[0] || 
-                                entry.querySelector("thumbnail") ||
-                                Array.from(entry.getElementsByTagName("*")).find(el => el.localName === "thumbnail");
-          if (thumbnailNode) {
-            coverUrl = thumbnailNode.getAttribute("url") || "";
-          }
-          
-          if (!coverUrl) {
-            const entryId = entry.querySelector("id")?.textContent?.trim() || "";
-            if (entryId.startsWith("https://standardebooks.org/ebooks/")) {
-              coverUrl = `${entryId}/downloads/cover-thumbnail.jpg`;
-            }
-          }
-          
-          const links = Array.from(entry.querySelectorAll("link"));
-          const epubLink = links.find(l => l.getAttribute("type") === "application/epub+zip" && l.getAttribute("title")?.toLowerCase().includes("compatible")) ||
-                           links.find(l => l.getAttribute("type") === "application/epub+zip");
-          const downloadUrl = epubLink ? epubLink.getAttribute("href") || "" : "";
-          
-          return {
-            id: `feed-${index}-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
-            title,
-            author,
-            coverUrl,
-            downloadUrl,
-            summary
-          };
-        });
-
-        setFeedBooks(parsed.filter(b => b.downloadUrl));
-      } catch (err) {
-        console.error("Error loading Standard Ebooks feed:", err);
-        setFeedError("Could not load new releases. Please try again later.");
-      } finally {
-        setFeedLoading(false);
-      }
-    };
-
-    void fetchFeed();
-  }, [exploreTab, feedBooks.length, feedLoading]);
 
   useEffect(() => {
     if (!user) {
@@ -737,7 +979,7 @@ function App() {
       return;
     }
 
-    speakBrowser(current);
+    speakEdge(current);
   }, [currentIndex]);
 
   useEffect(() => {
@@ -974,16 +1216,9 @@ function App() {
     );
   };
 
-  const clearSpeechFallback = () => {
-    if (speechFallbackRef.current !== null) {
-      window.clearInterval(speechFallbackRef.current);
-      speechFallbackRef.current = null;
-    }
-  };
-
   const stopAudio = () => {
-    window.speechSynthesis.cancel();
-    clearSpeechFallback();
+    edgeTtsPlayerRef.current?.stop();
+    edgeTtsPlayerRef.current = null;
     setSpeechHighlight(null);
   };
 
@@ -994,14 +1229,12 @@ function App() {
     setCurrentIndex(target);
   };
 
-  const speakBrowser = (paragraph: ReaderParagraph) => {
+  const speakEdge = (paragraph: ReaderParagraph) => {
     if (paragraph.kind === "image") return;
 
-    window.speechSynthesis.cancel();
-    clearSpeechFallback();
-    lastSpeechBoundaryAt.current = 0;
+    edgeTtsPlayerRef.current?.stop();
+    edgeTtsPlayerRef.current = null;
     const wordRanges = wordRangesFromText(paragraph.text);
-    let fallbackIndex = 0;
 
     if (wordRanges[0]) {
       setSpeechHighlight({ paragraphId: paragraph.id, ...wordRanges[0] });
@@ -1009,53 +1242,28 @@ function App() {
       setSpeechHighlight({ paragraphId: paragraph.id, start: 0, end: 0 });
     }
 
-    const utterance = new SpeechSynthesisUtterance(paragraph.text);
-    utterance.rate = 0.95;
-    utterance.pitch = 1;
-    utterance.onboundary = (event) => {
-      const boundary = event as SpeechSynthesisEvent & { charLength?: number };
-      const range = wordRangeFromBoundary(
-        paragraph.text,
-        boundary.charIndex,
-        typeof boundary.charLength === "number" ? boundary.charLength : 0
-      );
-
-      if (range) {
-        lastSpeechBoundaryAt.current = Date.now();
-        const matchingIndex = wordRanges.findIndex((word) => word.end > range.start);
-        if (matchingIndex >= 0) fallbackIndex = matchingIndex + 1;
+    edgeTtsPlayerRef.current = createEdgeTtsPlayer({
+      onBoundary: (range) => {
         setSpeechHighlight({ paragraphId: paragraph.id, ...range });
-      }
-    };
-    speechFallbackRef.current = window.setInterval(() => {
-      if (window.speechSynthesis.paused) return;
-      if (Date.now() - lastSpeechBoundaryAt.current < 450) return;
-
-      const range = wordRanges[fallbackIndex];
-      if (!range) {
-        clearSpeechFallback();
-        return;
-      }
-
-      setSpeechHighlight({ paragraphId: paragraph.id, ...range });
-      fallbackIndex += 1;
-    }, 290);
-    utterance.onend = () => {
-      clearSpeechFallback();
-      setSpeechHighlight(null);
-      if (book && currentIndex < book.paragraphs.length - 1) {
-        advance();
-      } else {
+      },
+      onEnded: () => {
+        edgeTtsPlayerRef.current = null;
+        setSpeechHighlight(null);
+        if (book && currentIndex < book.paragraphs.length - 1) {
+          advance();
+        } else {
+          setPlayback("idle");
+        }
+      },
+      onError: () => {
+        edgeTtsPlayerRef.current = null;
+        setSpeechHighlight(null);
+        setNotice("Edge voice could not play this paragraph.");
         setPlayback("idle");
-      }
-    };
-    utterance.onerror = () => {
-      clearSpeechFallback();
-      setSpeechHighlight(null);
-      setNotice("Browser speech could not play this paragraph.");
-      setPlayback("idle");
-    };
-    window.speechSynthesis.speak(utterance);
+      },
+      text: paragraph.text,
+      wordRanges
+    });
   };
 
   const handleAuth = async (event: FormEvent<HTMLFormElement>) => {
@@ -1336,13 +1544,13 @@ function App() {
     setNotice("");
 
     if (playback === "playing") {
-      window.speechSynthesis.pause();
+      edgeTtsPlayerRef.current?.pause();
       setPlayback("paused");
       return;
     }
 
     if (playback === "paused") {
-      window.speechSynthesis.resume();
+      edgeTtsPlayerRef.current?.resume();
       setPlayback("playing");
       return;
     }
@@ -1359,7 +1567,7 @@ function App() {
       return;
     }
 
-    speakBrowser(current);
+    speakEdge(current);
   };
 
   const moveTo = (index: number, options: { scroll?: boolean; stop?: boolean } = {}) => {
@@ -1618,146 +1826,114 @@ function App() {
 
           <div className="explore-section">
             <div className="explore-header">
-              <div className="explore-tabs-container">
-                <div className="explore-tabs">
-                  <button
-                    className={`explore-tab ${exploreTab === "curated" ? "active" : ""}`}
-                    onClick={() => setExploreTab("curated")}
-                    type="button"
-                  >
-                    Timeless Masterpieces
-                  </button>
-                  <button
-                    className={`explore-tab ${exploreTab === "new" ? "active" : ""}`}
-                    onClick={() => setExploreTab("new")}
-                    type="button"
-                  >
-                    Standard Ebooks Releases
-                  </button>
-                </div>
-              </div>
               <p className="explore-subtitle">
-                {exploreTab === "curated" 
-                  ? "Timeless, high-quality public domain masterpieces curated for instant reading."
-                  : "Browse the latest high-quality digital editions directly from Standard Ebooks."}
+                Fifty timeless masterpieces. Ready to read instantly or download directly.
               </p>
             </div>
 
-            {exploreTab === "new" && feedLoading && (
-              <div className="explore-loading">
-                <Loader2 className="spin" size={24} />
-                <span>Fetching live catalog from Standard Ebooks...</span>
-              </div>
-            )}
+            <div className="explore-grid">
+              {CURATED_CLASSICS.map((classicBook) => {
+                const alreadyAdded = catalogBooks.some(
+                  (cb) => cb.title.toLowerCase().trim() === classicBook.title.toLowerCase().trim()
+                );
+                const isImporting = importingClassicId === classicBook.id;
+                const showSynopsis = activeSynopsisId === classicBook.id;
 
-            {exploreTab === "new" && feedError && (
-              <div className="explore-error">
-                <p>{feedError}</p>
-                <button 
-                  className="secondary-button btn-retry"
-                  onClick={() => {
-                    setFeedBooks([]); // clear to trigger reloading
-                  }}
-                  type="button"
-                >
-                  Retry Loading
-                </button>
-              </div>
-            )}
+                return (
+                  <div className="explore-card" key={classicBook.id}>
+                    <div className="explore-cover-container">
+                      <img 
+                        className="explore-cover" 
+                        src={classicBook.coverUrl} 
+                        alt={classicBook.title} 
+                        loading="lazy"
+                      />
+                      <div className="explore-cover-overlay">
+                        <button
+                          className="explore-action-btn primary-action"
+                          disabled={busy || isImporting}
+                          onClick={() => void addClassicToLibrary(classicBook)}
+                          title={alreadyAdded ? "Open from Library" : "Add to Library & Read"}
+                          type="button"
+                        >
+                          {isImporting ? (
+                            <Loader2 className="spin" size={16} />
+                          ) : alreadyAdded ? (
+                            <Check size={16} />
+                          ) : (
+                            <Plus size={16} />
+                          )}
+                          <span>{alreadyAdded ? "In Library" : "Add to Library"}</span>
+                        </button>
+                        
+                        <a
+                          className="explore-action-btn secondary-action download-link"
+                          href={classicBook.downloadUrl}
+                          download={`${classicBook.title}.epub`}
+                          title="Direct EPUB Download"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <Download size={16} />
+                          <span>Direct EPUB</span>
+                        </a>
 
-            {((exploreTab === "curated") || (exploreTab === "new" && !feedLoading && !feedError)) && (
-              <div className="explore-grid">
-                {(exploreTab === "curated" ? CURATED_CLASSICS : feedBooks).map((classicBook) => {
-                  const alreadyAdded = catalogBooks.some(
-                    (cb) => cb.title.toLowerCase().trim() === classicBook.title.toLowerCase().trim()
-                  );
-                  const isImporting = importingClassicId === classicBook.id;
-                  const showSynopsis = activeSynopsisId === classicBook.id;
+                        <button
+                          className={`explore-action-btn secondary-action ${showSynopsis ? "active" : ""}`}
+                          onClick={() => setActiveSynopsisId(showSynopsis ? null : classicBook.id)}
+                          title="Show Synopsis"
+                          type="button"
+                        >
+                          <Info size={16} />
+                          <span>Synopsis</span>
+                        </button>
+                      </div>
+                    </div>
+                    
+                    <div className="explore-meta">
+                      <h3 className="explore-title" title={classicBook.title}>{classicBook.title}</h3>
+                      <p className="explore-author">{classicBook.author}</p>
+                    </div>
 
-                  return (
-                    <div className="explore-card" key={classicBook.id}>
-                      <div className="explore-cover-container">
-                        <img 
-                          className="explore-cover" 
-                          src={classicBook.coverUrl} 
-                          alt={classicBook.title} 
-                          loading="lazy"
-                        />
-                        <div className="explore-cover-overlay">
+                    {showSynopsis && (
+                      <div className="explore-synopsis-popover">
+                        <div className="popover-header">
+                          <h4>Synopsis</h4>
+                          <button 
+                            className="popover-close" 
+                            onClick={() => setActiveSynopsisId(null)}
+                            type="button"
+                          >
+                            &times;
+                          </button>
+                        </div>
+                        <p className="popover-text">{classicBook.summary || "No synopsis available."}</p>
+                        <div className="popover-footer">
                           <button
-                            className="explore-action-btn primary-action"
+                            className="popover-add-btn"
                             disabled={busy || isImporting}
-                            onClick={() => void addClassicToLibrary(classicBook)}
-                            title={alreadyAdded ? "Open from Library" : "Add to Library & Read"}
+                            onClick={() => {
+                              void addClassicToLibrary(classicBook);
+                              setActiveSynopsisId(null);
+                            }}
                             type="button"
                           >
                             {isImporting ? (
-                              <Loader2 className="spin" size={16} />
+                              <Loader2 className="spin" size={14} />
                             ) : alreadyAdded ? (
-                              <Check size={16} />
+                              <Check size={14} />
                             ) : (
-                              <Plus size={16} />
+                              <Plus size={14} />
                             )}
-                            <span>{alreadyAdded ? "In Library" : "Add to Library"}</span>
-                          </button>
-                          
-                          <button
-                            className={`explore-action-btn secondary-action ${showSynopsis ? "active" : ""}`}
-                            onClick={() => setActiveSynopsisId(showSynopsis ? null : classicBook.id)}
-                            title="Show Synopsis"
-                            type="button"
-                          >
-                            <Info size={16} />
-                            <span>Synopsis</span>
+                            <span>{alreadyAdded ? "In Library" : "Add & Read Now"}</span>
                           </button>
                         </div>
                       </div>
-                      
-                      <div className="explore-meta">
-                        <h3 className="explore-title" title={classicBook.title}>{classicBook.title}</h3>
-                        <p className="explore-author">{classicBook.author}</p>
-                      </div>
-
-                      {showSynopsis && (
-                        <div className="explore-synopsis-popover">
-                          <div className="popover-header">
-                            <h4>Synopsis</h4>
-                            <button 
-                              className="popover-close" 
-                              onClick={() => setActiveSynopsisId(null)}
-                              type="button"
-                            >
-                              &times;
-                            </button>
-                          </div>
-                          <p className="popover-text">{classicBook.summary || "No synopsis available."}</p>
-                          <div className="popover-footer">
-                            <button
-                              className="popover-add-btn"
-                              disabled={busy || isImporting}
-                              onClick={() => {
-                                void addClassicToLibrary(classicBook);
-                                setActiveSynopsisId(null);
-                              }}
-                              type="button"
-                            >
-                              {isImporting ? (
-                                <Loader2 className="spin" size={14} />
-                              ) : alreadyAdded ? (
-                                <Check size={14} />
-                              ) : (
-                                <Download size={14} />
-                              )}
-                              <span>{alreadyAdded ? "In Library" : "Download & Read Now"}</span>
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </section>
 
