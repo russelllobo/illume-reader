@@ -17,6 +17,7 @@ type ReaderBlockKind = NonNullable<ReaderParagraph["kind"]>;
 export type ReaderBook = {
   title: string;
   author: string;
+  coverUrl: string;
   paragraphs: ReaderParagraph[];
   chapters: string[];
 };
@@ -181,6 +182,31 @@ const collectParagraphs = async (
 const getElementText = (root: Element, selector: string) =>
   normaliseSpace(root.querySelector(selector)?.textContent ?? "");
 
+const getCoverPath = (opfPath: string, opf: Document, manifest: Map<string, string>) => {
+  const coverId = Array.from(opf.querySelectorAll("metadata meta")).find(
+    (meta) => meta.getAttribute("name")?.toLowerCase() === "cover"
+  )?.getAttribute("content");
+
+  if (coverId) {
+    const coverPath = manifest.get(coverId);
+    if (coverPath) return coverPath;
+  }
+
+  const coverItem = Array.from(opf.querySelectorAll("manifest > item")).find((item) => {
+    const properties = (item.getAttribute("properties") ?? "").split(/\s+/);
+    const id = item.getAttribute("id")?.toLowerCase() ?? "";
+    const href = item.getAttribute("href")?.toLowerCase() ?? "";
+    const mediaType = item.getAttribute("media-type") ?? "";
+    return (
+      mediaType.startsWith("image/") &&
+      (properties.includes("cover-image") || id.includes("cover") || href.includes("cover"))
+    );
+  });
+
+  const href = coverItem?.getAttribute("href");
+  return href ? resolvePath(opfPath, href) : "";
+};
+
 const getNcxEntries = async (
   zip: JSZip,
   opfPath: string,
@@ -276,6 +302,8 @@ export const parseEpub = async (file: File): Promise<ReaderBook> => {
 
   const title = textFrom(opf, ["metadata title", "dc\\:title", "title"]) || file.name;
   const author = textFrom(opf, ["metadata creator", "dc\\:creator", "creator"]);
+  const coverPath = getCoverPath(opfPath, opf, manifest);
+  const coverUrl = coverPath ? await readImageAsDataUrl(zip, coverPath, assetMimeByPath) : "";
   const paragraphs: ReaderParagraph[] = [];
   const chapters: string[] = [];
 
@@ -354,6 +382,7 @@ export const parseEpub = async (file: File): Promise<ReaderBook> => {
   return {
     title,
     author,
+    coverUrl,
     paragraphs,
     chapters
   };

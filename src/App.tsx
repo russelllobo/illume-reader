@@ -2,7 +2,6 @@ import type { Session, User } from "@supabase/supabase-js";
 import {
   BookOpen,
   ChevronLeft,
-  Chrome,
   CreditCard,
   Crown,
   Loader2,
@@ -33,6 +32,7 @@ type WordRange = {
 type BookRow = {
   author: string;
   chapter_count: number;
+  cover_url: string | null;
   created_at: string;
   current_index: number;
   file_name: string;
@@ -102,11 +102,89 @@ const safeFileName = (name: string) =>
     .replace(/^-|-$/g, "")
     .slice(0, 120) || "book.epub";
 
+const coverPalettes = [
+  "linear-gradient(145deg, #232323 0%, #5a4f3f 100%)",
+  "linear-gradient(145deg, #18313f 0%, #d17a45 100%)",
+  "linear-gradient(145deg, #2d2a32 0%, #7f8c6f 100%)",
+  "linear-gradient(145deg, #143d3d 0%, #d6b35a 100%)",
+  "linear-gradient(145deg, #3b2636 0%, #b9685b 100%)",
+  "linear-gradient(145deg, #1f3048 0%, #b6a66a 100%)"
+];
+
+const getBookHue = (book: Pick<BookRow, "id" | "title">) => {
+  const seed = `${book.id}-${book.title}`;
+  const hash = Array.from(seed).reduce((value, char) => value + char.charCodeAt(0), 0);
+  return coverPalettes[hash % coverPalettes.length];
+};
+
+const getCoverInitials = (title: string) =>
+  title
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((word) => word[0]?.toUpperCase())
+    .join("") || "EP";
+
 const authRedirectUrl = () => {
   const url = new URL(window.location.href);
   url.search = "";
   url.hash = "";
   return url.toString();
+};
+
+const getOpenLibraryCoverUrl = async (title: string, author: string) => {
+  const params = new URLSearchParams({
+    title,
+    fields: "cover_i",
+    limit: "1"
+  });
+  if (author) params.set("author", author);
+
+  let response: Response;
+  try {
+    response = await fetch(`https://openlibrary.org/search.json?${params.toString()}`);
+  } catch {
+    return "";
+  }
+
+  if (!response.ok) return "";
+
+  let result: { docs?: Array<{ cover_i?: number }> };
+  try {
+    result = (await response.json()) as { docs?: Array<{ cover_i?: number }> };
+  } catch {
+    return "";
+  }
+  const coverId = result.docs?.find((doc) => typeof doc.cover_i === "number")?.cover_i;
+  return coverId ? `https://covers.openlibrary.org/b/id/${coverId}-L.jpg` : "";
+};
+
+const shrinkCoverDataUrl = async (coverUrl: string) => {
+  if (!coverUrl.startsWith("data:image/") || coverUrl.startsWith("data:image/svg")) return coverUrl;
+
+  const image = new Image();
+  image.decoding = "async";
+  image.src = coverUrl;
+
+  try {
+    await image.decode();
+  } catch {
+    return coverUrl;
+  }
+
+  const maxWidth = 420;
+  const scale = Math.min(1, maxWidth / image.naturalWidth);
+  if (scale === 1 && coverUrl.length < 450_000) return coverUrl;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+
+  const context = canvas.getContext("2d");
+  if (!context) return coverUrl;
+
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.84);
 };
 
 function App() {
@@ -134,6 +212,7 @@ function App() {
   const speechFallbackRef = useRef<number | null>(null);
   const lastSpeechBoundaryAt = useRef(0);
   const progressSaveTimer = useRef<number | null>(null);
+  const coverLookupRef = useRef(new Set<string>());
 
   const user = session?.user ?? null;
   const current = book?.paragraphs[currentIndex];
@@ -162,12 +241,34 @@ function App() {
       setBook(null);
       setView("catalog");
       setActiveBookId("");
+      coverLookupRef.current.clear();
       return;
     }
 
     void loadLibrary(user);
     void loadBillingProfile(user);
   }, [user?.id]);
+
+  useEffect(() => {
+    if (!user || !catalogBooks.length) return;
+
+    const hydrateMissingCovers = async () => {
+      for (const catalogBook of catalogBooks) {
+        if (catalogBook.cover_url || coverLookupRef.current.has(catalogBook.id)) continue;
+
+        coverLookupRef.current.add(catalogBook.id);
+        const coverUrl = await getOpenLibraryCoverUrl(catalogBook.title, catalogBook.author);
+        if (!coverUrl) continue;
+
+        setCatalogBooks((items) =>
+          items.map((item) => (item.id === catalogBook.id ? { ...item, cover_url: coverUrl } : item))
+        );
+        void supabase.from("books").update({ cover_url: coverUrl }).eq("id", catalogBook.id);
+      }
+    };
+
+    void hydrateMissingCovers();
+  }, [catalogBooks, user]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -472,6 +573,8 @@ function App() {
       }
 
       const parsed = await parseEpub(file);
+      const embeddedCoverUrl = parsed.coverUrl ? await shrinkCoverDataUrl(parsed.coverUrl) : "";
+      const coverUrl = embeddedCoverUrl || await getOpenLibraryCoverUrl(parsed.title, parsed.author);
       const id = crypto.randomUUID();
       const storagePath = `${user.id}/${id}/${safeFileName(file.name)}`;
 
@@ -487,6 +590,7 @@ function App() {
         user_id: user.id,
         title: parsed.title,
         author: parsed.author,
+        cover_url: coverUrl || null,
         storage_path: storagePath,
         file_name: file.name,
         file_size: file.size,
@@ -542,6 +646,12 @@ function App() {
       if (error) throw error;
       const file = new File([data], row.file_name, { type: row.mime_type || "application/epub+zip" });
       const parsed = await parseEpub(file);
+      if (!row.cover_url && parsed.coverUrl) {
+        const coverUrl = await shrinkCoverDataUrl(parsed.coverUrl);
+        row = { ...row, cover_url: coverUrl };
+        setCatalogBooks((items) => items.map((item) => (item.id === row.id ? row : item)));
+        void supabase.from("books").update({ cover_url: coverUrl }).eq("id", row.id);
+      }
       parsedBooks.current.set(row.id, parsed);
       openParsedBook(row, parsed);
     } catch (error) {
@@ -797,8 +907,22 @@ function App() {
                     onClick={() => void openBook(catalogBook)}
                     type="button"
                   >
-                    <BookOpen size={18} aria-hidden="true" />
-                    <span>
+                    <span className="catalog-cover-art">
+                      <span className="generated-cover" style={{ background: getBookHue(catalogBook) }}>
+                        <span>{getCoverInitials(catalogBook.title)}</span>
+                        <small>{catalogBook.title}</small>
+                      </span>
+                      {catalogBook.cover_url && (
+                        <img
+                          alt=""
+                          src={catalogBook.cover_url}
+                          onError={(event) => {
+                            event.currentTarget.style.display = "none";
+                          }}
+                        />
+                      )}
+                    </span>
+                    <span className="catalog-book-copy">
                       <strong>{catalogBook.title}</strong>
                       <small>
                         {catalogBook.author || catalogBook.file_name} · {formatBytes(catalogBook.file_size)}
