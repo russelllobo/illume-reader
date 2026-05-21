@@ -20,6 +20,7 @@ import { LandingPage } from "./LandingPage";
 
 
 type PlaybackState = "idle" | "playing" | "paused";
+type ReaderFontMode = "serif" | "sans";
 type SpeechHighlight = {
   end: number;
   paragraphId: string;
@@ -57,6 +58,7 @@ type BillingProfile = {
 };
 
 const EPUB_BUCKET = "epubs";
+const BOOK_CACHE_NAME = "epub-vision-reader-books-v1";
 const USER_STORAGE_QUOTA_BYTES = Number(
   import.meta.env.VITE_USER_STORAGE_QUOTA_BYTES ?? 104_857_600
 );
@@ -132,6 +134,9 @@ const authRedirectUrl = () => {
   return url.toString();
 };
 
+const initialReaderFontMode = (): ReaderFontMode =>
+  window.localStorage.getItem("reader-font-mode") === "sans" ? "sans" : "serif";
+
 const getOpenLibraryCoverUrl = async (title: string, author: string) => {
   const params = new URLSearchParams({
     title,
@@ -187,6 +192,59 @@ const shrinkCoverDataUrl = async (coverUrl: string) => {
   return canvas.toDataURL("image/jpeg", 0.84);
 };
 
+const bookCacheRequest = (bookId: string) =>
+  new Request(`${window.location.origin}/__book-cache/${encodeURIComponent(bookId)}`);
+
+const getCachedBookFile = async (row: BookRow) => {
+  if (!("caches" in window)) return null;
+
+  try {
+    const cache = await caches.open(BOOK_CACHE_NAME);
+    const response = await cache.match(bookCacheRequest(row.id));
+    if (!response) return null;
+
+    const blob = await response.blob();
+    if (row.file_size > 0 && blob.size !== row.file_size) {
+      await cache.delete(bookCacheRequest(row.id));
+      return null;
+    }
+
+    return new File([blob], row.file_name, { type: row.mime_type || blob.type || "application/epub+zip" });
+  } catch (error) {
+    console.warn("Could not read EPUB from browser cache.", error);
+    return null;
+  }
+};
+
+const cacheBookFile = async (row: BookRow, file: Blob) => {
+  if (!("caches" in window)) return;
+
+  try {
+    const cache = await caches.open(BOOK_CACHE_NAME);
+    await cache.put(
+      bookCacheRequest(row.id),
+      new Response(file, {
+        headers: {
+          "Content-Type": row.mime_type || file.type || "application/epub+zip"
+        }
+      })
+    );
+  } catch (error) {
+    console.warn("Could not store EPUB in browser cache.", error);
+  }
+};
+
+const deleteCachedBookFile = async (bookId: string) => {
+  if (!("caches" in window)) return;
+
+  try {
+    const cache = await caches.open(BOOK_CACHE_NAME);
+    await cache.delete(bookCacheRequest(bookId));
+  } catch (error) {
+    console.warn("Could not remove EPUB from browser cache.", error);
+  }
+};
+
 function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -200,6 +258,7 @@ function App() {
   const [book, setBook] = useState<ReaderBook | null>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [playback, setPlayback] = useState<PlaybackState>("idle");
+  const [readerFontMode, setReaderFontMode] = useState<ReaderFontMode>(initialReaderFontMode);
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [checkoutResult, setCheckoutResult] = useState<"success" | "canceled" | "">("");
@@ -301,6 +360,10 @@ function App() {
   }, [checkoutResult, user?.id]);
 
   useEffect(() => stopAudio, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("reader-font-mode", readerFontMode);
+  }, [readerFontMode]);
 
   useEffect(() => {
     if (playback !== "playing" || !current) return;
@@ -609,6 +672,7 @@ function App() {
 
       const row = data as BookRow;
       parsedBooks.current.set(row.id, parsed);
+      void cacheBookFile(row, file);
       setCatalogBooks((items) => [row, ...items]);
       openParsedBook(row, parsed, 0);
     } catch (error) {
@@ -642,9 +706,15 @@ function App() {
     setNotice("");
 
     try {
-      const { data, error } = await supabase.storage.from(EPUB_BUCKET).download(row.storage_path);
-      if (error) throw error;
-      const file = new File([data], row.file_name, { type: row.mime_type || "application/epub+zip" });
+      let file = await getCachedBookFile(row);
+
+      if (!file) {
+        const { data, error } = await supabase.storage.from(EPUB_BUCKET).download(row.storage_path);
+        if (error) throw error;
+        file = new File([data], row.file_name, { type: row.mime_type || "application/epub+zip" });
+        void cacheBookFile(row, file);
+      }
+
       const parsed = await parseEpub(file);
       if (!row.cover_url && parsed.coverUrl) {
         const coverUrl = await shrinkCoverDataUrl(parsed.coverUrl);
@@ -674,6 +744,7 @@ function App() {
     }
 
     await supabase.storage.from(EPUB_BUCKET).remove([row.storage_path]);
+    void deleteCachedBookFile(row.id);
     parsedBooks.current.delete(row.id);
     setCatalogBooks((items) => items.filter((item) => item.id !== row.id));
 
@@ -1000,7 +1071,7 @@ function App() {
             onScroll={handleReadingScroll}
             ref={readingSurfaceRef}
           >
-            <article className="reader-copy">
+            <article className={`reader-copy reader-font-${readerFontMode}`}>
               {book.paragraphs.map((paragraph, index) => {
                 const showChapterHeading =
                   index === 0 ||
@@ -1101,6 +1172,26 @@ function App() {
       </div>
 
       <footer className="control-rail">
+        <div className="font-mode-toggle" aria-label="Reader font">
+          <button
+            aria-pressed={readerFontMode === "serif"}
+            className={readerFontMode === "serif" ? "active" : ""}
+            onClick={() => setReaderFontMode("serif")}
+            title="Serif font"
+            type="button"
+          >
+            Serif
+          </button>
+          <button
+            aria-pressed={readerFontMode === "sans"}
+            className={readerFontMode === "sans" ? "active" : ""}
+            onClick={() => setReaderFontMode("sans")}
+            title="Sans-serif font"
+            type="button"
+          >
+            Sans
+          </button>
+        </div>
         <div className="transport">
           <button
             className="rail-icon"
