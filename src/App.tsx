@@ -401,14 +401,36 @@ function App() {
     if (progressSaveTimer.current !== null) window.clearTimeout(progressSaveTimer.current);
 
     progressSaveTimer.current = window.setTimeout(() => {
-      void supabase
-        .from("books")
-        .update({ current_index: currentIndex, last_opened_at: new Date().toISOString() })
-        .eq("id", activeBookId);
+      void saveReadingProgress(activeBookId, currentIndex);
     }, 600);
 
     return () => {
       if (progressSaveTimer.current !== null) window.clearTimeout(progressSaveTimer.current);
+    };
+  }, [activeBookId, book, currentIndex, view]);
+
+  useEffect(() => {
+    if (!activeBookId || !book || view !== "reader") return;
+
+    const flushProgress = () => {
+      if (progressSaveTimer.current !== null) {
+        window.clearTimeout(progressSaveTimer.current);
+        progressSaveTimer.current = null;
+      }
+
+      void saveReadingProgress(activeBookId, currentIndex);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") flushProgress();
+    };
+
+    window.addEventListener("beforeunload", flushProgress);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("beforeunload", flushProgress);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [activeBookId, book, currentIndex, view]);
 
@@ -438,6 +460,24 @@ function App() {
       .maybeSingle();
 
     if (!error) setBillingProfile(data as BillingProfile | null);
+  };
+
+  const saveReadingProgress = async (bookId: string, index: number) => {
+    const savedAt = new Date().toISOString();
+    const { error } = await supabase
+      .from("books")
+      .update({ current_index: index, last_opened_at: savedAt })
+      .eq("id", bookId);
+
+    if (error) return;
+
+    setCatalogBooks((items) =>
+      items.map((item) =>
+        item.id === bookId
+          ? { ...item, current_index: index, last_opened_at: savedAt, updated_at: savedAt }
+          : item
+      )
+    );
   };
 
   const clearSpeechFallback = () => {
@@ -812,6 +852,7 @@ function App() {
   const openCatalog = () => {
     stopAudio();
     setPlayback("idle");
+    if (activeBookId && book) void saveReadingProgress(activeBookId, currentIndex);
     setView("catalog");
   };
 
