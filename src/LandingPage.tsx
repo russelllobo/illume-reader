@@ -1,7 +1,7 @@
 import {
   ArrowRight,
   BookOpenText,
-  Image as ImageIcon,
+
   Loader2,
   LogIn,
   Mail,
@@ -12,6 +12,30 @@ import {
   X
 } from "lucide-react";
 import { FormEvent, useEffect, useLayoutEffect, useState } from "react";
+
+const CLASSIC_COVERS = [
+  "https://standardebooks.org/ebooks/jane-austen/pride-and-prejudice/downloads/cover-thumbnail.jpg",
+  "https://standardebooks.org/ebooks/mary-shelley/frankenstein/downloads/cover-thumbnail.jpg",
+  "https://standardebooks.org/ebooks/bram-stoker/dracula/downloads/cover-thumbnail.jpg",
+  "https://standardebooks.org/ebooks/f-scott-fitzgerald/the-great-gatsby/downloads/cover-thumbnail.jpg",
+  "https://standardebooks.org/ebooks/herman-melville/moby-dick/downloads/cover-thumbnail.jpg",
+  "https://standardebooks.org/ebooks/oscar-wilde/the-picture-of-dorian-gray/downloads/cover-thumbnail.jpg",
+  "https://standardebooks.org/ebooks/homer/the-odyssey/william-cullen-bryant/downloads/cover-thumbnail.jpg",
+  "https://standardebooks.org/ebooks/fyodor-dostoevsky/crime-and-punishment/constance-garnett/downloads/cover-thumbnail.jpg",
+  "https://standardebooks.org/ebooks/alexandre-dumas/the-count-of-monte-cristo/chapman-and-hall/downloads/cover-thumbnail.jpg"
+];
+
+function ClassicsWall() {
+  return (
+    <div className="classics-wall" aria-hidden="true">
+      <div className="classics-wall-grid">
+        {CLASSIC_COVERS.map((url, i) => (
+          <img key={i} src={url} alt="" />
+        ))}
+      </div>
+    </div>
+  );
+}
 
 interface LandingPageProps {
   handleAuth: (event: FormEvent<HTMLFormElement>) => Promise<void>;
@@ -82,7 +106,7 @@ function IllumeProductScreenshot({
   wpm: number;
 }) {
   return (
-    <div className="illume-screenshot-shell" aria-label="Illume image mode product screenshot">
+    <div className="illume-screenshot-shell" aria-label="illume image mode product screenshot">
       <div className="illume-screenshot-topbar">
         <div className="illume-window-dots" aria-hidden="true">
           <span />
@@ -90,14 +114,13 @@ function IllumeProductScreenshot({
           <span />
         </div>
         <span>Meditations / Book II</span>
-        <ImageIcon size={15} />
       </div>
 
       <div className="illume-reader-screenshot">
         <aside className="illume-screen-sidebar">
           <div className="illume-screen-logo">
             <img src="/landing/logo.jpeg" alt="" />
-            <span>Illume</span>
+            <span>illume</span>
           </div>
           <span className="illume-sidebar-active">Book II</span>
           <span>Notes</span>
@@ -121,10 +144,6 @@ function IllumeProductScreenshot({
             alt="Generated visual for a passage about shared humanity"
             className={activeVisualIndex === 1 ? "active" : ""}
           />
-          <div className="illume-image-status">
-            <Sparkles size={14} />
-            <span>Image ready</span>
-          </div>
         </div>
       </div>
 
@@ -241,29 +260,22 @@ export function LandingPage({
   const activeVisualIndex = currentWordIndex < Math.floor(readerWords.length * 0.55) ? 0 : 1;
 
   return (
-    <div className="landing-theme illume-theme">
+    <div className="illume-theme">
       <header className="illume-header">
-        <a href="#" className="illume-brand" aria-label="Illume home">
-          <span>Illume</span>
+        <a href="#" className="illume-brand" aria-label="illume home">
+          <img src="/landing/logo.jpeg" alt="" className="illume-brand-mark" />
+          <span>illume</span>
         </a>
-        <div className="illume-header-actions">
-          <nav className="illume-nav" aria-label="Primary navigation">
-            <a href="#product">Image mode</a>
-            <a href="#library">Library</a>
-          </nav>
-          <button onClick={() => handleOpenAuth("sign-in")} className="illume-sign-in-button" type="button">
-            <LogIn size={15} />
-            <span>Sign in</span>
-          </button>
-        </div>
+        <button onClick={() => handleOpenAuth("sign-in")} className="illume-sign-in-button" type="button">
+          <LogIn size={15} />
+          <span>Sign in</span>
+        </button>
       </header>
 
       <main>
         <section id="product" className="illume-hero">
           <div className="illume-hero-copy">
-            <img src="/landing/logo.jpeg" alt="" className="illume-hero-mark" />
-            <p className="illume-kicker">Narrated EPUBs with image mode</p>
-            <h1>Illume</h1>
+            <h1>Make reading immersive</h1>
             <p className="illume-hero-line">
               Get more immersed in every chapter with narration, word tracking, and visuals that help you stay with the book longer.
             </p>
@@ -272,9 +284,6 @@ export function LandingPage({
                 <span>Read more books</span>
                 <ArrowRight size={16} />
               </button>
-              <a href="#product" className="illume-secondary-link">
-                See image mode
-              </a>
             </div>
           </div>
 
@@ -292,14 +301,19 @@ export function LandingPage({
         </section>
 
         <section id="library" className="illume-detail-section">
-          <div>
-            <span className="illume-section-label">Private library</span>
-            <h2>More focus. More chapters. More finished books.</h2>
+          <div className="illume-detail-left">
+            <div className="illume-detail-header">
+              <span className="illume-section-label">Private library</span>
+              <h2>More focus. More chapters. More finished books.</h2>
+            </div>
+            <div className="illume-feature-lines">
+              <p><BookOpenText size={18} /> Upload your EPUBs and pick up exactly where immersion broke last time.</p>
+              <p><Volume2 size={18} /> Hear natural narration while the current words stay lit on the page.</p>
+              <p><Sparkles size={18} /> Use image mode to make dense chapters feel easier to stay inside.</p>
+            </div>
           </div>
-          <div className="illume-feature-lines">
-            <p><BookOpenText size={18} /> Upload your EPUBs and pick up exactly where immersion broke last time.</p>
-            <p><Volume2 size={18} /> Hear natural narration while the current words stay lit on the page.</p>
-            <p><Sparkles size={18} /> Use image mode to make dense chapters feel easier to stay inside.</p>
+          <div className="illume-detail-right">
+            <ClassicsWall />
           </div>
         </section>
 
@@ -320,12 +334,10 @@ export function LandingPage({
         <div className="illume-footer-brand">
           <img src="/landing/logo.jpeg" alt="" aria-hidden="true" />
           <span className="illume-footer-copy">
-            <span className="illume-footer-name">Illume</span>
-            <span className="illume-footer-origin">Crafted with ❤️ in London</span>
+            <span className="illume-footer-name">illume</span>
+            <span className="illume-footer-origin">Made in London</span>
           </span>
         </div>
-        <a href="#product">Image mode</a>
-        <a href="#library">Library</a>
       </footer>
 
       {isAuthOpen && (
@@ -350,10 +362,10 @@ export function LandingPage({
                 {authPane === "choice"
                   ? authMode === "sign-in"
                     ? "Choose how you want to get back to your books."
-                    : "Choose how you want to start reading with Illume."
+                    : "Choose how you want to start reading with illume."
                   : authMode === "sign-in"
                     ? "Enter your email and password to keep reading."
-                    : "Add an email and password for your Illume library."}
+                    : "Add an email and password for your illume library."}
               </p>
             </div>
 
