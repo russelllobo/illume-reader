@@ -201,12 +201,41 @@ button:disabled {
 }
 
 .image-mode-frame {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(160px, 220px) minmax(0, 1fr);
   background: #070809;
 }
 
 .image-mode-frame .chapter-sidebar {
-  display: none;
+  border-right-color: #1c2024;
+  background: #070809;
+  opacity: 0.28;
+  transition: opacity 0.18s ease;
+}
+
+.image-mode-frame .chapter-sidebar:hover,
+.image-mode-frame .chapter-sidebar:focus-within {
+  opacity: 1;
+}
+
+.image-mode-frame .chapter-heading {
+  color: #f4f7f5;
+}
+
+.image-mode-frame .chapter-list {
+  scrollbar-color: #5f6870 transparent;
+}
+
+.image-mode-frame .chapter-item {
+  color: #737b82;
+}
+
+.image-mode-frame .chapter-item:hover,
+.image-mode-frame .chapter-item:focus-visible {
+  color: #f4f7f5;
+}
+
+.image-mode-frame .chapter-item.active {
+  color: #fff;
 }
 
 .chapter-sidebar {
