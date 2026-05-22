@@ -1,16 +1,17 @@
 import {
   ArrowRight,
-  BookOpen,
-  Bookmark,
-  Brain,
+  BookOpenText,
+  Image as ImageIcon,
   Loader2,
-  Play,
+  LogIn,
+  Mail,
   Pause,
+  Play,
   Sparkles,
-  X,
-  Target
+  Volume2,
+  X
 } from "lucide-react";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useLayoutEffect, useState } from "react";
 
 interface LandingPageProps {
   handleAuth: (event: FormEvent<HTMLFormElement>) => Promise<void>;
@@ -25,15 +26,144 @@ interface LandingPageProps {
   notice: string;
 }
 
-const passageWords = [
-  "Begin", "each", "day", "by", "telling", "yourself:", "today", "I",
-  "shall", "meet", "interference,", "ingratitude,", "insolence,", "disloyalty,",
-  "ill-will,", "and", "selfishness.", "All", "of", "them", "come", "from",
-  "ignorance", "of", "what", "is", "good", "and", "evil.", "But", "I",
-  "have", "seen", "the", "beauty", "of", "good,", "and", "the", "ugliness",
-  "of", "evil,", "and", "know", "that", "the", "wrongdoer", "has", "a",
-  "nature", "related", "to", "my", "own."
+const readerParagraphs = [
+  "Begin each day by telling yourself: today I shall meet interference, ingratitude, insolence, disloyalty, ill-will, and selfishness. All of them come from ignorance of what is good and evil.",
+  "But I have seen the beauty of good, and the ugliness of evil, and know that the wrongdoer has a nature related to my own. Not of the same blood or birth, but the same mind.",
+  "None of them can hurt me. No one can implicate me in ugliness. We were born to work together, like hands, feet, and eyes, so return to the page and stay with it."
 ];
+
+const readerWords = readerParagraphs.flatMap((paragraph) => paragraph.split(/\s+/));
+
+function IllumeReaderText({ currentWordIndex }: { currentWordIndex: number }) {
+  let wordOffset = 0;
+
+  return (
+    <>
+      {readerParagraphs.map((paragraph) => {
+        const words = paragraph.split(/\s+/);
+        const paragraphStart = wordOffset;
+        wordOffset += words.length;
+
+        return (
+          <p key={paragraphStart}>
+            {words.map((word, idx) => {
+              const absoluteIdx = paragraphStart + idx;
+
+              return (
+                <span key={`${paragraphStart}-${word}-${idx}`}>
+                  <span className={absoluteIdx === currentWordIndex ? "illume-word active" : "illume-word"}>
+                    {word}
+                  </span>{" "}
+                </span>
+              );
+            })}
+          </p>
+        );
+      })}
+    </>
+  );
+}
+
+function IllumeProductScreenshot({
+  activeVisualIndex,
+  currentPercent,
+  currentWordIndex,
+  isPlaying,
+  setIsPlaying,
+  setWpm,
+  wpm
+}: {
+  activeVisualIndex: number;
+  currentPercent: number;
+  currentWordIndex: number;
+  isPlaying: boolean;
+  setIsPlaying: (updater: (value: boolean) => boolean) => void;
+  setWpm: (updater: (value: number) => number) => void;
+  wpm: number;
+}) {
+  return (
+    <div className="illume-screenshot-shell" aria-label="Illume image mode product screenshot">
+      <div className="illume-screenshot-topbar">
+        <div className="illume-window-dots" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </div>
+        <span>Meditations / Book II</span>
+        <ImageIcon size={15} />
+      </div>
+
+      <div className="illume-reader-screenshot">
+        <aside className="illume-screen-sidebar">
+          <div className="illume-screen-logo">
+            <img src="/landing/logo.jpeg" alt="" />
+            <span>Illume</span>
+          </div>
+          <span className="illume-sidebar-active">Book II</span>
+          <span>Notes</span>
+          <span>Images</span>
+        </aside>
+
+        <div className="illume-screen-page">
+          <div className="illume-screen-meta">Marcus Aurelius / 18%</div>
+          <h3>Morning Reflection</h3>
+          <IllumeReaderText currentWordIndex={currentWordIndex} />
+        </div>
+
+        <div className="illume-screen-image">
+          <img
+            src="/landing/marcus-meet-the-day.webp"
+            alt="Generated visual for a passage about meeting the day"
+            className={activeVisualIndex === 0 ? "active" : ""}
+          />
+          <img
+            src="/landing/marcus-shared-nature.webp"
+            alt="Generated visual for a passage about shared humanity"
+            className={activeVisualIndex === 1 ? "active" : ""}
+          />
+          <div className="illume-image-status">
+            <Sparkles size={14} />
+            <span>Image ready</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="illume-player">
+        <button
+          onClick={() => setIsPlaying((value) => !value)}
+          className="illume-play-button"
+          title={isPlaying ? "Pause" : "Play"}
+          type="button"
+        >
+          {isPlaying ? <Pause size={15} fill="currentColor" /> : <Play size={15} fill="currentColor" />}
+        </button>
+        <Volume2 size={16} />
+        <div className="illume-progress">
+          <span style={{ width: `${currentPercent}%` }} />
+        </div>
+        <button
+          onClick={() => setWpm((value) => Math.max(150, value - 25))}
+          className="illume-speed-button"
+          disabled={wpm <= 150}
+          type="button"
+          title="Decrease speed"
+        >
+          -
+        </button>
+        <span className="illume-speed">{wpm} WPM</span>
+        <button
+          onClick={() => setWpm((value) => Math.min(600, value + 25))}
+          className="illume-speed-button"
+          disabled={wpm >= 600}
+          type="button"
+          title="Increase speed"
+        >
+          +
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function GoogleIcon() {
   return (
@@ -74,540 +204,193 @@ export function LandingPage({
   const [isPlaying, setIsPlaying] = useState(true);
   const [currentWordIndex, setCurrentWordIndex] = useState(0);
   const [wpm, setWpm] = useState(275);
+  const [authPane, setAuthPane] = useState<"choice" | "email">("choice");
 
-  // Interval timer for simulated word tracking
+  useLayoutEffect(() => {
+    document.documentElement.classList.add("landing-scroll");
+    document.body.classList.add("landing-scroll");
+
+    return () => {
+      document.documentElement.classList.remove("landing-scroll");
+      document.body.classList.remove("landing-scroll");
+    };
+  }, []);
+
   useEffect(() => {
     if (!isPlaying) return;
 
-    const intervalMs = Math.round(60000 / wpm);
+    const timer = window.setInterval(() => {
+      setCurrentWordIndex((prev) => (prev >= readerWords.length - 1 ? 0 : prev + 1));
+    }, Math.max(360, Math.round(60000 / wpm)));
 
-    const timer = setInterval(() => {
-      setCurrentWordIndex((prev) => {
-        if (prev >= passageWords.length - 1) {
-          return 0; // loop back to start
-        }
-        return prev + 1;
-      });
-    }, intervalMs);
-
-    return () => clearInterval(timer);
+    return () => window.clearInterval(timer);
   }, [isPlaying, wpm]);
-
-  const handleWpmDecrease = () => {
-    setWpm((prev) => Math.max(150, prev - 25));
-  };
-
-  const handleWpmIncrease = () => {
-    setWpm((prev) => Math.min(600, prev + 25));
-  };
-
-  const toggleDemo = () => {
-    if (!isPlaying && currentWordIndex === -1) {
-      setCurrentWordIndex(0);
-    }
-    setIsPlaying(!isPlaying);
-  };
 
   const handleOpenAuth = (mode: "sign-in" | "sign-up") => {
     setAuthMode(mode);
+    setAuthPane("choice");
     setIsAuthOpen(true);
   };
 
   const handleCloseAuth = () => {
+    setAuthPane("choice");
     setIsAuthOpen(false);
   };
 
-  const currentPercent = currentWordIndex >= 0 
-    ? Math.round(((currentWordIndex + 1) / passageWords.length) * 100) 
-    : 0;
-  const activeVisualIndex = currentWordIndex < 34 ? 0 : 1;
+  const currentPercent = Math.round(((currentWordIndex + 1) / readerWords.length) * 100);
+  const activeVisualIndex = currentWordIndex < Math.floor(readerWords.length * 0.55) ? 0 : 1;
 
   return (
-    <div className="landing-theme">
-      <div className="landing-wrapper">
-        {/* Navigation Header */}
-        <header className="landing-header">
-          <a href="#" className="landing-logo">
-            <BookOpen className="landing-logo-icon" size={24} />
-            <span>reader</span>
-          </a>
-          <nav className="landing-nav">
-            <div className="landing-nav-links" style={{ display: "flex", gap: "24px" }}>
-              <a href="#features" className="landing-nav-link">Features</a>
-              <a href="#comparison" className="landing-nav-link">How It Works</a>
-              <a href="#testimonials" className="landing-nav-link">Pricing</a>
-            </div>
-            <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-              <button 
-                onClick={() => handleOpenAuth("sign-in")} 
-                className="btn-secondary" 
-                style={{ height: "38px", padding: "0 16px", fontSize: "0.85rem" }}
-              >
-                Sign In
-              </button>
-              <button 
-                onClick={() => handleOpenAuth("sign-up")} 
-                className="btn-primary" 
-                style={{ height: "38px", padding: "0 16px", fontSize: "0.85rem", boxShadow: "none" }}
-              >
-                Get Started Free
-              </button>
-            </div>
+    <div className="landing-theme illume-theme">
+      <header className="illume-header">
+        <a href="#" className="illume-brand" aria-label="Illume home">
+          <span>Illume</span>
+        </a>
+        <div className="illume-header-actions">
+          <nav className="illume-nav" aria-label="Primary navigation">
+            <a href="#product">Image mode</a>
+            <a href="#library">Library</a>
           </nav>
-        </header>
+          <button onClick={() => handleOpenAuth("sign-in")} className="illume-sign-in-button" type="button">
+            <LogIn size={15} />
+            <span>Sign in</span>
+          </button>
+        </div>
+      </header>
 
-        {/* Hero Section */}
-        <main className="landing-hero">
-          <div className="hero-content">
-            <div className="hero-badge">
-              <span>★ Built for curious, lifelong learners</span>
-            </div>
-            <h1 className="hero-title">
-              The Smarter Way<br />
-              to <span>Read More Books</span>
-            </h1>
-            <p className="hero-desc">
-              A reading app that narrates your books, tracks the words as you listen, and pairs the text with immersive visuals so every chapter feels easier to enter.
+      <main>
+        <section id="product" className="illume-hero">
+          <div className="illume-hero-copy">
+            <img src="/landing/logo.jpeg" alt="" className="illume-hero-mark" />
+            <p className="illume-kicker">Narrated EPUBs with image mode</p>
+            <h1>Illume</h1>
+            <p className="illume-hero-line">
+              Get more immersed in every chapter with narration, word tracking, and visuals that help you stay with the book longer.
             </p>
-            <div className="hero-actions">
-              <button onClick={() => handleOpenAuth("sign-up")} className="btn-primary">
-                <span>Get Started Free</span>
+            <div className="illume-actions">
+              <button onClick={() => handleOpenAuth("sign-up")} className="illume-primary-button" type="button">
+                <span>Read more books</span>
                 <ArrowRight size={16} />
               </button>
-              <button onClick={toggleDemo} className="btn-secondary">
-                <span>See How It Works</span>
-                <Play size={14} />
-              </button>
-            </div>
-            <div className="hero-ratings-row">
-              <div className="rating-avatars">
-                <img src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&h=100&q=80" alt="User avatar" className="rating-avatar" />
-                <img src="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=100&h=100&q=80" alt="User avatar" className="rating-avatar" />
-                <img src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=100&h=100&q=80" alt="User avatar" className="rating-avatar" />
-                <img src="https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=100&h=100&q=80" alt="User avatar" className="rating-avatar" />
-              </div>
-              <div className="rating-text">
-                <span className="rating-stars">★★★★★ </span>
-                <span>Join 1,000+ readers building a more immersive reading habit</span>
-              </div>
+              <a href="#product" className="illume-secondary-link">
+                See image mode
+              </a>
             </div>
           </div>
 
-          <div className="mock-browser-container">
-            <div className="mock-browser">
-              <div className="mock-chrome">
-                <div className="chrome-dots">
-                  <div className="chrome-dot red" />
-                  <div className="chrome-dot yellow" />
-                  <div className="chrome-dot green" />
-                </div>
-                <div className="chrome-address-bar">reader.app</div>
-                <div className="chrome-actions">
-                  <span style={{ fontSize: "0.75rem", fontWeight: 600, color: "var(--text-muted)", cursor: "pointer" }}>Aa</span>
-                </div>
-              </div>
-              <div className="mock-browser-screen">
-                <aside className="mock-sidebar">
-                  <div className="mock-sidebar-brand">
-                    <BookOpen size={12} className="landing-logo-icon" />
-                    <span>reader</span>
-                  </div>
-                  <div className="mock-sidebar-list">
-                    <div className="mock-sidebar-item"><BookOpen size={10} /> <span>Contents</span></div>
-                    <div className="mock-sidebar-item active"><BookOpen size={10} /> <span>Book I</span></div>
-                    <div className="mock-sidebar-item"><BookOpen size={10} /> <span>Book II</span></div>
-                    <div className="mock-sidebar-item"><BookOpen size={10} /> <span>Book III</span></div>
-                    <div className="mock-sidebar-item"><BookOpen size={10} /> <span>Notes</span></div>
-                  </div>
-                </aside>
-                
-                <div className="mock-content-panel">
-                  <div className="mock-book-header">
-                    <span>Meditations — Marcus Aurelius</span>
-                    <span>Book II (18%)</span>
-                  </div>
-                  <h3 style={{ fontFamily: "var(--font-serif)", fontSize: "1.1rem", fontWeight: 700, margin: "14px 0 6px", color: "var(--text-primary)" }}>
-                    Morning Reflection
-                  </h3>
-                  <div className="mock-book-paragraph">
-                    {passageWords.slice(0, 31).map((word, idx) => {
-                      const absoluteIdx = idx;
-                      return (
-                        <span
-                          key={absoluteIdx}
-                          className={`mock-word ${absoluteIdx === currentWordIndex ? "highlighted" : ""}`}
-                        >
-                          {word}
-                        </span>
-                      );
-                    })}
-                  </div>
-                  <div className="mock-book-paragraph" style={{ marginTop: "12px" }}>
-                    {passageWords.slice(31, 46).map((word, idx) => {
-                      const absoluteIdx = 31 + idx;
-                      return (
-                        <span
-                          key={absoluteIdx}
-                          className={`mock-word ${absoluteIdx === currentWordIndex ? "highlighted" : ""}`}
-                        >
-                          {word}
-                        </span>
-                      );
-                    })}
-                  </div>
-                  <div className="mock-book-paragraph" style={{ marginTop: "12px" }}>
-                    {passageWords.slice(46, 60).map((word, idx) => {
-                      const absoluteIdx = 46 + idx;
-                      return (
-                        <span
-                          key={absoluteIdx}
-                          className={`mock-word ${absoluteIdx === currentWordIndex ? "highlighted" : ""}`}
-                        >
-                          {word}
-                        </span>
-                      );
-                    })}
-                  </div>
-
-                </div>
-
-                <div className="mock-right-panel">
-                  <div className="visual-stage">
-                    <img
-                      src="/landing/marcus-meet-the-day.webp"
-                      alt="AI-generated cartoon visual of Marcus Aurelius preparing to meet the day"
-                      className={`visual-panel-image ${activeVisualIndex === 0 ? "active" : ""}`}
-                    />
-                    <img
-                      src="/landing/marcus-shared-nature.webp"
-                      alt="AI-generated cartoon visual of Marcus Aurelius recognizing shared humanity"
-                      className={`visual-panel-image ${activeVisualIndex === 1 ? "active" : ""}`}
-                    />
-                    <div className="visual-magic">
-                      <Sparkles size={12} />
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="mock-rail">
-                <div className="mock-progress-container">
-                  <button onClick={toggleDemo} className="mock-btn-play" title={isPlaying ? "Pause" : "Play"} type="button">
-                    {isPlaying ? <Pause size={13} fill="currentColor" /> : <Play size={13} fill="currentColor" />}
-                  </button>
-                  <div className={`soundwave-container ${isPlaying ? "playing" : ""}`} title="Active Audio Sync">
-                    <div className="soundwave-bar" />
-                    <div className="soundwave-bar" />
-                    <div className="soundwave-bar" />
-                    <div className="soundwave-bar" />
-                    <div className="soundwave-bar" />
-                  </div>
-                  <div className="mock-progress-bar">
-                    <div 
-                      className="mock-progress-fill" 
-                      style={{ width: `${currentPercent}%` }} 
-                    />
-                  </div>
-                  <span className="mock-progress-time">{currentPercent}%</span>
-                </div>
-                <div className="mock-controls">
-                  <div className="wpm-stepper">
-                    <button 
-                      onClick={handleWpmDecrease} 
-                      className="wpm-btn" 
-                      disabled={wpm <= 150} 
-                      title="Decrease Speed"
-                      type="button"
-                    >
-                      −
-                    </button>
-                    <span className="wpm-value">{wpm} WPM</span>
-                    <button 
-                      onClick={handleWpmIncrease} 
-                      className="wpm-btn" 
-                      disabled={wpm >= 600} 
-                      title="Increase Speed"
-                      type="button"
-                    >
-                      +
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </main>
-
-        {/* Features Grid Section */}
-        <section id="features" className="science-section">
-          <div className="science-header">
-            <div className="section-badge">Why readers love reader</div>
-            <h2 className="section-title">Everything you need to stay inside the book</h2>
-          </div>
-          <div className="science-grid">
-            <div className="science-card">
-              <div className="card-icon-box blue">
-                <BookOpen size={22} />
-              </div>
-              <h3 className="card-title">Active Reading</h3>
-              <p className="card-desc">
-                Follow along as narration highlights the exact words being read, so your eyes and ears stay in sync.
-              </p>
-            </div>
-            <div className="science-card">
-              <div className="card-icon-box purple">
-                <Brain size={22} />
-              </div>
-              <h3 className="card-title">Immersive Visuals</h3>
-              <p className="card-desc">
-                Pair chapters with atmospheric images that make setting, tone, and ideas easier to feel.
-              </p>
-            </div>
-            <div className="science-card">
-              <div className="card-icon-box green">
-                <Target size={22} />
-              </div>
-              <h3 className="card-title">Reading Progress</h3>
-              <p className="card-desc">
-                Keep your library, current position, and pace synced so it is simple to return to any book.
-              </p>
-            </div>
-            <div className="science-card">
-              <div className="card-icon-box orange">
-                <Bookmark size={22} />
-              </div>
-              <h3 className="card-title">Private EPUB Library</h3>
-              <p className="card-desc">
-                Upload your own EPUBs and read them in a focused, narration-first space.
-              </p>
-            </div>
+          <div className="illume-hero-product">
+            <IllumeProductScreenshot
+              activeVisualIndex={activeVisualIndex}
+              currentPercent={currentPercent}
+              currentWordIndex={currentWordIndex}
+              isPlaying={isPlaying}
+              setIsPlaying={setIsPlaying}
+              setWpm={setWpm}
+              wpm={wpm}
+            />
           </div>
         </section>
 
-        {/* Comparison Bento Section */}
-        <section id="comparison" className="comparison-section">
-          <div className="science-header">
-            <h2 className="section-title">Passive Reading vs. Immersive Reading</h2>
+        <section id="library" className="illume-detail-section">
+          <div>
+            <span className="illume-section-label">Private library</span>
+            <h2>More focus. More chapters. More finished books.</h2>
           </div>
-          <div className="comparison-bento">
-            <div className="comp-card">
-              <div className="comp-card-header">
-                <h3>Passive Reading</h3>
-                <p>Easy to start. Easy to forget.</p>
-              </div>
-              <div className="comp-visual">
-                {/* SVG outline illustration of passive reading */}
-                <svg width="180" height="90" viewBox="0 0 180 90" fill="none" style={{ opacity: 0.6 }}>
-                  <path d="M40 70C55 70 70 65 70 50C70 35 55 30 40 30" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" />
-                  <circle cx="40" cy="20" r="8" stroke="var(--text-muted)" strokeWidth="2" />
-                  <path d="M120 60C110 50 115 40 125 45" stroke="var(--text-muted)" strokeWidth="1.5" strokeDasharray="3 3" />
-                  <circle cx="135" cy="40" r="10" stroke="var(--text-muted)" strokeWidth="1.5" strokeDasharray="3 3" />
-                </svg>
-              </div>
-              <div className="comp-bullet-list">
-                <div className="comp-bullet">
-                  <div className="bullet-icon cross">✕</div>
-                  <div className="bullet-text">Skim without focus</div>
-                </div>
-                <div className="comp-bullet">
-                  <div className="bullet-icon cross">✕</div>
-                  <div className="bullet-text">Forget most within days</div>
-                </div>
-                <div className="comp-bullet">
-                  <div className="bullet-icon cross">✕</div>
-                  <div className="bullet-text">No connection to your life</div>
-                </div>
-                <div className="comp-bullet">
-                  <div className="bullet-icon cross">✕</div>
-                  <div className="bullet-text">Hard to build a habit</div>
-                </div>
-              </div>
-            </div>
-
-            <div className="bento-vs">VS</div>
-
-            <div className="comp-card active-reading">
-              <div className="comp-card-header">
-                <h3 style={{ color: "var(--accent-cobalt)" }}>Immersive Reading</h3>
-                <p>Narrated, visual, and easy to keep following.</p>
-              </div>
-              <div className="comp-visual">
-                {/* SVG outline illustration of active reading */}
-                <div className="sparkle-illustration">
-                  <div className="sparkle-box">
-                    <Sparkles size={16} style={{ color: "var(--accent-cobalt)" }} />
-                  </div>
-                  <svg width="120" height="90" viewBox="0 0 120 90" fill="none">
-                    <circle cx="60" cy="35" r="12" stroke="var(--accent-cobalt)" strokeWidth="2" />
-                    <path d="M30 65C45 65 60 60 60 45" stroke="var(--accent-cobalt)" strokeWidth="2" />
-                    <path d="M60 45C75 45 90 60 90 65" stroke="var(--accent-cobalt)" strokeWidth="2" />
-                    <line x1="60" y1="12" x2="60" y2="20" stroke="var(--accent-amber)" strokeWidth="2" strokeLinecap="round" />
-                    <line x1="42" y1="20" x2="48" y2="25" stroke="var(--accent-amber)" strokeWidth="2" strokeLinecap="round" />
-                    <line x1="78" y1="20" x2="72" y2="25" stroke="var(--accent-amber)" strokeWidth="2" strokeLinecap="round" />
-                  </svg>
-                </div>
-              </div>
-              <div className="comp-bullet-list">
-                <div className="comp-bullet">
-                  <div className="bullet-icon check">✓</div>
-                  <div className="bullet-text">Stay engaged and focused</div>
-                </div>
-                <div className="comp-bullet">
-                  <div className="bullet-icon check">✓</div>
-                  <div className="bullet-text">Hear natural narration</div>
-                </div>
-                <div className="comp-bullet">
-                  <div className="bullet-icon check">✓</div>
-                  <div className="bullet-text">See visuals that match the text</div>
-                </div>
-                <div className="comp-bullet">
-                  <div className="bullet-icon check">✓</div>
-                  <div className="bullet-text">Pick up where you left off</div>
-                </div>
-              </div>
-            </div>
+          <div className="illume-feature-lines">
+            <p><BookOpenText size={18} /> Upload your EPUBs and pick up exactly where immersion broke last time.</p>
+            <p><Volume2 size={18} /> Hear natural narration while the current words stay lit on the page.</p>
+            <p><Sparkles size={18} /> Use image mode to make dense chapters feel easier to stay inside.</p>
           </div>
         </section>
 
-        {/* Testimonials & Social Proof Section */}
-        <section id="testimonials" className="benefits-section">
-          <div className="science-header">
-            <div className="section-badge">Loved by readers everywhere</div>
-            <h2 className="section-title">Real results from real readers</h2>
+        <section id="pricing" className="illume-final-cta">
+          <img src="/landing/logo.jpeg" alt="" aria-hidden="true" />
+          <div>
+            <span className="illume-section-label">Start reading</span>
+            <h2>Read deeper. Finish more.</h2>
           </div>
-          
-          <div className="testimonials-grid">
-            <div className="testimonial-card">
-              <p className="testimonial-quote">
-                The narration keeps me moving through dense chapters, and the word tracking stops me drifting off.
-              </p>
-              <div className="testimonial-user">
-                <img src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=80&h=80&q=80" alt="Sarah K." className="rating-avatar" style={{ marginLeft: 0 }} />
-                <div className="testimonial-user-info">
-                  <h4>Sarah K.</h4>
-                  <p>Product Manager</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="testimonial-card">
-              <p className="testimonial-quote">
-                reader makes my EPUB library feel alive. The visuals give each book a sense of place without getting in the way.
-              </p>
-              <div className="testimonial-user">
-                <img src="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=80&h=80&q=80" alt="Michael T." className="rating-avatar" style={{ marginLeft: 0 }} />
-                <div className="testimonial-user-info">
-                  <h4>Michael T.</h4>
-                  <p>Entrepreneur</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="testimonial-card">
-              <p className="testimonial-quote">
-                I can listen, read, and follow the same passage at once. It is especially good for classics I used to bounce off.
-              </p>
-              <div className="testimonial-user">
-                <img src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=80&h=80&q=80" alt="Priya S." className="rating-avatar" style={{ marginLeft: 0 }} />
-                <div className="testimonial-user-info">
-                  <h4>Priya S.</h4>
-                  <p>Student</p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="trusted-brand-strip">
-            <div className="trusted-brand-title">Trusted by readers from</div>
-            <div className="trusted-brand-logos">
-              <div className="brand-logo-item">Google</div>
-              <div className="brand-logo-item">Notion</div>
-              <div className="brand-logo-item">Microsoft</div>
-              <div className="brand-logo-item">Coursera</div>
-              <div className="brand-logo-item">Amazon</div>
-              <div className="brand-logo-item">Spotify</div>
-            </div>
-          </div>
+          <button onClick={() => handleOpenAuth("sign-up")} className="illume-primary-button" type="button">
+            <span>Get started free</span>
+            <ArrowRight size={16} />
+          </button>
         </section>
+      </main>
 
-        {/* CTA Banner Section */}
-        <section className="cta-banner">
-          <div className="cta-content">
-            <h2 className="cta-title">Ready to make reading<br />feel more immersive?</h2>
-            <p className="cta-desc">
-              Join 1,000+ readers using narration, visual context, and synced progress to spend more time with their books.
-            </p>
-          </div>
-          <div className="cta-actions">
-            <button onClick={() => handleOpenAuth("sign-up")} className="btn-cta-white" type="button">
-              <span>Get Started Free</span>
-              <ArrowRight size={16} />
+      <footer className="illume-footer">
+        <div className="illume-footer-brand">
+          <img src="/landing/logo.jpeg" alt="" aria-hidden="true" />
+          <span className="illume-footer-copy">
+            <span className="illume-footer-name">Illume</span>
+            <span className="illume-footer-origin">Crafted with ❤️ in London</span>
+          </span>
+        </div>
+        <a href="#product">Image mode</a>
+        <a href="#library">Library</a>
+      </footer>
+
+      {isAuthOpen && (
+        <div className="auth-modal-overlay" onClick={handleCloseAuth}>
+          <div className="auth-modal-card illume-auth-card" onClick={(e) => e.stopPropagation()}>
+            <button className="auth-modal-close" onClick={handleCloseAuth} title="Close" type="button">
+              <X size={16} />
             </button>
-            <a href="#features" className="btn-cta-link">
-              <span>See all features</span>
-              <ArrowRight size={14} />
-            </a>
-          </div>
-        </section>
 
-        {/* Footer Section */}
-        <footer id="footer" className="landing-footer">
-          <div className="footer-container">
-            <div className="footer-brand">
-              <div className="footer-brand-logo">
-                <BookOpen size={20} className="landing-logo-icon" />
-                <span>reader</span>
-              </div>
-              <p className="footer-brand-desc">
-                A narrated, visual reading app for your personal EPUB library.
+            <div className="auth-modal-header">
+              <img src="/landing/logo.jpeg" alt="" className="illume-auth-logo" />
+              <h2>
+                {authPane === "choice"
+                  ? authMode === "sign-in"
+                    ? "Sign in with email or Google"
+                    : "Create your library"
+                  : authMode === "sign-in"
+                    ? "Sign in with email"
+                    : "Create account with email"}
+              </h2>
+              <p>
+                {authPane === "choice"
+                  ? authMode === "sign-in"
+                    ? "Choose how you want to get back to your books."
+                    : "Choose how you want to start reading with Illume."
+                  : authMode === "sign-in"
+                    ? "Enter your email and password to keep reading."
+                    : "Add an email and password for your Illume library."}
               </p>
             </div>
 
-            <div className="footer-col">
-              <span className="footer-col-title">Product</span>
-              <div className="footer-col-links">
-                <a href="#" className="footer-col-link">Features</a>
-                <a href="#" className="footer-col-link">How It Works</a>
-                <a href="#" className="footer-col-link">Pricing</a>
+            {authPane === "choice" ? (
+              <div className="auth-choice-pane">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setAuthPane("email")}
+                  className="auth-oauth-btn auth-choice-btn"
+                >
+                  <Mail size={18} />
+                  <span>{authMode === "sign-in" ? "Sign in with email" : "Sign up with email"}</span>
+                </button>
+
+                <button type="button" disabled={busy} onClick={signInWithGoogle} className="auth-oauth-btn auth-choice-btn">
+                  <GoogleIcon />
+                  <span>Continue with Google</span>
+                </button>
               </div>
-            </div>
+            ) : (
+              <form className="auth-modal-form" onSubmit={(event) => void handleAuth(event)}>
+                <button type="button" className="auth-back-btn" onClick={() => setAuthPane("choice")}>
+                  Back to options
+                </button>
 
-          </div>
-        </footer>
-
-        {/* Elegant Blur Auth Modal */}
-        {isAuthOpen && (
-          <div className="auth-modal-overlay" onClick={handleCloseAuth}>
-            <div className="auth-modal-card" onClick={(e) => e.stopPropagation()}>
-              <button className="auth-modal-close" onClick={handleCloseAuth} title="Close" type="button">
-                <X size={16} />
-              </button>
-              
-              <div className="auth-modal-header">
-                <div className="card-icon-box blue" style={{ marginBottom: "12px", width: "42px", height: "42px" }}>
-                  <Bookmark size={20} />
-                </div>
-                <h2>{authMode === "sign-in" ? "Welcome Back" : "Create Your Library"}</h2>
-                <p>
-                  {authMode === "sign-in" 
-                    ? "Log in to access your personal digital shelf" 
-                    : "Create an account to upload, read, and track EPUBs"}
-                </p>
-              </div>
-
-              <form className="auth-modal-form" onSubmit={(e) => {
-                void handleAuth(e);
-              }}>
                 <div className="auth-input-group">
-                  <label htmlFor="auth-email">Email Address</label>
+                  <label htmlFor="auth-email">Email address</label>
                   <input
                     id="auth-email"
                     type="email"
                     required
                     placeholder="name@domain.com"
                     autoComplete="email"
+                    autoFocus
                     value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    onChange={(event) => setEmail(event.target.value)}
                     className="auth-input-field"
                   />
                 </div>
@@ -619,64 +402,44 @@ export function LandingPage({
                     type="password"
                     required
                     minLength={6}
-                    placeholder="••••••••"
+                    placeholder="........"
                     autoComplete={authMode === "sign-in" ? "current-password" : "new-password"}
                     value={password}
-                    onChange={(e) => setPassword(e.target.value)}
+                    onChange={(event) => setPassword(event.target.value)}
                     className="auth-input-field"
                   />
                 </div>
 
-                <button 
-                  type="submit" 
-                  disabled={busy} 
-                  className="auth-submit-btn"
-                >
+                <button type="submit" disabled={busy} className="auth-submit-btn">
                   {busy ? (
                     <>
                       <Loader2 className="spin" size={16} />
                       <span>Processing...</span>
                     </>
                   ) : (
-                    <span>{authMode === "sign-in" ? "Sign In" : "Create Account"}</span>
+                    <span>{authMode === "sign-in" ? "Sign in" : "Create account"}</span>
                   )}
                 </button>
-
-                <div className="auth-divider">or</div>
-
-                <button 
-                  type="button" 
-                  disabled={busy} 
-                  onClick={signInWithGoogle} 
-                  className="auth-oauth-btn"
-                >
-                  <GoogleIcon />
-                  <span>Continue with Google</span>
-                </button>
               </form>
+            )}
 
-              <div className="auth-switch-mode">
-                <button
-                  type="button"
-                  className="auth-switch-btn"
-                  onClick={() => setAuthMode(authMode === "sign-in" ? "sign-up" : "sign-in")}
-                >
-                  {authMode === "sign-in" 
-                    ? "Don't have an account? Sign up" 
-                    : "Already have an account? Sign in"}
-                </button>
-              </div>
-
-              {/* Dynamic feedback notice styled as a floating toast inside card */}
-              {notice && (
-                <div className="auth-notice-toast">
-                  {notice}
-                </div>
-              )}
+            <div className="auth-switch-mode">
+              <button
+                type="button"
+                className="auth-switch-btn"
+                onClick={() => {
+                  setAuthMode(authMode === "sign-in" ? "sign-up" : "sign-in");
+                  setAuthPane("choice");
+                }}
+              >
+                {authMode === "sign-in" ? "Need an account? Sign up" : "Already have an account? Sign in"}
+              </button>
             </div>
+
+            {notice && <div className="auth-notice-toast">{notice}</div>}
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
