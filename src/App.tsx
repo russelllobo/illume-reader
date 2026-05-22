@@ -45,6 +45,10 @@ type ReaderImageChunk = {
 };
 type ReaderImageState = {
   error?: string;
+  imageCount?: number;
+  imageLimit?: number;
+  limitReached?: boolean;
+  plan?: "free" | "pro";
   prompt?: string;
   src?: string;
   status: "loading" | "ready" | "error";
@@ -90,7 +94,8 @@ const BOOK_CACHE_NAME = "epub-vision-reader-books-v1";
 const READER_IMAGE_DB_NAME = "epub-vision-reader-images";
 const READER_IMAGE_STORE_NAME = "images";
 const READER_IMAGE_CHUNK_WORDS = 1000;
-const READER_IMAGE_ACCOUNT_LIMIT = 100;
+const FREE_READER_IMAGE_LIFETIME_LIMIT = 25;
+const PRO_READER_IMAGE_ACCOUNT_LIMIT = 100;
 const USER_STORAGE_QUOTA_BYTES = Number(
   import.meta.env.VITE_USER_STORAGE_QUOTA_BYTES ?? 104_857_600
 );
@@ -822,6 +827,7 @@ function App() {
   const [readerImageMode, setReaderImageMode] = useState(false);
   const [readerImages, setReaderImages] = useState<Record<number, ReaderImageState>>({});
   const [readerImageCount, setReaderImageCount] = useState(0);
+  const [readerImageUpgradeOpen, setReaderImageUpgradeOpen] = useState(false);
   const parsedBooks = useRef(new Map<string, ReaderBook>());
   const readingSurfaceRef = useRef<HTMLElement | null>(null);
   const paragraphRefs = useRef(new Map<string, HTMLElement>());
@@ -843,7 +849,8 @@ function App() {
   const progress = book ? ((currentIndex + 1) / book.paragraphs.length) * 100 : 0;
   const storageUsed = catalogBooks.reduce((total, item) => total + item.file_size, 0);
   const isPro = billingProfile?.plan === "pro" && ["active", "trialing"].includes(billingProfile.status);
-  const canUseReaderImages = isPro;
+  const readerImageLimit = isPro ? PRO_READER_IMAGE_ACCOUNT_LIMIT : FREE_READER_IMAGE_LIFETIME_LIMIT;
+  const readerImageUsageLabel = `${readerImageCount} / ${readerImageLimit}`;
   const currentReaderWordOffset = useMemo(
     () => (book ? wordOffsetForParagraph(book, currentIndex) : 0),
     [book, currentIndex]
@@ -922,6 +929,7 @@ function App() {
       setCatalogBooks([]);
       setBillingProfile(null);
       setReaderImageCount(0);
+      setReaderImageUpgradeOpen(false);
       setBook(null);
       setView("catalog");
       setActiveBookId("");
@@ -1110,6 +1118,30 @@ function App() {
 
       if (!readerImageModeRef.current || runId !== readerImageRunRef.current) return;
       if (error) throw error;
+      if (data?.limitReached) {
+        const imageLimit = typeof data.imageLimit === "number" ? data.imageLimit : readerImageLimit;
+        const imageCount = typeof data.imageCount === "number" ? data.imageCount : imageLimit;
+        const plan = data.plan === "pro" ? "pro" : "free";
+        const message =
+          plan === "free"
+            ? `You have used all ${imageLimit} free lifetime images.`
+            : `You have reached your ${imageLimit}-image Pro limit.`;
+
+        setReaderImageCount(imageCount);
+        if (plan === "free") setReaderImageUpgradeOpen(true);
+        setReaderImages((items) => ({
+          ...items,
+          [chunk.index]: {
+            error: message,
+            imageCount,
+            imageLimit,
+            limitReached: true,
+            plan,
+            status: "error"
+          }
+        }));
+        return;
+      }
       if (!data?.imageUrl) throw new Error("Image generation returned no image.");
 
       const prompt = typeof data.prompt === "string" ? data.prompt : undefined;
@@ -1175,11 +1207,6 @@ function App() {
       return;
     }
 
-    if (!isPro) {
-      setNotice("Image mode is available on the Pro plan.");
-      return;
-    }
-
     if (!book || activeReaderImageChunkIndex < 0) return;
     const targetChunks = readerImageChunks
       .slice(activeReaderImageChunkIndex, activeReaderImageChunkIndex + 2)
@@ -1224,11 +1251,12 @@ function App() {
   };
 
   const loadReaderImageUsage = async () => {
-    const { count, error } = await supabase
-      .from("reader_images")
-      .select("id", { count: "exact", head: true });
+    const { data, error } = await supabase
+      .from("reader_image_usage")
+      .select("generated_count")
+      .maybeSingle();
 
-    if (!error) setReaderImageCount(count ?? 0);
+    if (!error) setReaderImageCount(data?.generated_count ?? 0);
   };
 
   const saveReadingProgress = async (bookId: string, index: number) => {
@@ -1708,6 +1736,7 @@ function App() {
 
   const renderGeneratedReaderImage = (chunk: ReaderImageChunk) => {
     const image = readerImages[chunk.index];
+    const isLimit = Boolean(image?.limitReached);
 
     return (
       <figure
@@ -1717,13 +1746,28 @@ function App() {
         {image?.status === "ready" && image.src ? (
           <img alt={`Generated visual for words ${chunk.startWord} to ${chunk.endWord}`} src={image.src} />
         ) : (
-          <div className={image?.status === "error" ? "reader-generated-placeholder error" : "reader-generated-placeholder"}>
+          <div
+            className={[
+              "reader-generated-placeholder",
+              image?.status === "error" ? "error" : "",
+              isLimit ? "limit" : ""
+            ]
+              .filter(Boolean)
+              .join(" ")}
+          >
             {image?.status === "loading" ? (
               <Loader2 className="spin" size={22} aria-hidden="true" />
+            ) : image?.status === "error" ? (
+              <Crown size={22} aria-hidden="true" />
             ) : (
               <ImageIcon size={22} aria-hidden="true" />
             )}
             <span>{image?.status === "error" ? image.error ?? "Image failed" : "Generating image"}</span>
+            {isLimit && image.plan === "free" && (
+              <button className="text-upgrade-button" onClick={() => setReaderImageUpgradeOpen(true)} type="button">
+                Upgrade to Pro
+              </button>
+            )}
           </div>
         )}
         <figcaption>
@@ -1736,6 +1780,7 @@ function App() {
   const renderReaderImageStage = () => {
     const chunk = activeReaderImageChunk;
     const image = chunk ? readerImages[chunk.index] : undefined;
+    const isLimit = Boolean(image?.limitReached);
 
     return (
       <aside className="reader-image-stage" aria-label="Current generated image">
@@ -1743,13 +1788,26 @@ function App() {
           {image?.status === "ready" && image.src ? (
             <img alt={`Generated visual for words ${chunk?.startWord} to ${chunk?.endWord}`} src={image.src} />
           ) : (
-            <div className={image?.status === "error" ? "reader-image-hero-placeholder error" : "reader-image-hero-placeholder"}>
+            <div
+              className={[
+                "reader-image-hero-placeholder",
+                image?.status === "error" ? "error" : "",
+                isLimit ? "limit" : ""
+              ]
+                .filter(Boolean)
+                .join(" ")}
+            >
               {image?.status === "error" ? (
-                <ImageIcon size={34} aria-hidden="true" />
+                <Crown size={34} aria-hidden="true" />
               ) : (
                 <Loader2 className="spin" size={34} aria-hidden="true" />
               )}
               <span>{image?.status === "error" ? image.error ?? "Image failed" : "Building the scene"}</span>
+              {isLimit && image?.plan === "free" && (
+                <button className="reader-image-upgrade-inline" onClick={() => setReaderImageUpgradeOpen(true)} type="button">
+                  Upgrade to Pro
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -1883,7 +1941,7 @@ function App() {
                             {isPro ? <Crown size={14} aria-hidden="true" /> : <CreditCard size={14} aria-hidden="true" />}
                             <span>{isPro ? "Pro Plan" : "Free Plan"}</span>
                           </span>
-                          {!isPro && <small className="plan-price-label">Upgrade for AI images and extra benefits</small>}
+                          {!isPro && <small className="plan-price-label">25 lifetime AI images included</small>}
                         </div>
                       </div>
 
@@ -1907,12 +1965,12 @@ function App() {
                         <div className="profile-usage-item">
                           <div className="profile-usage-header">
                             <span>AI Images</span>
-                            <span>{isPro ? `${readerImageCount} / ${READER_IMAGE_ACCOUNT_LIMIT}` : "Pro only"}</span>
+                            <span>{readerImageUsageLabel}</span>
                           </div>
                           <div className="profile-progress-bar">
                             <div 
                               className="profile-progress-fill" 
-                              style={{ width: `${isPro ? Math.min(100, (readerImageCount / READER_IMAGE_ACCOUNT_LIMIT) * 100) : 0}%` }} 
+                              style={{ width: `${Math.min(100, (readerImageCount / readerImageLimit) * 100)}%` }} 
                             />
                           </div>
                         </div>
@@ -2292,14 +2350,12 @@ function App() {
         <div className="image-mode-control">
           <button
             className={readerImageMode ? "secondary-button active" : "secondary-button"}
-            disabled={!readerImageMode && (!readerImageChunks.length || !canUseReaderImages)}
+            disabled={!readerImageMode && !readerImageChunks.length}
             onClick={toggleReaderImageMode}
             title={
               readerImageMode
                 ? "Stop generating reading images"
-                : isPro
-                  ? "Show reader images"
-                  : "Upgrade to Pro to use image mode"
+                : "Show reader images"
             }
             type="button"
           >
@@ -2314,6 +2370,42 @@ function App() {
       </footer>
 
       {notice && <div className="notice">{notice}</div>}
+
+      {readerImageUpgradeOpen && (
+        <div className="image-limit-modal-overlay" role="presentation" onClick={() => setReaderImageUpgradeOpen(false)}>
+          <section
+            aria-labelledby="image-limit-title"
+            aria-modal="true"
+            className="image-limit-modal"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+          >
+            <button className="image-limit-close" onClick={() => setReaderImageUpgradeOpen(false)} title="Close" type="button">
+              <X size={18} aria-hidden="true" />
+            </button>
+            <img className="image-limit-logo" src="/landing/logo.jpeg" alt="" aria-hidden="true" />
+            <div className="image-limit-copy">
+              <span className="image-limit-kicker">Free limit reached</span>
+              <h2 id="image-limit-title">Keep image mode</h2>
+              <p>
+                {Math.min(readerImageCount, FREE_READER_IMAGE_LIFETIME_LIMIT)} of {FREE_READER_IMAGE_LIFETIME_LIMIT} free images used.
+              </p>
+            </div>
+            <div className="image-limit-meter" aria-hidden="true">
+              <span style={{ width: `${Math.min(100, (readerImageCount / FREE_READER_IMAGE_LIFETIME_LIMIT) * 100)}%` }} />
+            </div>
+            <div className="image-limit-actions">
+              <button className="primary-button" disabled={busy} onClick={() => void startCheckout()} type="button">
+                {busy ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
+                <span>Upgrade</span>
+              </button>
+              <button className="secondary-button" onClick={() => setReaderImageUpgradeOpen(false)} type="button">
+                <span>Not now</span>
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
 
     </main>

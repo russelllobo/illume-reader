@@ -27,6 +27,7 @@
   --accent-rose: #ef4444;
   --accent-rose-light: #fef2f2;
   --font-sans: 'Outfit', Arial, Helvetica, sans-serif;
+  --font-serif: 'Crimson Text', Georgia, serif;
 }
 
 * {
@@ -897,6 +898,24 @@ button:disabled {
   color: #8a1f1f;
 }
 
+.reader-generated-placeholder.limit {
+  border-style: solid;
+  border-color: #d8d1bf;
+  background: #fffaf0;
+  color: #4c3a16;
+}
+
+.text-upgrade-button {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid #111;
+  border-radius: 7px;
+  background: #111;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
 .reader-image-stage {
   min-width: 0;
   min-height: 0;
@@ -996,6 +1015,30 @@ button:disabled {
 
 .reader-image-hero-placeholder.error {
   color: #ffb4b4;
+}
+
+.reader-image-hero-placeholder.limit {
+  padding: 34px;
+  background:
+    linear-gradient(180deg, rgba(255, 250, 240, 0.12), rgba(255, 250, 240, 0.03)),
+    #090908;
+  color: #f9e5ad;
+}
+
+.reader-image-hero-placeholder.limit span {
+  max-width: 340px;
+  font-size: 1rem;
+  line-height: 1.35;
+}
+
+.reader-image-upgrade-inline {
+  height: 38px;
+  padding: 0 16px;
+  border: 1px solid #f9e5ad;
+  border-radius: 8px;
+  background: #f9e5ad;
+  color: #171205;
+  font-weight: 850;
 }
 
 .reader-image-dots {
@@ -1150,6 +1193,130 @@ button:disabled {
   color: #111;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.14);
   font-size: 0.85rem;
+}
+
+.image-limit-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 220;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(20, 16, 11, 0.42);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation: fadeIn 0.18s ease both;
+}
+
+.image-limit-modal {
+  position: relative;
+  width: min(360px, 100%);
+  display: grid;
+  gap: 14px;
+  padding: 24px;
+  border: 1px solid rgba(20, 16, 11, 0.14);
+  border-radius: 10px;
+  background: #fff8e9;
+  color: #14100b;
+  box-shadow: 0 26px 70px rgba(20, 16, 11, 0.22);
+  animation: scaleIn 0.22s ease both;
+}
+
+.image-limit-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(20, 16, 11, 0.14);
+  border-radius: 50%;
+  background: rgba(244, 234, 212, 0.64);
+  color: #766956;
+}
+
+.image-limit-logo {
+  width: 34px;
+  height: 42px;
+  border: 1px solid rgba(251, 242, 220, 0.34);
+  border-radius: 4px;
+  object-fit: cover;
+  box-shadow: 0 0 0 4px rgba(230, 168, 33, 0.09);
+}
+
+.image-limit-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.image-limit-kicker {
+  color: #9e3416;
+  font-family: var(--font-sans);
+  font-size: 0.68rem;
+  font-weight: 850;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.image-limit-copy h2 {
+  margin: 0;
+  color: #14100b;
+  font-family: var(--font-serif);
+  font-size: 1.72rem;
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+
+.image-limit-copy p {
+  margin: 0;
+  color: #766956;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.image-limit-meter {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(20, 16, 11, 0.12);
+}
+
+.image-limit-meter span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #e6a821;
+}
+
+.image-limit-actions {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.image-limit-actions .primary-button,
+.image-limit-actions .secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 38px;
+  padding: 0 14px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+}
+
+.image-limit-actions .primary-button {
+  border-color: #14100b;
+  background: #14100b;
+  color: #fff8e9;
+}
+
+.image-limit-actions .secondary-button {
+  border-color: rgba(20, 16, 11, 0.14);
+  background: transparent;
+  color: #766956;
 }
 
 .auth-shell {

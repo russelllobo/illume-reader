@@ -2,7 +2,8 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.106.0";
 
 const READER_IMAGE_BUCKET = "reader-images";
-const READER_IMAGE_ACCOUNT_LIMIT = 100;
+const FREE_READER_IMAGE_LIFETIME_LIMIT = 25;
+const PRO_READER_IMAGE_ACCOUNT_LIMIT = 100;
 
 const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -43,15 +44,32 @@ const bytesToBase64 = (bytes: Uint8Array) => {
 
 const imageDataUrl = (base64: string) => `data:image/webp;base64,${base64}`;
 
-const readerImageCount = async (adminClient: any, userId: string) => {
-  const { count, error } = await adminClient
-    .from("reader_images")
-    .select("id", { count: "exact", head: true })
+const readerImageUsageCount = async (adminClient: any, userId: string) => {
+  const { data, error } = await adminClient
+    .from("reader_image_usage")
+    .select("generated_count")
     .eq("user_id", userId);
 
   if (error) throw error;
-  return count ?? 0;
+  return data?.[0]?.generated_count ?? 0;
 };
+
+const limitResponse = (
+  plan: "free" | "pro",
+  imageCount: number,
+  imageLimit: number
+) =>
+  new Response(
+    JSON.stringify({
+      code: "reader_image_limit_reached",
+      imageCount,
+      imageLimit,
+      limitReached: true,
+      plan,
+      upgradeRequired: plan === "free"
+    }),
+    { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+  );
 
 const getStoredReaderImage = async (
   adminClient: any,
@@ -164,19 +182,6 @@ Deno.serve(async (req) => {
     if (bookError) throw bookError;
     if (!book) throw new Error("You can only generate images for your own books.");
 
-    const storedImage = await getStoredReaderImage(adminClient, userData.user.id, bookId, startWord, endWord);
-    if (storedImage) {
-      return new Response(
-        JSON.stringify({
-          ...storedImage,
-          cached: true,
-          imageCount: await readerImageCount(adminClient, userData.user.id),
-          imageLimit: READER_IMAGE_ACCOUNT_LIMIT
-        }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
     const { data: billingProfile, error: billingError } = await adminClient
       .from("billing_profiles")
       .select("plan, status")
@@ -184,100 +189,134 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     if (billingError) throw billingError;
-    if (billingProfile?.plan !== "pro" || !["active", "trialing"].includes(billingProfile.status)) {
-      throw new Error("Image generation is available on the Pro plan.");
+    const activePlan =
+      billingProfile?.plan === "pro" && ["active", "trialing"].includes(billingProfile.status)
+        ? "pro"
+        : "free";
+    const imageLimit = activePlan === "pro" ? PRO_READER_IMAGE_ACCOUNT_LIMIT : FREE_READER_IMAGE_LIFETIME_LIMIT;
+
+    const storedImage = await getStoredReaderImage(adminClient, userData.user.id, bookId, startWord, endWord);
+    if (storedImage) {
+      return new Response(
+        JSON.stringify({
+          ...storedImage,
+          cached: true,
+          imageCount: await readerImageUsageCount(adminClient, userData.user.id),
+          imageLimit,
+          plan: activePlan
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    const imageCount = await readerImageCount(adminClient, userData.user.id);
-    if (imageCount >= READER_IMAGE_ACCOUNT_LIMIT) {
-      throw new Error(`Image generation limit reached (${READER_IMAGE_ACCOUNT_LIMIT} images).`);
+    const { data: reservation, error: reservationError } = await adminClient.rpc(
+      "reserve_reader_image_generation",
+      {
+        p_image_limit: imageLimit,
+        p_user_id: userData.user.id
+      }
+    );
+
+    if (reservationError) throw reservationError;
+    const usageReservation = Array.isArray(reservation) ? reservation[0] : reservation;
+    const imageCount = Number(usageReservation?.generated_count ?? imageLimit);
+    const generationReserved = Boolean(usageReservation?.allowed);
+
+    if (!generationReserved) {
+      return limitResponse(activePlan, imageCount, imageLimit);
     }
 
-    const prompt = [
-      "Create a clever visual explanation of this nonfiction paragraph as if it were an illustrated idea from a bestselling self-development book.",
-      `Book: ${bookTitle || "Uploaded document"}.`,
-      `Paragraph: ${text}`,
-      "",
-      "First, silently pick:",
-      "A concise main idea.",
-      "Identify:",
-      "1) The emotional or practical shift.",
-      "2) One simple visual metaphor that captures it.",
-      "Then create the image using that metaphor.",
-      "",
-      "The image should have:",
-      "- MINIMAL text",
-      "- prioritise instant intuitiveness",
-      "- 1 simple idea in bold Sunday funnies style with thick outlines, halftone textures, and bright 1980s colors that explains the concept instantly. Avoid displaying too much information.",
-      "- A clear before/after or problem/solution contrast only if suitable",
-      "- Expressive human body language or facial expressions where useful.",
-      "- Bright, inviting colors.",
-      "",
-      "Style: Playful premium editorial illustration, bold shapes, warm lighting, crisp details, slightly exaggerated expressions, modern nonfiction-book visual style. Fun but not childish. Clear but not boring. Make the lesson land visually without needing the viewer to read a long explanation.",
-      Number.isFinite(startWord) && Number.isFinite(endWord) ? `Reference words: ${startWord}-${endWord}.` : ""
-    ]
-      .filter((line) => line !== "")
-      .join("\n");
+    try {
+      const prompt = [
+        "Create a clever visual explanation of this nonfiction paragraph as if it were an illustrated idea from a bestselling self-development book.",
+        `Book: ${bookTitle || "Uploaded document"}.`,
+        `Paragraph: ${text}`,
+        "",
+        "First, silently pick:",
+        "A concise main idea.",
+        "Identify:",
+        "1) The emotional or practical shift.",
+        "2) One simple visual metaphor that captures it.",
+        "Then create the image using that metaphor.",
+        "",
+        "The image should have:",
+        "- MINIMAL text",
+        "- prioritise instant intuitiveness",
+        "- 1 simple idea in bold Sunday funnies style with thick outlines, halftone textures, and bright 1980s colors that explains the concept instantly. Avoid displaying too much information.",
+        "- A clear before/after or problem/solution contrast only if suitable",
+        "- Expressive human body language or facial expressions where useful.",
+        "- Bright, inviting colors.",
+        "",
+        "Style: Playful premium editorial illustration, bold shapes, warm lighting, crisp details, slightly exaggerated expressions, modern nonfiction-book visual style. Fun but not childish. Clear but not boring. Make the lesson land visually without needing the viewer to read a long explanation.",
+        Number.isFinite(startWord) && Number.isFinite(endWord) ? `Reference words: ${startWord}-${endWord}.` : ""
+      ]
+        .filter((line) => line !== "")
+        .join("\n");
 
-    const response = await fetch("https://api.openai.com/v1/images/generations", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${openAiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "gpt-image-2",
-        n: 1,
-        output_compression: 78,
-        output_format: "webp",
-        prompt,
-        quality: "low",
-        size: "1024x1536"
-      })
-    });
-
-    const result = await response.json();
-    if (!response.ok) {
-      throw new Error(result?.error?.message ?? "OpenAI image generation failed.");
-    }
-
-    const base64Image = result?.data?.[0]?.b64_json;
-    if (!base64Image) throw new Error("OpenAI returned no image data.");
-    const storagePath = imagePathFor(userData.user.id, bookId, startWord, endWord);
-
-    const { error: uploadError } = await adminClient.storage
-      .from(READER_IMAGE_BUCKET)
-      .upload(storagePath, base64ToBytes(base64Image), {
-        contentType: "image/webp",
-        upsert: true
+      const response = await fetch("https://api.openai.com/v1/images/generations", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${openAiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "gpt-image-2",
+          n: 1,
+          output_compression: 78,
+          output_format: "webp",
+          prompt,
+          quality: "low",
+          size: "1024x1536"
+        })
       });
 
-    if (uploadError) throw uploadError;
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result?.error?.message ?? "OpenAI image generation failed.");
+      }
 
-    const { error: insertError } = await adminClient.from("reader_images").upsert(
-      {
-        book_id: bookId,
-        end_word: endWord,
-        prompt,
-        start_word: startWord,
-        storage_path: storagePath,
-        user_id: userData.user.id
-      },
-      { onConflict: "book_id,start_word,end_word" }
-    );
+      const base64Image = result?.data?.[0]?.b64_json;
+      if (!base64Image) throw new Error("OpenAI returned no image data.");
+      const storagePath = imagePathFor(userData.user.id, bookId, startWord, endWord);
 
-    if (insertError) throw insertError;
+      const { error: uploadError } = await adminClient.storage
+        .from(READER_IMAGE_BUCKET)
+        .upload(storagePath, base64ToBytes(base64Image), {
+          contentType: "image/webp",
+          upsert: true
+        });
 
-    return new Response(
-      JSON.stringify({
-        cached: false,
-        imageCount: imageCount + 1,
-        imageLimit: READER_IMAGE_ACCOUNT_LIMIT,
-        imageUrl: imageDataUrl(base64Image),
-        prompt
-      }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+      if (uploadError) throw uploadError;
+
+      const { error: insertError } = await adminClient.from("reader_images").upsert(
+        {
+          book_id: bookId,
+          end_word: endWord,
+          prompt,
+          start_word: startWord,
+          storage_path: storagePath,
+          user_id: userData.user.id
+        },
+        { onConflict: "book_id,start_word,end_word" }
+      );
+
+      if (insertError) throw insertError;
+
+      return new Response(
+        JSON.stringify({
+          cached: false,
+          imageCount,
+          imageLimit,
+          imageUrl: imageDataUrl(base64Image),
+          plan: activePlan,
+          prompt
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    } catch (error) {
+      await adminClient.rpc("refund_reader_image_generation", { p_user_id: userData.user.id });
+      throw error;
+    }
   } catch (error) {
     return new Response(
       JSON.stringify({ error: error instanceof Error ? error.message : "Could not generate image." }),

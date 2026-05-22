@@ -23,7 +23,7 @@ VITE_USER_STORAGE_QUOTA_BYTES=104857600
 
 The current quota is set to 100 MB per user for Supabase free-tier testing. Use `2147483648` for a 2 GB per-user quota after moving to a paid storage plan.
 
-Image mode uses a Supabase Edge Function so the OpenAI key stays server-side. It stores generated images in the private `reader-images` storage bucket and records metadata in `public.reader_images` so future reads reuse existing images before calling OpenAI again. New image generation is limited to Pro users and capped at 100 images per account for now.
+Image mode uses a Supabase Edge Function so the OpenAI key stays server-side. It stores generated images in the private `reader-images` storage bucket and records metadata in `public.reader_images` so future reads reuse existing images before calling OpenAI again. Free users can generate 25 lifetime images; Pro users are capped at 100 images per account. Lifetime usage is tracked in `public.reader_image_usage`.
 
 Set this function secret:
 
@@ -42,12 +42,13 @@ The database migration creates:
 
 - `public.books`
 - `public.billing_profiles`
+- `public.reader_image_usage`
 - a private `epubs` storage bucket
 - RLS policies for per-user book rows and files
 
 ## Stripe Billing
 
-The app includes a Pro subscription checkout flow backed by Supabase Edge Functions. Pro status is stored in `public.billing_profiles`; it does not unlock product features yet.
+The app includes a Pro subscription checkout flow backed by Supabase Edge Functions. Pro status is stored in `public.billing_profiles` and raises the image generation limit from 25 lifetime images to 100 images per account.
 
 The current Stripe Pro product and price are:
 
@@ -63,7 +64,7 @@ supabase secrets set \
   STRIPE_SECRET_KEY=sk_... \
   STRIPE_PRO_PRICE_ID=price_1TZ5v9LZ9T22BHizLUFDsKjM \
   STRIPE_WEBHOOK_SECRET=whsec_... \
-  SITE_URL=https://reader.russell.systems
+  SITE_URL=https://illume.russell.systems
 ```
 
 Deploy the functions:
