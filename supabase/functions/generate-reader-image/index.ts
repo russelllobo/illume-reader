@@ -60,7 +60,23 @@ const getStoredReaderImage = async (
   startWord: number,
   endWord: number
 ) => {
-  const { data, error } = await adminClient
+  const downloadStoredImage = async (image: { prompt: string | null; storage_path: string | null }) => {
+    if (!image.storage_path) return null;
+
+    const { data: blob, error: downloadError } = await adminClient.storage
+      .from(READER_IMAGE_BUCKET)
+      .download(image.storage_path);
+
+    if (downloadError || !blob) return null;
+
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    return {
+      imageUrl: imageDataUrl(bytesToBase64(bytes)),
+      prompt: image.prompt ?? undefined
+    };
+  };
+
+  const { data: exactImage, error: exactError } = await adminClient
     .from("reader_images")
     .select("prompt, storage_path")
     .eq("user_id", userId)
@@ -69,20 +85,34 @@ const getStoredReaderImage = async (
     .eq("end_word", endWord)
     .maybeSingle();
 
-  if (error) throw error;
-  if (!data?.storage_path) return null;
+  if (exactError) throw exactError;
+  if (exactImage?.storage_path) return downloadStoredImage(exactImage);
 
-  const { data: blob, error: downloadError } = await adminClient.storage
-    .from(READER_IMAGE_BUCKET)
-    .download(data.storage_path);
+  const { data: overlappingImages, error: overlapError } = await adminClient
+    .from("reader_images")
+    .select("end_word, prompt, start_word, storage_path")
+    .eq("user_id", userId)
+    .eq("book_id", bookId)
+    .lte("start_word", endWord)
+    .gte("end_word", startWord);
 
-  if (downloadError || !blob) return null;
+  if (overlapError) throw overlapError;
 
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  return {
-    imageUrl: imageDataUrl(bytesToBase64(bytes)),
-    prompt: data.prompt as string | undefined
-  };
+  const closestImage = (overlappingImages ?? [])
+    .filter((image: { storage_path: string | null }) => image.storage_path)
+    .sort(
+      (
+        left: { end_word: number; start_word: number },
+        right: { end_word: number; start_word: number }
+      ) => {
+        const leftOverlap = Math.min(left.end_word, endWord) - Math.max(left.start_word, startWord);
+        const rightOverlap = Math.min(right.end_word, endWord) - Math.max(right.start_word, startWord);
+        if (rightOverlap !== leftOverlap) return rightOverlap - leftOverlap;
+        return Math.abs(left.start_word - startWord) - Math.abs(right.start_word - startWord);
+      }
+    )[0];
+
+  return closestImage ? downloadStoredImage(closestImage) : null;
 };
 
 Deno.serve(async (req) => {

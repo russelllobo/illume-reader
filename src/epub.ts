@@ -311,7 +311,14 @@ const getNavEntries = async (
 };
 
 export const parseEpub = async (file: File): Promise<ReaderBook> => {
-  const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  let zip: JSZip;
+
+  try {
+    zip = await JSZip.loadAsync(await file.arrayBuffer());
+  } catch {
+    throw new Error("This file could not be read as an EPUB. It may be an incomplete download or a web page instead of an ebook file.");
+  }
+
   const opfPath = await getRootFilePath(zip);
   const opfText = await zip.file(opfPath)?.async("text");
 

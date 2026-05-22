@@ -78,11 +78,17 @@ Deno.serve(async (req) => {
     if (readerImagesError) throw readerImagesError;
 
     const removedEpubs = await removeStorageObjects(adminClient, EPUB_BUCKET, [book.storage_path]);
-    const removedReaderImages = await removeStorageObjects(
-      adminClient,
-      READER_IMAGE_BUCKET,
-      (readerImages ?? []).map((image: { storage_path: string | null }) => image.storage_path ?? "")
-    );
+    let removedReaderImages = 0;
+
+    try {
+      removedReaderImages = await removeStorageObjects(
+        adminClient,
+        READER_IMAGE_BUCKET,
+        (readerImages ?? []).map((image: { storage_path: string | null }) => image.storage_path ?? "")
+      );
+    } catch (cleanupError) {
+      console.warn("Could not remove reader image files while deleting book:", cleanupError);
+    }
 
     const { error: deleteError } = await adminClient
       .from("books")

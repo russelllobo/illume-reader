@@ -13,10 +13,10 @@ import {
   RotateCw,
   Trash2,
   Upload,
-  Download,
-  Info,
   Plus,
-  Check
+  Check,
+  Settings,
+  X
 } from "lucide-react";
 import { ChangeEvent, FormEvent, KeyboardEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
@@ -152,14 +152,6 @@ const CURATED_CLASSICS: ClassicBook[] = [
     coverUrl: "https://standardebooks.org/ebooks/f-scott-fitzgerald/the-great-gatsby/downloads/cover-thumbnail.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/f-scott-fitzgerald/the-great-gatsby/downloads/f-scott-fitzgerald_the-great-gatsby.epub",
     summary: "Set in the Jazz Age on Long Island, the novel depicts narrator Nick Carraway's interactions with mysterious millionaire Jay Gatsby and Gatsby's obsession to reunite with Daisy Buchanan."
-  },
-  {
-    id: "franz-kafka-the-metamorphosis",
-    title: "The Metamorphosis",
-    author: "Franz Kafka",
-    coverUrl: "https://www.gutenberg.org/cache/epub/5200/pg5200.cover.medium.jpg",
-    downloadUrl: "https://www.gutenberg.org/ebooks/5200.epub.images",
-    summary: "Gregor Samsa, a traveling salesman, wakes up one morning to find himself inexplicably transformed into a monstrous insect-like creature, dealing with the psychological fallout."
   },
   {
     id: "oscar-wilde-the-picture-of-dorian-gray",
@@ -328,14 +320,6 @@ const CURATED_CLASSICS: ClassicBook[] = [
     coverUrl: "https://standardebooks.org/ebooks/charles-dickens/a-christmas-carol/downloads/cover-thumbnail.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/charles-dickens/a-christmas-carol/downloads/charles-dickens_a-christmas-carol.epub",
     summary: "The transformation of Ebenezer Scrooge, a miserly old businessman, after he is visited by the ghosts of Christmas Past, Present, and Yet to Come."
-  },
-  {
-    id: "franz-kafka-the-trial",
-    title: "The Trial",
-    author: "Franz Kafka",
-    coverUrl: "https://www.gutenberg.org/cache/epub/7849/pg7849.cover.medium.jpg",
-    downloadUrl: "https://www.gutenberg.org/ebooks/7849.epub.images",
-    summary: "Following Josef K., a respectable bank officer who is suddenly arrested and must defend himself against a charge about which he can obtain no information, translated by David Wyllie."
   },
   {
     id: "james-joyce-dubliners",
@@ -564,6 +548,19 @@ const safeFileName = (name: string) =>
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "")
     .slice(0, 120) || "book.epub";
+
+const blobLooksLikeEpub = async (blob: Blob) => {
+  const bytes = new Uint8Array(await blob.slice(0, 4).arrayBuffer());
+  return bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04;
+};
+
+const classicDownloadUrl = (url: string) => {
+  if (!url.startsWith("https://standardebooks.org/")) return url;
+
+  const downloadUrl = new URL(url);
+  downloadUrl.searchParams.set("source", "download");
+  return downloadUrl.toString();
+};
 
 const coverPalettes = [
   "linear-gradient(145deg, #232323 0%, #5a4f3f 100%)",
@@ -823,7 +820,6 @@ function App() {
   const [checkoutResult, setCheckoutResult] = useState<"success" | "canceled" | "">("");
   const [speechHighlight, setSpeechHighlight] = useState<SpeechHighlight | null>(null);
   const [readerImageMode, setReaderImageMode] = useState(false);
-  const [readerImageAnchorWordOffset, setReaderImageAnchorWordOffset] = useState(0);
   const [readerImages, setReaderImages] = useState<Record<number, ReaderImageState>>({});
   const [readerImageCount, setReaderImageCount] = useState(0);
   const parsedBooks = useRef(new Map<string, ReaderBook>());
@@ -839,18 +835,20 @@ function App() {
   const coverLookupRef = useRef(new Set<string>());
 
   const [importingClassicId, setImportingClassicId] = useState<string | null>(null);
-  const [activeSynopsisId, setActiveSynopsisId] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
 
   const user = session?.user ?? null;
   const current = book?.paragraphs[currentIndex];
   const progress = book ? ((currentIndex + 1) / book.paragraphs.length) * 100 : 0;
   const storageUsed = catalogBooks.reduce((total, item) => total + item.file_size, 0);
-  const isPro = billingProfile?.plan === "pro";
+  const isPro = billingProfile?.plan === "pro" && ["active", "trialing"].includes(billingProfile.status);
+  const canUseReaderImages = isPro;
   const currentReaderWordOffset = useMemo(
     () => (book ? wordOffsetForParagraph(book, currentIndex) : 0),
     [book, currentIndex]
   );
-  const readerImageStartOffset = readerImageMode ? readerImageAnchorWordOffset : currentReaderWordOffset;
+  const readerImageStartOffset = 0;
   const readerImageChunks = useMemo(
     () => (book ? buildReaderImageChunks(book, readerImageStartOffset) : []),
     [book, readerImageStartOffset]
@@ -864,6 +862,8 @@ function App() {
     if (!readerImageMode || activeReaderImageChunkIndex < 0) return new Set<number>();
     return new Set([activeReaderImageChunkIndex, activeReaderImageChunkIndex + 1]);
   }, [activeReaderImageChunkIndex, readerImageMode]);
+  const activeReaderImageChunk =
+    activeReaderImageChunkIndex >= 0 ? readerImageChunks[activeReaderImageChunkIndex] : null;
   const isReaderImageLoading =
     readerImageMode &&
     activeReaderImageChunkIndex >= 0 &&
@@ -1175,19 +1175,24 @@ function App() {
       return;
     }
 
+    if (!isPro) {
+      setNotice("Image mode is available on the Pro plan.");
+      return;
+    }
+
     if (!book || activeReaderImageChunkIndex < 0) return;
-    const startOffset = wordOffsetForParagraph(book, currentIndex);
-    const anchoredChunks = buildReaderImageChunks(book, startOffset);
-    if (!anchoredChunks.length) return;
+    const targetChunks = readerImageChunks
+      .slice(activeReaderImageChunkIndex, activeReaderImageChunkIndex + 2)
+      .filter((chunk): chunk is ReaderImageChunk => Boolean(chunk));
+    if (!targetChunks.length) return;
 
     const runId = readerImageRunRef.current + 1;
     readerImageRunRef.current = runId;
     readerImageModeRef.current = true;
     imageRequestsRef.current.clear();
     setReaderImages({});
-    setReaderImageAnchorWordOffset(startOffset);
     setReaderImageMode(true);
-    void Promise.all(anchoredChunks.slice(0, 2).map((chunk) => generateReaderImage(chunk, runId)));
+    void Promise.all(targetChunks.map((chunk) => generateReaderImage(chunk, runId)));
   };
 
   const loadLibrary = async (_user: User) => {
@@ -1283,10 +1288,10 @@ function App() {
           setPlayback("idle");
         }
       },
-      onError: () => {
+      onError: (error) => {
         edgeTtsPlayerRef.current = null;
         setSpeechHighlight(null);
-        setNotice("Edge voice could not play this paragraph.");
+        setNotice(error.message || "Edge voice could not play this paragraph.");
         setPlayback("idle");
       },
       text: paragraph.text,
@@ -1387,7 +1392,7 @@ function App() {
     window.location.assign(data.url);
   };
 
-  const importEpubFile = async (file: File) => {
+  const importEpubFile = async (file: File, openAfterImport = true) => {
     if (!user) return;
 
     if (!file.name.toLowerCase().endsWith(".epub")) {
@@ -1437,7 +1442,9 @@ function App() {
     parsedBooks.current.set(row.id, parsed);
     void cacheBookFile(row, file);
     setCatalogBooks((items) => [row, ...items]);
-    openParsedBook(row, parsed, 0);
+    if (openAfterImport) {
+      openParsedBook(row, parsed, 0);
+    }
   };
 
   const addClassicToLibrary = async (classic: ClassicBook) => {
@@ -1449,14 +1456,18 @@ function App() {
     setBusy(true);
 
     try {
-      const response = await fetch(classic.downloadUrl);
+      const response = await fetch(classicDownloadUrl(classic.downloadUrl));
       if (!response.ok) throw new Error("Could not download ebook from Standard Ebooks.");
 
       const blob = await response.blob();
+      if (!await blobLooksLikeEpub(blob)) {
+        throw new Error(`The download for ${classic.title} did not return an EPUB. Please try again in a moment.`);
+      }
+
       const filename = `${safeFileName(classic.title)}.epub`;
       const file = new File([blob], filename, { type: "application/epub+zip" });
 
-      await importEpubFile(file);
+      await importEpubFile(file, false);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Failed to import classic book.");
     } finally {
@@ -1491,7 +1502,6 @@ function App() {
     readerImageRunRef.current += 1;
     readerImageModeRef.current = false;
     setReaderImageMode(false);
-    setReaderImageAnchorWordOffset(0);
     setReaderImages({});
     imageRequestsRef.current.clear();
     setActiveBookId(row.id);
@@ -1552,9 +1562,26 @@ function App() {
     });
 
     if (error) {
-      setNotice(error.message);
-      setBusy(false);
-      return;
+      console.warn("delete-reader-book Edge Function failed, falling back to direct delete:", error);
+
+      const { error: storageError } = await supabase.storage.from(EPUB_BUCKET).remove([row.storage_path]);
+      if (storageError) {
+        setNotice(storageError.message);
+        setBusy(false);
+        return;
+      }
+
+      const { error: deleteError } = await supabase
+        .from("books")
+        .delete()
+        .eq("id", row.id)
+        .eq("user_id", row.user_id);
+
+      if (deleteError) {
+        setNotice(deleteError.message);
+        setBusy(false);
+        return;
+      }
     }
 
     void deleteCachedBookFile(row.id);
@@ -1706,6 +1733,30 @@ function App() {
     );
   };
 
+  const renderReaderImageStage = () => {
+    const chunk = activeReaderImageChunk;
+    const image = chunk ? readerImages[chunk.index] : undefined;
+
+    return (
+      <aside className="reader-image-stage" aria-label="Current generated image">
+        <div className="reader-image-hero" key={chunk?.index ?? "empty"}>
+          {image?.status === "ready" && image.src ? (
+            <img alt={`Generated visual for words ${chunk?.startWord} to ${chunk?.endWord}`} src={image.src} />
+          ) : (
+            <div className={image?.status === "error" ? "reader-image-hero-placeholder error" : "reader-image-hero-placeholder"}>
+              {image?.status === "error" ? (
+                <ImageIcon size={34} aria-hidden="true" />
+              ) : (
+                <Loader2 className="spin" size={34} aria-hidden="true" />
+              )}
+              <span>{image?.status === "error" ? image.error ?? "Image failed" : "Building the scene"}</span>
+            </div>
+          )}
+        </div>
+      </aside>
+    );
+  };
+
   const scrubToPointer = (event: PointerEvent<HTMLDivElement>) => {
     if (!book) return;
     const bounds = event.currentTarget.getBoundingClientRect();
@@ -1765,7 +1816,7 @@ function App() {
   if (view === "catalog") {
     return (
       <main className="app-shell catalog-shell">
-        <header className="topbar catalog-topbar">
+        <header className="topbar catalog-topbar" style={{ position: "relative" }}>
           <div>
             <div className="top-title">Library</div>
             <div className="storage-meter">
@@ -1778,38 +1829,128 @@ function App() {
               <span>Upload EPUB</span>
               <input disabled={busy} type="file" accept=".epub,application/epub+zip" onChange={handleCatalogUpload} />
             </label>
-            <button className="top-icon" onClick={signOut} title="Sign out" type="button">
-              <LogOut size={17} aria-hidden="true" />
-            </button>
+            
+            <div className="profile-button-wrapper" style={{ position: "relative", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <button 
+                className="profile-avatar-btn" 
+                onClick={() => setProfileOpen(!profileOpen)} 
+                title="Account Settings" 
+                type="button"
+              >
+                {user?.user_metadata?.avatar_url || user?.user_metadata?.picture ? (
+                  <img 
+                    src={user.user_metadata.avatar_url || user.user_metadata.picture} 
+                    alt="Profile" 
+                    className="profile-avatar-img"
+                  />
+                ) : (
+                  <span className="profile-avatar-initials">
+                    {user?.email?.[0].toUpperCase() ?? "U"}
+                  </span>
+                )}
+              </button>
+              
+              {profileOpen && (
+                <>
+                  <div className="profile-popover-overlay" onClick={() => setProfileOpen(false)} />
+                  <div className="profile-popover-card">
+                    <div className="profile-popover-header">
+                      <div className="profile-user-info">
+                        <div className="profile-popover-avatar">
+                          {user?.user_metadata?.avatar_url || user?.user_metadata?.picture ? (
+                            <img 
+                              src={user.user_metadata.avatar_url || user.user_metadata.picture} 
+                              alt="Profile" 
+                            />
+                          ) : (
+                            <span>{user?.email?.[0].toUpperCase() ?? "U"}</span>
+                          )}
+                        </div>
+                        <div className="profile-user-details">
+                          <span className="profile-name">
+                            {user?.user_metadata?.full_name || user?.user_metadata?.name || "Reader User"}
+                          </span>
+                          <span className="profile-email">{user?.email}</span>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="profile-popover-body">
+                      {/* Plan Status */}
+                      <div className="profile-section">
+                        <div className="profile-plan-badge-wrapper">
+                          <span className={`profile-plan-badge ${isPro ? "pro" : "free"}`}>
+                            {isPro ? <Crown size={14} aria-hidden="true" /> : <CreditCard size={14} aria-hidden="true" />}
+                            <span>{isPro ? "Pro Plan" : "Free Plan"}</span>
+                          </span>
+                          {!isPro && <small className="plan-price-label">Upgrade for AI images and extra benefits</small>}
+                        </div>
+                      </div>
+
+                      {/* Storage and Usage stats */}
+                      <div className="profile-section">
+                        <span className="profile-section-label">Usage &amp; Quotas</span>
+                        
+                        <div className="profile-usage-item">
+                          <div className="profile-usage-header">
+                            <span>Storage</span>
+                            <span>{formatBytes(storageUsed)} of {formatBytes(USER_STORAGE_QUOTA_BYTES)}</span>
+                          </div>
+                          <div className="profile-progress-bar">
+                            <div 
+                              className="profile-progress-fill" 
+                              style={{ width: `${Math.min(100, (storageUsed / USER_STORAGE_QUOTA_BYTES) * 100)}%` }} 
+                            />
+                          </div>
+                        </div>
+
+                        <div className="profile-usage-item">
+                          <div className="profile-usage-header">
+                            <span>AI Images</span>
+                            <span>{isPro ? `${readerImageCount} / ${READER_IMAGE_ACCOUNT_LIMIT}` : "Pro only"}</span>
+                          </div>
+                          <div className="profile-progress-bar">
+                            <div 
+                              className="profile-progress-fill" 
+                              style={{ width: `${isPro ? Math.min(100, (readerImageCount / READER_IMAGE_ACCOUNT_LIMIT) * 100) : 0}%` }} 
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Billing Action Buttons */}
+                      <div className="profile-section billing-actions-section">
+                        {!isPro && (
+                          <button className="primary-button upgrade-btn" disabled={busy} onClick={() => { setProfileOpen(false); void startCheckout(); }} type="button">
+                            <Crown size={15} aria-hidden="true" />
+                            <span>Upgrade to Pro</span>
+                          </button>
+                        )}
+                        {billingProfile?.stripe_customer_id && (
+                          <button className="secondary-button manage-btn" disabled={busy} onClick={() => { setProfileOpen(false); void openBillingPortal(); }} type="button">
+                            <Settings size={15} aria-hidden="true" />
+                            <span>Manage billing</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="profile-popover-footer">
+                      <button className="signout-btn" onClick={() => { setProfileOpen(false); void signOut(); }} type="button">
+                        <LogOut size={15} aria-hidden="true" />
+                        <span>Sign Out</span>
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </header>
 
         <section className="catalog-view" aria-label="Book library">
           <div className="catalog-header">
             <h1>Books</h1>
-            <div className="billing-strip">
-              <div className="billing-plan">
-                {isPro ? <Crown size={17} aria-hidden="true" /> : <CreditCard size={17} aria-hidden="true" />}
-                <span>{isPro ? "Pro plan" : "Free plan"}</span>
-                <small>Pro GBP 12.99/month</small>
-                <small>
-                  Images {readerImageCount}/{READER_IMAGE_ACCOUNT_LIMIT}
-                </small>
-                {billingProfile?.status && <small>{billingProfile.status}</small>}
-              </div>
-              <div className="billing-actions">
-                {!isPro && (
-                  <button className="primary-small-button" disabled={busy} onClick={() => void startCheckout()} type="button">
-                    Upgrade to Pro
-                  </button>
-                )}
-                {billingProfile?.stripe_customer_id && (
-                  <button className="secondary-button" disabled={busy} onClick={() => void openBillingPortal()} type="button">
-                    Manage billing
-                  </button>
-                )}
-              </div>
-            </div>
           </div>
           <div className="catalog-list">
             {catalogBooks.length ? (
@@ -1844,9 +1985,15 @@ function App() {
                 </div>
               ))
             ) : (
-              <div className="empty-library">
-                <BookOpen size={22} aria-hidden="true" />
-                <span>Your library is empty.</span>
+              <div className="empty-library-container">
+                <BookOpen size={28} aria-hidden="true" className="empty-icon" />
+                <h2>No books yet</h2>
+                <p>Upload an EPUB or browse the classics below to get started.</p>
+                <label className="empty-upload-btn" title="Upload EPUB">
+                  {busy ? <Loader2 className="spin" size={15} aria-hidden="true" /> : <Upload size={15} aria-hidden="true" />}
+                  <span>Upload EPUB</span>
+                  <input disabled={busy} type="file" accept=".epub,application/epub+zip" onChange={handleCatalogUpload} />
+                </label>
               </div>
             )}
           </div>
@@ -1865,11 +2012,11 @@ function App() {
 
             <div className="explore-grid">
               {CURATED_CLASSICS.map((classicBook) => {
-                const alreadyAdded = catalogBooks.some(
+                const matchingBook = catalogBooks.find(
                   (cb) => cb.title.toLowerCase().trim() === classicBook.title.toLowerCase().trim()
                 );
+                const alreadyAdded = !!matchingBook;
                 const isImporting = importingClassicId === classicBook.id;
-                const showSynopsis = activeSynopsisId === classicBook.id;
 
                 return (
                   <div className="explore-card" key={classicBook.id}>
@@ -1881,43 +2028,32 @@ function App() {
                         loading="lazy"
                       />
                       <div className="explore-cover-overlay">
+                        <div className="explore-synopsis">
+                          <span className="explore-synopsis-label">Synopsis</span>
+                          <p>{classicBook.summary || "No synopsis available."}</p>
+                        </div>
+
                         <button
-                          className="explore-action-btn primary-action"
+                          className={`explore-action-btn primary-action ${alreadyAdded ? "already-added" : ""}`}
                           disabled={busy || isImporting}
-                          onClick={() => void addClassicToLibrary(classicBook)}
-                          title={alreadyAdded ? "Open from Library" : "Add to Library & Read"}
+                          onClick={() => {
+                            if (alreadyAdded && matchingBook) {
+                              void openBook(matchingBook);
+                            } else {
+                              void addClassicToLibrary(classicBook);
+                            }
+                          }}
+                          title={alreadyAdded ? "Read Book" : "Add to Library"}
                           type="button"
                         >
                           {isImporting ? (
                             <Loader2 className="spin" size={16} />
                           ) : alreadyAdded ? (
-                            <Check size={16} />
+                            <BookOpen size={16} />
                           ) : (
                             <Plus size={16} />
                           )}
-                          <span>{alreadyAdded ? "In Library" : "Add to Library"}</span>
-                        </button>
-                        
-                        <a
-                          className="explore-action-btn secondary-action download-link"
-                          href={classicBook.downloadUrl}
-                          download={`${classicBook.title}.epub`}
-                          title="Direct EPUB Download"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          <Download size={16} />
-                          <span>Direct EPUB</span>
-                        </a>
-
-                        <button
-                          className={`explore-action-btn secondary-action ${showSynopsis ? "active" : ""}`}
-                          onClick={() => setActiveSynopsisId(showSynopsis ? null : classicBook.id)}
-                          title="Show Synopsis"
-                          type="button"
-                        >
-                          <Info size={16} />
-                          <span>Synopsis</span>
+                          <span>{isImporting ? "Adding..." : alreadyAdded ? "Read" : "Add to Library"}</span>
                         </button>
                       </div>
                     </div>
@@ -1926,42 +2062,6 @@ function App() {
                       <h3 className="explore-title" title={classicBook.title}>{classicBook.title}</h3>
                       <p className="explore-author">{classicBook.author}</p>
                     </div>
-
-                    {showSynopsis && (
-                      <div className="explore-synopsis-popover">
-                        <div className="popover-header">
-                          <h4>Synopsis</h4>
-                          <button 
-                            className="popover-close" 
-                            onClick={() => setActiveSynopsisId(null)}
-                            type="button"
-                          >
-                            &times;
-                          </button>
-                        </div>
-                        <p className="popover-text">{classicBook.summary || "No synopsis available."}</p>
-                        <div className="popover-footer">
-                          <button
-                            className="popover-add-btn"
-                            disabled={busy || isImporting}
-                            onClick={() => {
-                              void addClassicToLibrary(classicBook);
-                              setActiveSynopsisId(null);
-                            }}
-                            type="button"
-                          >
-                            {isImporting ? (
-                              <Loader2 className="spin" size={14} />
-                            ) : alreadyAdded ? (
-                              <Check size={14} />
-                            ) : (
-                              <Plus size={14} />
-                            )}
-                            <span>{alreadyAdded ? "In Library" : "Add & Read Now"}</span>
-                          </button>
-                        </div>
-                      </div>
-                    )}
                   </div>
                 );
               })}
@@ -1977,18 +2077,56 @@ function App() {
   if (!book) return null;
 
   return (
-    <main className="app-shell">
-      <header className="topbar">
+    <main className={readerImageMode ? "app-shell image-reader-shell" : "app-shell"}>
+      <header className={readerImageMode ? "topbar image-topbar" : "topbar"} style={{ position: "relative" }}>
         <button className="top-icon" type="button" title="Back to library" onClick={openCatalog}>
           <ChevronLeft size={22} aria-hidden="true" />
         </button>
         <div className="top-title">{book.title}</div>
-        <button className="top-icon" onClick={signOut} title="Sign out" type="button">
-          <LogOut size={17} aria-hidden="true" />
-        </button>
+        <div className="settings-button-wrapper" style={{ position: "relative", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <button className="top-icon" onClick={() => setSettingsOpen(!settingsOpen)} title="Reader Settings" type="button">
+            <Settings size={18} aria-hidden="true" />
+          </button>
+          
+          {settingsOpen && (
+            <>
+              <div className="settings-popover-overlay" onClick={() => setSettingsOpen(false)} />
+              <div className="settings-popover-card">
+                <div className="settings-popover-header">
+                  <h2>Reader Settings</h2>
+                </div>
+                
+                <div className="settings-popover-body">
+                  <div className="settings-section">
+                    <span className="settings-section-label">Typography</span>
+                    <div className="settings-font-options">
+                      <button
+                        aria-pressed={readerFontMode === "serif"}
+                        className={readerFontMode === "serif" ? "settings-font-btn active" : "settings-font-btn"}
+                        onClick={() => setReaderFontMode("serif")}
+                      >
+                        <span className="font-btn-preview serif-preview">Aa</span>
+                        <span className="font-btn-label">Elegant Serif</span>
+                      </button>
+                      
+                      <button
+                        aria-pressed={readerFontMode === "sans"}
+                        className={readerFontMode === "sans" ? "settings-font-btn active" : "settings-font-btn"}
+                        onClick={() => setReaderFontMode("sans")}
+                      >
+                        <span className="font-btn-preview sans-preview">Aa</span>
+                        <span className="font-btn-label">Modern Sans</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
       </header>
 
-      <section className="reader-frame">
+      <section className={readerImageMode ? "reader-frame image-mode-frame" : "reader-frame"}>
         <aside className="chapter-sidebar">
           <div className="chapter-heading">Chapters</div>
           <nav className="chapter-list" aria-label="Chapters">
@@ -2014,6 +2152,7 @@ function App() {
         </aside>
 
         <div className={readerImageMode ? "main-spread reader-only image-mode" : "main-spread reader-only"}>
+          {readerImageMode && renderReaderImageStage()}
           <section
             className="reading-surface"
             aria-live="polite"
@@ -2034,7 +2173,7 @@ function App() {
 
                 return (
                   <div className="reader-block" key={paragraph.id}>
-                    {readerImageInsertions.get(index)?.map((chunk) => renderGeneratedReaderImage(chunk))}
+                    {!readerImageMode && readerImageInsertions.get(index)?.map((chunk) => renderGeneratedReaderImage(chunk))}
                     {showChapterHeading && !isChapterHeading && (
                       <h2 className="reader-chapter-title">{paragraph.chapterTitle}</h2>
                     )}
@@ -2122,26 +2261,7 @@ function App() {
       </div>
 
       <footer className="control-rail">
-        <div className="font-mode-toggle" aria-label="Reader font">
-          <button
-            aria-pressed={readerFontMode === "serif"}
-            className={readerFontMode === "serif" ? "active" : ""}
-            onClick={() => setReaderFontMode("serif")}
-            title="Serif font"
-            type="button"
-          >
-            Serif
-          </button>
-          <button
-            aria-pressed={readerFontMode === "sans"}
-            className={readerFontMode === "sans" ? "active" : ""}
-            onClick={() => setReaderFontMode("sans")}
-            title="Sans-serif font"
-            type="button"
-          >
-            Sans
-          </button>
-        </div>
+        <div className="control-rail-left" />
         <div className="transport">
           <button
             className="rail-icon"
@@ -2172,12 +2292,14 @@ function App() {
         <div className="image-mode-control">
           <button
             className={readerImageMode ? "secondary-button active" : "secondary-button"}
-            disabled={!readerImageMode && !readerImageChunks.length}
+            disabled={!readerImageMode && (!readerImageChunks.length || !canUseReaderImages)}
             onClick={toggleReaderImageMode}
             title={
               readerImageMode
                 ? "Stop generating reading images"
-                : "Show reader images"
+                : isPro
+                  ? "Show reader images"
+                  : "Upgrade to Pro to use image mode"
             }
             type="button"
           >
@@ -2186,12 +2308,14 @@ function App() {
             ) : (
               <ImageIcon size={16} aria-hidden="true" />
             )}
-            <span>{readerImageMode ? "Image mode" : "Generate image"}</span>
+            <span>Image mode</span>
           </button>
         </div>
       </footer>
 
       {notice && <div className="notice">{notice}</div>}
+
+
     </main>
   );
 }

@@ -3,6 +3,10 @@ import { Communicate } from "edge-tts-universal";
 
 const DEFAULT_VOICE = "en-GB-SoniaNeural";
 
+export const config = {
+  maxDuration: 30
+};
+
 const readBody = (req: IncomingMessage) =>
   new Promise<string>((resolve, reject) => {
     let body = "";

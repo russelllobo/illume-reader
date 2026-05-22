@@ -70,6 +70,21 @@ const edgeTtsEndpoint = () => {
   return "/api/edge-tts";
 };
 
+const responseErrorMessage = async (response: Response, endpoint: string) => {
+  const contentType = response.headers.get("Content-Type") ?? "";
+  const details = contentType.includes("application/json")
+    ? await response.json().catch(() => null)
+    : await response.text().catch(() => "");
+  const message =
+    typeof details?.error === "string"
+      ? details.error
+      : typeof details === "string" && details.trim()
+        ? details.trim().slice(0, 140)
+        : response.statusText || "request failed";
+
+  return `Edge TTS proxy ${response.status} at ${endpoint}: ${message}`;
+};
+
 export const createEdgeTtsPlayer = ({
   onBoundary,
   onEnded,
@@ -123,6 +138,26 @@ export const createEdgeTtsPlayer = ({
     ended = true;
     cleanup();
     onError(error instanceof Error ? error : new Error("Edge TTS playback failed."));
+  };
+
+  const resetAudioPipeline = () => {
+    if (monitorTimer !== null) {
+      window.clearInterval(monitorTimer);
+      monitorTimer = null;
+    }
+    audio.pause();
+    audio.removeAttribute("src");
+    audio.load();
+    if (objectUrl) {
+      URL.revokeObjectURL(objectUrl);
+      objectUrl = "";
+    }
+    queuedChunks.length = 0;
+    bufferedChunks.length = 0;
+    mediaSource = null;
+    sourceBuffer = null;
+    streamEnded = false;
+    nextTimedRangeIndex = 0;
   };
 
   const startBoundaryMonitor = () => {
@@ -203,7 +238,9 @@ export const createEdgeTtsPlayer = ({
     objectUrl = URL.createObjectURL(mediaSource);
     audio.src = objectUrl;
     audio.onended = finish;
-    void audio.play().catch(fail);
+    void audio.play().catch(() => {
+      // Some browsers reject until bytes arrive; playback is retried on the first audio chunk.
+    });
 
     await new Promise<void>((resolve, reject) => {
       if (!mediaSource) {
@@ -233,8 +270,9 @@ export const createEdgeTtsPlayer = ({
   const runProxy = async () => {
     await startStreamingAudio();
     queueEstimatedBoundaries();
+    const endpoint = edgeTtsEndpoint();
 
-    const response = await fetch(edgeTtsEndpoint(), {
+    const response = await fetch(endpoint, {
       body: JSON.stringify({ text, voice }),
       headers: {
         "Content-Type": "application/json"
@@ -243,10 +281,9 @@ export const createEdgeTtsPlayer = ({
     });
 
     if (!response.ok) {
-      const details = await response.json().catch(() => null);
-      throw new Error(details?.error ?? "Edge TTS proxy failed.");
+      throw new Error(await responseErrorMessage(response, endpoint));
     }
-    if (!response.body) throw new Error("Local Edge TTS proxy returned no audio stream.");
+    if (!response.body) throw new Error(`Edge TTS proxy returned no audio stream at ${endpoint}.`);
 
     const reader = response.body.getReader();
     while (!cancelled) {
@@ -319,8 +356,14 @@ export const createEdgeTtsPlayer = ({
     }, 10_000);
 
     if (canStreamMp3()) {
-      await runProxy();
-      return;
+      try {
+        await runProxy();
+        return;
+      } catch (error) {
+        if (cancelled) return;
+        console.warn("Edge TTS proxy failed; falling back to direct Edge WebSocket.", error);
+        resetAudioPipeline();
+      }
     }
 
     await runBrowserEdge();
