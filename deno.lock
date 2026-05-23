@@ -1,0 +1,30 @@
+{
+  "version": "5",
+  "specifiers": {
+    "jsr:@supabase/functions-js@*": "2.106.0"
+  },
+  "jsr": {
+    "@supabase/functions-js@2.106.0": {
+      "integrity": "099a71e42598326ff161ffd67b9c29fc90a767b7bad3afb2494679889fe8ad5b"
+    }
+  },
+  "workspace": {
+    "packageJson": {
+      "dependencies": [
+        "npm:@supabase/supabase-js@^2.106.0",
+        "npm:@types/node@^25.0.3",
+        "npm:@types/react-dom@^19.2.3",
+        "npm:@types/react@^19.2.7",
+        "npm:@vitejs/plugin-react@^5.1.1",
+        "npm:edge-tts-universal@^1.4.0",
+        "npm:jszip@^3.10.1",
+        "npm:lucide-react@0.561",
+        "npm:pdfjs-dist@^5.7.284",
+        "npm:react-dom@^19.2.1",
+        "npm:react@^19.2.1",
+        "npm:typescript@^5.9.3",
+        "npm:vite@^7.2.7"
+      ]
+    }
+  }
+}

@@ -4,6 +4,7 @@ import { createClient } from "npm:@supabase/supabase-js@2.106.0";
 const READER_IMAGE_BUCKET = "reader-images";
 const FREE_READER_IMAGE_LIFETIME_LIMIT = 25;
 const PRO_READER_IMAGE_ACCOUNT_LIMIT = 100;
+type ReaderImageStyle = "cartoon" | "cute";
 
 const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -28,8 +29,76 @@ const cleanId = (value: unknown, maxLength = 80) =>
     .replace(/[^a-zA-Z0-9_-]/g, "")
     .slice(0, maxLength);
 
-const imagePathFor = (userId: string, bookId: string, startWord: number, endWord: number) =>
-  `${userId}/${bookId}/${startWord}-${endWord}.webp`;
+const cleanImageStyle = (value: unknown): ReaderImageStyle =>
+  value === "cute" ? "cute" : "cartoon";
+
+const imagePathFor = (
+  userId: string,
+  bookId: string,
+  style: ReaderImageStyle,
+  startWord: number,
+  endWord: number
+) => `${userId}/${bookId}/${style}/${startWord}-${endWord}.webp`;
+
+const promptForStyle = (
+  style: ReaderImageStyle,
+  bookTitle: string,
+  text: string,
+  startWord: number,
+  endWord: number
+) => {
+  const referenceWords = Number.isFinite(startWord) && Number.isFinite(endWord) ? `Reference words: ${startWord}-${endWord}.` : "";
+  const promptLines =
+    style === "cute"
+      ? [
+          "Create a clever visual explanation of this paragraph as if it were an illustrated idea from a bestselling self-development book or illustration in a fiction book that shows the plot.",
+          `Book: ${bookTitle || "Uploaded document"}.`,
+          `Paragraph: ${text}`,
+          "",
+          "First, silently pick:",
+          "A concise main idea.",
+          "Identify:",
+          "1) The emotional or practical shift.",
+          "2) One simple visual metaphor that captures it.",
+          "Then create the image using that metaphor.",
+          "",
+          "The image should have:",
+          "- MINIMAL text",
+          "- prioritise instant intuitiveness",
+          "- 1 simple idea in kawaii anime style and pastel modern colors that explains the concept instantly. Avoid displaying too much information.",
+          "- A clear before/after or problem/solution contrast only if suitable",
+          "- Expressive cute kittens and other cute animals or facial expressions where useful.",
+          "- Pastel girly inviting colors.",
+          "",
+          "Style: Playful premium editorial illustration, bold shapes, warm lighting, crisp details, slightly exaggerated expressions. Fun but not childish. Clear but not boring. Make the lesson land visually without needing the viewer to read a long explanation.",
+          referenceWords
+        ]
+      : [
+          "Create a clever visual explanation of this nonfiction paragraph as if it were an illustrated idea from a bestselling self-development book.",
+          `Book: ${bookTitle || "Uploaded document"}.`,
+          `Paragraph: ${text}`,
+          "",
+          "First, silently pick:",
+          "A concise main idea.",
+          "Identify:",
+          "1) The emotional or practical shift.",
+          "2) One simple visual metaphor that captures it.",
+          "Then create the image using that metaphor.",
+          "",
+          "The image should have:",
+          "- MINIMAL text",
+          "- prioritise instant intuitiveness",
+          "- 1 simple idea in bold Sunday funnies style with thick outlines, halftone textures, and bright 1980s colors that explains the concept instantly. Avoid displaying too much information.",
+          "- A clear before/after or problem/solution contrast only if suitable",
+          "- Expressive human body language or facial expressions where useful.",
+          "- Bright, inviting colors.",
+          "",
+          "Style: Playful premium editorial illustration, bold shapes, warm lighting, crisp details, slightly exaggerated expressions, modern nonfiction-book visual style. Fun but not childish. Clear but not boring. Make the lesson land visually without needing the viewer to read a long explanation.",
+          referenceWords
+        ];
+
+  return promptLines.filter((line) => line !== "").join("\n");
+};
 
 const base64ToBytes = (base64: string) => Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
 
@@ -75,6 +144,7 @@ const getStoredReaderImage = async (
   adminClient: any,
   userId: string,
   bookId: string,
+  style: ReaderImageStyle,
   startWord: number,
   endWord: number
 ) => {
@@ -99,6 +169,7 @@ const getStoredReaderImage = async (
     .select("prompt, storage_path")
     .eq("user_id", userId)
     .eq("book_id", bookId)
+    .eq("style", style)
     .eq("start_word", startWord)
     .eq("end_word", endWord)
     .maybeSingle();
@@ -111,6 +182,7 @@ const getStoredReaderImage = async (
     .select("end_word, prompt, start_word, storage_path")
     .eq("user_id", userId)
     .eq("book_id", bookId)
+    .eq("style", style)
     .lte("start_word", endWord)
     .gte("end_word", startWord);
 
@@ -162,6 +234,7 @@ Deno.serve(async (req) => {
     const payload = await req.json();
     const bookId = cleanId(payload.bookId);
     const bookTitle = cleanText(payload.bookTitle, 180);
+    const imageStyle = cleanImageStyle(payload.imageStyle);
     const text = cleanText(payload.text, 7_500);
     const startWord = Number(payload.startWord);
     const endWord = Number(payload.endWord);
@@ -195,7 +268,7 @@ Deno.serve(async (req) => {
         : "free";
     const imageLimit = activePlan === "pro" ? PRO_READER_IMAGE_ACCOUNT_LIMIT : FREE_READER_IMAGE_LIFETIME_LIMIT;
 
-    const storedImage = await getStoredReaderImage(adminClient, userData.user.id, bookId, startWord, endWord);
+    const storedImage = await getStoredReaderImage(adminClient, userData.user.id, bookId, imageStyle, startWord, endWord);
     if (storedImage) {
       return new Response(
         JSON.stringify({
@@ -227,31 +300,7 @@ Deno.serve(async (req) => {
     }
 
     try {
-      const prompt = [
-        "Create a clever visual explanation of this nonfiction paragraph as if it were an illustrated idea from a bestselling self-development book.",
-        `Book: ${bookTitle || "Uploaded document"}.`,
-        `Paragraph: ${text}`,
-        "",
-        "First, silently pick:",
-        "A concise main idea.",
-        "Identify:",
-        "1) The emotional or practical shift.",
-        "2) One simple visual metaphor that captures it.",
-        "Then create the image using that metaphor.",
-        "",
-        "The image should have:",
-        "- MINIMAL text",
-        "- prioritise instant intuitiveness",
-        "- 1 simple idea in bold Sunday funnies style with thick outlines, halftone textures, and bright 1980s colors that explains the concept instantly. Avoid displaying too much information.",
-        "- A clear before/after or problem/solution contrast only if suitable",
-        "- Expressive human body language or facial expressions where useful.",
-        "- Bright, inviting colors.",
-        "",
-        "Style: Playful premium editorial illustration, bold shapes, warm lighting, crisp details, slightly exaggerated expressions, modern nonfiction-book visual style. Fun but not childish. Clear but not boring. Make the lesson land visually without needing the viewer to read a long explanation.",
-        Number.isFinite(startWord) && Number.isFinite(endWord) ? `Reference words: ${startWord}-${endWord}.` : ""
-      ]
-        .filter((line) => line !== "")
-        .join("\n");
+      const prompt = promptForStyle(imageStyle, bookTitle, text, startWord, endWord);
 
       const response = await fetch("https://api.openai.com/v1/images/generations", {
         method: "POST",
@@ -277,7 +326,7 @@ Deno.serve(async (req) => {
 
       const base64Image = result?.data?.[0]?.b64_json;
       if (!base64Image) throw new Error("OpenAI returned no image data.");
-      const storagePath = imagePathFor(userData.user.id, bookId, startWord, endWord);
+      const storagePath = imagePathFor(userData.user.id, bookId, imageStyle, startWord, endWord);
 
       const { error: uploadError } = await adminClient.storage
         .from(READER_IMAGE_BUCKET)
@@ -295,9 +344,10 @@ Deno.serve(async (req) => {
           prompt,
           start_word: startWord,
           storage_path: storagePath,
+          style: imageStyle,
           user_id: userData.user.id
         },
-        { onConflict: "book_id,start_word,end_word" }
+        { onConflict: "book_id,start_word,end_word,style" }
       );
 
       if (insertError) throw insertError;

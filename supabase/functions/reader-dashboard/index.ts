@@ -17,6 +17,7 @@ type BookRow = {
   file_name: string;
   file_size: number | null;
   id: string;
+  storage_path: string;
   title: string;
   user_id: string;
 };
@@ -30,7 +31,6 @@ type ReaderImageRow = {
 };
 
 type StorageObjectRow = {
-  bucket_id: string;
   metadata: Record<string, unknown> | null;
   name: string;
 };
@@ -53,6 +53,36 @@ const objectSize = (object: StorageObjectRow) => {
   const rawSize = object.metadata?.size;
   const size = typeof rawSize === "number" ? rawSize : Number(rawSize ?? 0);
   return Number.isFinite(size) ? size : 0;
+};
+
+const storageFolderFor = (path: string) => {
+  const parts = path.split("/").filter(Boolean);
+  parts.pop();
+  return parts.join("/");
+};
+
+const listKnownStorageObjects = async (adminClient: any, bucket: string, paths: string[]) => {
+  const uniquePaths = [...new Set(paths.filter(Boolean))];
+  const objects: StorageObjectRow[] = [];
+
+  await Promise.all(
+    [...new Set(uniquePaths.map(storageFolderFor))].map(async (folder) => {
+      const { data, error } = await adminClient.storage.from(bucket).list(folder, {
+        limit: 1000,
+        sortBy: { column: "name", order: "asc" }
+      });
+
+      if (error) throw error;
+
+      for (const object of data ?? []) {
+        if (!object.metadata) continue;
+        const name = folder ? `${folder}/${object.name}` : object.name;
+        if (uniquePaths.includes(name)) objects.push({ metadata: object.metadata, name });
+      }
+    })
+  );
+
+  return objects;
 };
 
 const listAllUsers = async (adminClient: any) => {
@@ -96,28 +126,30 @@ Deno.serve(async (req) => {
     const [
       users,
       { data: books, error: booksError },
-      { data: readerImages, error: readerImagesError },
-      { data: storageObjects, error: storageObjectsError }
+      { data: readerImages, error: readerImagesError }
     ] = await Promise.all([
       listAllUsers(adminClient),
-      adminClient.from("books").select("created_at, document_type, file_name, file_size, id, title, user_id"),
-      adminClient.from("reader_images").select("book_id, created_at, id, storage_path, user_id"),
-      adminClient
-        .schema("storage")
-        .from("objects")
-        .select("bucket_id, metadata, name")
-        .in("bucket_id", [BOOK_BUCKET, READER_IMAGE_BUCKET])
+      adminClient.from("books").select("created_at, document_type, file_name, file_size, id, storage_path, title, user_id"),
+      adminClient.from("reader_images").select("book_id, created_at, id, storage_path, user_id")
     ]);
 
     if (booksError) throw booksError;
     if (readerImagesError) throw readerImagesError;
-    if (storageObjectsError) throw storageObjectsError;
 
     const bookRows = (books ?? []) as BookRow[];
     const imageRows = (readerImages ?? []) as ReaderImageRow[];
-    const objectRows = (storageObjects ?? []) as StorageObjectRow[];
-    const bookObjects = objectRows.filter((object) => object.bucket_id === BOOK_BUCKET);
-    const imageObjects = objectRows.filter((object) => object.bucket_id === READER_IMAGE_BUCKET);
+    const [bookObjects, imageObjects] = await Promise.all([
+      listKnownStorageObjects(
+        adminClient,
+        BOOK_BUCKET,
+        bookRows.map((book) => book.storage_path)
+      ).catch(() => [] as StorageObjectRow[]),
+      listKnownStorageObjects(
+        adminClient,
+        READER_IMAGE_BUCKET,
+        imageRows.map((image) => image.storage_path)
+      ).catch(() => [] as StorageObjectRow[])
+    ]);
     const bookStorageFallback = bookRows.reduce((total, book) => total + Number(book.file_size ?? 0), 0);
     const bookStorageBytes = bookObjects.reduce((total, object) => total + objectSize(object), 0) || bookStorageFallback;
     const imageStorageBytes = imageObjects.reduce((total, object) => total + objectSize(object), 0);

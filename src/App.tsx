@@ -12,6 +12,7 @@ import {
   Image as ImageIcon,
   Loader2,
   LogOut,
+  Palette,
   Pause,
   Play,
   RefreshCw,
@@ -26,7 +27,7 @@ import {
   Users,
   X
 } from "lucide-react";
-import { ChangeEvent, CSSProperties, FormEvent, KeyboardEvent, PointerEvent, RefObject, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, CSSProperties, FormEvent, KeyboardEvent, PointerEvent, ReactNode, RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
 import { parsePdf, pdfjsLib } from "./pdf";
 import { createEdgeTtsPlayer, EdgeTtsPlayer } from "./edgeTts";
@@ -37,6 +38,7 @@ import { LandingPage } from "./LandingPage";
 
 type PlaybackState = "idle" | "playing" | "paused";
 type ReaderFontMode = "serif" | "sans";
+type ReaderImageStyle = "cartoon" | "cute";
 type PdfReaderViewMode = "pdf" | "text" | "split";
 type SpeechHighlight = {
   end: number;
@@ -63,6 +65,7 @@ type PdfPageMetrics = {
 type ReaderImageChunk = {
   endWord: number;
   index: number;
+  pageNumber?: number;
   startWord: number;
   text: string;
 };
@@ -84,6 +87,7 @@ type CachedReaderImage = {
   prompt?: string;
   src: string;
   startWord: number;
+  style: ReaderImageStyle;
 };
 type BookRow = {
   author: string;
@@ -153,6 +157,10 @@ const READER_IMAGE_STORE_NAME = "images";
 const READER_IMAGE_CHUNK_WORDS = 1000;
 const FREE_READER_IMAGE_LIFETIME_LIMIT = 25;
 const PRO_READER_IMAGE_ACCOUNT_LIMIT = 100;
+const READER_IMAGE_STYLES: Array<{ id: ReaderImageStyle; label: string; summary: string }> = [
+  { id: "cartoon", label: "Cartoon", summary: "Bold Sunday funnies look with bright 1980s color." },
+  { id: "cute", label: "Cute", summary: "Kawaii anime feel with pastel modern colors." }
+];
 const USER_STORAGE_QUOTA_BYTES = Number(
   import.meta.env.VITE_USER_STORAGE_QUOTA_BYTES ?? 104_857_600
 );
@@ -584,6 +592,34 @@ const buildReaderImageChunks = (book: ReaderBook, startOffset = 0, chunkSize = R
   return chunks;
 };
 
+const buildPdfReaderImageChunks = (book: ReaderBook): ReaderImageChunk[] => {
+  const chunks: ReaderImageChunk[] = [];
+  let wordOffset = 0;
+
+  for (let pageNumber = 1; pageNumber <= (book.pageCount ?? 0); pageNumber += 1) {
+    const pageWords: string[] = [];
+
+    for (const paragraph of book.paragraphs) {
+      if (paragraph.kind === "image" || paragraph.pageNumber !== pageNumber) continue;
+      pageWords.push(...wordsFromText(paragraph.text));
+    }
+
+    if (pageWords.length) {
+      chunks.push({
+        endWord: wordOffset + pageWords.length,
+        index: pageNumber - 1,
+        pageNumber,
+        startWord: wordOffset + 1,
+        text: pageWords.join(" ")
+      });
+    }
+
+    wordOffset += pageWords.length;
+  }
+
+  return chunks;
+};
+
 const wordOffsetForParagraph = (book: ReaderBook, targetIndex: number) =>
   book.paragraphs.slice(0, targetIndex).reduce((total, paragraph) => {
     if (paragraph.kind === "image") return total;
@@ -602,6 +638,20 @@ const formatBytes = (bytes: number) => {
   }
 
   return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+};
+
+const edgeFunctionErrorMessage = async (error: unknown) => {
+  const fallback = error instanceof Error ? error.message : "Edge Function failed.";
+  const response = error && typeof error === "object" && "context" in error ? (error.context as Response | undefined) : undefined;
+
+  if (!response) return fallback;
+
+  try {
+    const body = await response.clone().json();
+    return typeof body?.error === "string" ? body.error : fallback;
+  } catch {
+    return fallback;
+  }
 };
 
 const formatShortDate = (value: string | null) => {
@@ -686,7 +736,6 @@ function BookCover({ book }: { book: BookRow }) {
           onError={() => setHasError(true)}
         />
       )}
-      <span className={`catalog-format-badge ${format}`}>{format.toUpperCase()}</span>
     </span>
   );
 }
@@ -697,6 +746,7 @@ function PdfPageCanvas({
   pageNumber,
   pdf,
   rootRef,
+  sideImage,
   speechHighlight,
   paragraphs
 }: {
@@ -706,6 +756,7 @@ function PdfPageCanvas({
   paragraphs: ReaderParagraph[];
   pdf: pdfjsLib.PDFDocumentProxy;
   rootRef: RefObject<HTMLElement | null>;
+  sideImage?: ReactNode;
   speechHighlight: SpeechHighlight | null;
 }) {
   const pageRef = useRef<HTMLDivElement | null>(null);
@@ -827,40 +878,49 @@ function PdfPageCanvas({
     };
   }, [pageNumber, pdf, shouldRender]);
 
+  const imageSlot = sideImage ? (
+    <div className={`pdf-page-image-slot ${pageNumber % 2 === 1 ? "left" : "right"}`}>
+      {sideImage}
+    </div>
+  ) : null;
+  const pageStyle = {
+    "--pdf-page-aspect-ratio": `${metrics?.width ?? (pageSize.width || 3)} / ${metrics?.height ?? (pageSize.height || 4)}`,
+    ...(pageSize.width && pageSize.height ? {
+    "--pdf-page-height": `${pageSize.height}px`,
+    "--pdf-page-width": `${pageSize.width}px`
+    } : {})
+  } as CSSProperties;
+
   return (
-    <div
-      className={active ? "pdf-page active" : "pdf-page"}
-      data-page-number={pageNumber}
-      ref={pageRef}
-      style={{
-        "--pdf-page-aspect-ratio": `${metrics?.width ?? (pageSize.width || 3)} / ${metrics?.height ?? (pageSize.height || 4)}`,
-        ...(pageSize.width && pageSize.height ? {
-        "--pdf-page-height": `${pageSize.height}px`,
-        "--pdf-page-width": `${pageSize.width}px`
-        } : {})
-      } as CSSProperties}
-    >
-      <canvas ref={canvasRef} aria-label={`PDF page ${pageNumber}`} />
-      {textLayerWords.length ? (
-        <div className="pdf-text-layer" aria-hidden="true">
-          {textLayerWords.map((word, index) => (
-            <span
-              className={word.pageWordIndex === activePageWordIndex ? "pdf-spoken-word" : "pdf-text-word"}
-              key={`${word.pageWordIndex}-${index}`}
-              style={{
-                fontSize: `${word.fontSize}px`,
-                height: `${word.height}px`,
-                left: `${word.left}px`,
-                top: `${word.top}px`,
-                width: `${word.width}px`
-              }}
-            >
-              {word.text}
-            </span>
-          ))}
-        </div>
-      ) : null}
-      {!shouldRender && <div className="pdf-page-placeholder">Page {pageNumber}</div>}
+    <div className="pdf-page-row" data-page-number={pageNumber} style={pageStyle}>
+      <div
+        className={active ? "pdf-page active" : "pdf-page"}
+        ref={pageRef}
+        style={pageStyle}
+      >
+        <canvas ref={canvasRef} aria-label={`PDF page ${pageNumber}`} />
+        {textLayerWords.length ? (
+          <div className="pdf-text-layer" aria-hidden="true">
+            {textLayerWords.map((word, index) => (
+              <span
+                className={word.pageWordIndex === activePageWordIndex ? "pdf-spoken-word" : "pdf-text-word"}
+                key={`${word.pageWordIndex}-${index}`}
+                style={{
+                  fontSize: `${word.fontSize}px`,
+                  height: `${word.height}px`,
+                  left: `${word.left}px`,
+                  top: `${word.top}px`,
+                  width: `${word.width}px`
+                }}
+              >
+                {word.text}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {!shouldRender && <div className="pdf-page-placeholder">Page {pageNumber}</div>}
+      </div>
+      {imageSlot}
     </div>
   );
 }
@@ -874,6 +934,7 @@ function PdfDocumentView({
   scrollOffsetRatio,
   scrollPage,
   scrollRequest,
+  renderPageImage,
   speechHighlight
 }: {
   currentPage: number;
@@ -884,6 +945,7 @@ function PdfDocumentView({
   scrollOffsetRatio: number;
   scrollPage: number;
   scrollRequest: number;
+  renderPageImage?: (pageNumber: number) => ReactNode;
   speechHighlight: SpeechHighlight | null;
 }) {
   const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
@@ -1025,6 +1087,7 @@ function PdfDocumentView({
           paragraphs={paragraphs}
           pdf={pdf}
           rootRef={surfaceRef}
+          sideImage={renderPageImage?.(index + 1)}
           speechHighlight={speechHighlight}
         />
       ))}
@@ -1271,8 +1334,11 @@ const shrinkCoverDataUrl = async (coverUrl: string) => {
 const bookCacheRequest = (bookId: string) =>
   new Request(`${window.location.origin}/__book-cache/${encodeURIComponent(bookId)}`);
 
-const readerImageCacheKey = (bookId: string, chunk: Pick<ReaderImageChunk, "endWord" | "startWord">) =>
-  `${bookId}:${chunk.startWord}:${chunk.endWord}`;
+const readerImageCacheKey = (
+  bookId: string,
+  chunk: Pick<ReaderImageChunk, "endWord" | "startWord">,
+  style: ReaderImageStyle
+) => `${bookId}:${style}:${chunk.startWord}:${chunk.endWord}`;
 
 const openReaderImageDb = () =>
   new Promise<IDBDatabase | null>((resolve) => {
@@ -1289,13 +1355,13 @@ const openReaderImageDb = () =>
     request.onerror = () => resolve(null);
   });
 
-const getCachedReaderImage = async (bookId: string, chunk: ReaderImageChunk) => {
+const getCachedReaderImage = async (bookId: string, chunk: ReaderImageChunk, style: ReaderImageStyle) => {
   const db = await openReaderImageDb();
   if (!db) return null;
 
   return new Promise<CachedReaderImage | null>((resolve) => {
     const transaction = db.transaction(READER_IMAGE_STORE_NAME, "readonly");
-    const request = transaction.objectStore(READER_IMAGE_STORE_NAME).get(readerImageCacheKey(bookId, chunk));
+    const request = transaction.objectStore(READER_IMAGE_STORE_NAME).get(readerImageCacheKey(bookId, chunk, style));
     request.onsuccess = () => resolve((request.result as CachedReaderImage | undefined) ?? null);
     request.onerror = () => resolve(null);
     transaction.oncomplete = () => db.close();
@@ -1427,6 +1493,8 @@ function App() {
   const [readerImageMode, setReaderImageMode] = useState(false);
   const [readerImages, setReaderImages] = useState<Record<number, ReaderImageState>>({});
   const [readerImageCount, setReaderImageCount] = useState(0);
+  const [readerImageStyle, setReaderImageStyle] = useState<ReaderImageStyle>("cartoon");
+  const [readerImageStyleOpen, setReaderImageStyleOpen] = useState(false);
   const [readerImageUpgradeOpen, setReaderImageUpgradeOpen] = useState(false);
   const parsedBooks = useRef(new Map<string, ReaderBook>());
   const parsedBookFiles = useRef(new Map<string, File>());
@@ -1484,6 +1552,7 @@ function App() {
 
     return index;
   }, [book?.chapterPageNumbers, book?.chapterPageOffsets, currentPage, isPdfBook, pdfVisibleOffsetRatio]);
+  const immersiveReaderImageMode = readerImageMode && !isPdfBook;
   const storageUsed = catalogBooks.reduce((total, item) => total + item.file_size, 0);
   const isPro = billingProfile?.plan === "pro" && ["active", "trialing"].includes(billingProfile.status);
   const readerImageLimit = isPro ? PRO_READER_IMAGE_ACCOUNT_LIMIT : FREE_READER_IMAGE_LIFETIME_LIMIT;
@@ -1494,20 +1563,25 @@ function App() {
   );
   const readerImageStartOffset = 0;
   const readerImageChunks = useMemo(
-    () => (book ? buildReaderImageChunks(book, readerImageStartOffset) : []),
+    () => (book ? (book.format === "pdf" ? buildPdfReaderImageChunks(book) : buildReaderImageChunks(book, readerImageStartOffset)) : []),
     [book, readerImageStartOffset]
+  );
+  const readerImageChunkByIndex = useMemo(
+    () => new Map(readerImageChunks.map((chunk) => [chunk.index, chunk])),
+    [readerImageChunks]
   );
   const activeReaderImageChunkIndex = useMemo(() => {
     if (!book || !readerImageChunks.length) return -1;
+    if (book.format === "pdf") return readerImageChunkByIndex.has(currentPage - 1) ? currentPage - 1 : -1;
     const relativeWordOffset = Math.max(0, currentReaderWordOffset - readerImageStartOffset);
     return Math.min(readerImageChunks.length - 1, Math.floor(relativeWordOffset / READER_IMAGE_CHUNK_WORDS));
-  }, [book, currentReaderWordOffset, readerImageChunks, readerImageStartOffset]);
+  }, [book, currentPage, currentReaderWordOffset, readerImageChunkByIndex, readerImageChunks.length, readerImageStartOffset]);
   const visibleReaderImageIndexes = useMemo(() => {
     if (!readerImageMode || activeReaderImageChunkIndex < 0) return new Set<number>();
     return new Set([activeReaderImageChunkIndex, activeReaderImageChunkIndex + 1]);
   }, [activeReaderImageChunkIndex, readerImageMode]);
   const activeReaderImageChunk =
-    activeReaderImageChunkIndex >= 0 ? readerImageChunks[activeReaderImageChunkIndex] : null;
+    activeReaderImageChunkIndex >= 0 ? readerImageChunkByIndex.get(activeReaderImageChunkIndex) ?? null : null;
   const isReaderImageLoading =
     readerImageMode &&
     activeReaderImageChunkIndex >= 0 &&
@@ -1517,6 +1591,7 @@ function App() {
   const readerImageInsertions = useMemo(() => {
     const insertions = new Map<number, ReaderImageChunk[]>();
     if (!book || !readerImageMode || !readerImageChunks.length) return insertions;
+    if (book.format === "pdf") return insertions;
 
     let wordOffset = 0;
     let chunkIndex = 0;
@@ -1656,6 +1731,15 @@ function App() {
   }, [readerFontMode]);
 
   useEffect(() => {
+    const savedStyle = window.localStorage.getItem("reader-image-style");
+    if (savedStyle === "cartoon" || savedStyle === "cute") setReaderImageStyle(savedStyle);
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("reader-image-style", readerImageStyle);
+  }, [readerImageStyle]);
+
+  useEffect(() => {
     if (playback !== "playing" || !current) return;
 
     stopAudio();
@@ -1707,7 +1791,7 @@ function App() {
   useEffect(() => {
     if (!readerImageMode || activeReaderImageChunkIndex < 0) return;
     void ensureReaderImages(activeReaderImageChunkIndex);
-  }, [activeReaderImageChunkIndex, readerImageMode]);
+  }, [activeReaderImageChunkIndex, readerImageMode, readerImageStyle]);
 
   useEffect(() => {
     if (!activeBookId || !book || view !== "reader") return;
@@ -1734,7 +1818,11 @@ function App() {
     };
   }, [activeBookId, book, currentIndex, currentPage, view]);
 
-  const generateReaderImage = async (chunk: ReaderImageChunk, runId = readerImageRunRef.current) => {
+  const generateReaderImage = async (
+    chunk: ReaderImageChunk,
+    runId = readerImageRunRef.current,
+    style = readerImageStyle
+  ) => {
     if (!book || !activeBookId) return;
     if (!readerImageModeRef.current || runId !== readerImageRunRef.current) return;
     if (imageRequestsRef.current.has(chunk.index)) return;
@@ -1742,7 +1830,7 @@ function App() {
     imageRequestsRef.current.add(chunk.index);
 
     try {
-      const cachedImage = await getCachedReaderImage(activeBookId, chunk);
+      const cachedImage = await getCachedReaderImage(activeBookId, chunk, style);
       if (!readerImageModeRef.current || runId !== readerImageRunRef.current) return;
       if (cachedImage?.src) {
         setReaderImages((items) => ({
@@ -1769,6 +1857,7 @@ function App() {
           bookTitle: book.title,
           chunkIndex: chunk.index,
           endWord: chunk.endWord,
+          imageStyle: style,
           startWord: chunk.startWord,
           text: chunk.text
         }
@@ -1808,10 +1897,11 @@ function App() {
         bookId: activeBookId,
         createdAt: new Date().toISOString(),
         endWord: chunk.endWord,
-        key: readerImageCacheKey(activeBookId, chunk),
+        key: readerImageCacheKey(activeBookId, chunk, style),
         prompt,
         src: data.imageUrl,
-        startWord: chunk.startWord
+        startWord: chunk.startWord,
+        style
       });
 
       setReaderImages((items) => ({
@@ -1839,7 +1929,7 @@ function App() {
   const ensureReaderImages = async (chunkIndex: number) => {
     const runId = readerImageRunRef.current;
     const targets = [chunkIndex, chunkIndex + 1]
-      .map((index) => readerImageChunks[index])
+      .map((index) => readerImageChunkByIndex.get(index))
       .filter((chunk): chunk is ReaderImageChunk => Boolean(chunk));
 
     await Promise.all(
@@ -1856,7 +1946,29 @@ function App() {
     readerImageModeRef.current = false;
     imageRequestsRef.current.clear();
     setReaderImageMode(false);
+    setReaderImageStyleOpen(false);
     setReaderImages({});
+  };
+
+  const selectReaderImageStyle = (style: ReaderImageStyle) => {
+    if (style === readerImageStyle) {
+      setReaderImageStyleOpen(false);
+      return;
+    }
+
+    setReaderImageStyle(style);
+    setReaderImageStyleOpen(false);
+    if (!readerImageMode || !book || activeReaderImageChunkIndex < 0) return;
+
+    const targetChunks = readerImageChunks
+      .filter((chunk) => chunk.index === activeReaderImageChunkIndex || chunk.index === activeReaderImageChunkIndex + 1)
+      .filter((chunk): chunk is ReaderImageChunk => Boolean(chunk));
+    const runId = readerImageRunRef.current + 1;
+    readerImageRunRef.current = runId;
+    readerImageModeRef.current = true;
+    imageRequestsRef.current.clear();
+    setReaderImages({});
+    void Promise.all(targetChunks.map((chunk) => generateReaderImage(chunk, runId, style)));
   };
 
   const toggleReaderImageMode = () => {
@@ -1867,7 +1979,7 @@ function App() {
 
     if (!book || activeReaderImageChunkIndex < 0) return;
     const targetChunks = readerImageChunks
-      .slice(activeReaderImageChunkIndex, activeReaderImageChunkIndex + 2)
+      .filter((chunk) => chunk.index === activeReaderImageChunkIndex || chunk.index === activeReaderImageChunkIndex + 1)
       .filter((chunk): chunk is ReaderImageChunk => Boolean(chunk));
     if (!targetChunks.length) return;
 
@@ -1926,7 +2038,7 @@ function App() {
     });
 
     if (error) {
-      setDashboardError(error.message);
+      setDashboardError(await edgeFunctionErrorMessage(error));
     } else {
       setDashboardData(data as ReaderDashboardData);
     }
@@ -2462,6 +2574,7 @@ function App() {
   const renderGeneratedReaderImage = (chunk: ReaderImageChunk) => {
     const image = readerImages[chunk.index];
     const isLimit = Boolean(image?.limitReached);
+    const label = chunk.pageNumber ? `Page ${chunk.pageNumber}` : `Words ${chunk.startWord}-${chunk.endWord}`;
 
     return (
       <figure
@@ -2469,7 +2582,10 @@ function App() {
         key={`generated-${chunk.index}`}
       >
         {image?.status === "ready" && image.src ? (
-          <img alt={`Generated visual for words ${chunk.startWord} to ${chunk.endWord}`} src={image.src} />
+          <img
+            alt={chunk.pageNumber ? `Generated visual for page ${chunk.pageNumber}` : `Generated visual for words ${chunk.startWord} to ${chunk.endWord}`}
+            src={image.src}
+          />
         ) : (
           <div
             className={[
@@ -2496,10 +2612,19 @@ function App() {
           </div>
         )}
         <figcaption>
-          Words {chunk.startWord}-{chunk.endWord}
+          {label}
         </figcaption>
       </figure>
     );
+  };
+
+  const renderPdfPageReaderImage = (pageNumber: number) => {
+    if (!readerImageMode || !isPdfBook) return null;
+
+    const chunk = readerImageChunkByIndex.get(pageNumber - 1);
+    if (!chunk || (!visibleReaderImageIndexes.has(chunk.index) && !readerImages[chunk.index])) return null;
+
+    return renderGeneratedReaderImage(chunk);
   };
 
   const renderReaderImageStage = () => {
@@ -2732,15 +2857,12 @@ function App() {
       <main className="app-shell catalog-shell">
         <header className="topbar catalog-topbar" style={{ position: "relative" }}>
           <div className="catalog-storage-summary">
-            <div className="library-brand-mark" aria-label={isPro ? "illume Pro" : "illume"}>
+            <div className="library-brand-mark" aria-label={`illume ${isPro ? "Pro" : "Free"}`}>
               <img src="/landing/logo.jpeg" alt="" aria-hidden="true" />
               <span>illume</span>
-              {isPro && (
-                <span className="library-pro-badge">
-                  <Crown size={12} aria-hidden="true" />
-                  <span>Pro</span>
-                </span>
-              )}
+              <span className={`library-plan-badge ${isPro ? "pro" : "free"}`}>
+                <span>{isPro ? "Pro" : "Free"}</span>
+              </span>
             </div>
           </div>
           <div className="top-actions">
@@ -2869,53 +2991,60 @@ function App() {
         </header>
 
         <section className="catalog-view" aria-label="Book library">
-          <div className="catalog-header">
-            <h1>Books</h1>
-          </div>
-          <div className="catalog-list">
-            {catalogBooks.length ? (
-              catalogBooks.map((catalogBook) => (
-                <div
-                  className={catalogBook.id === activeBookId ? "catalog-book active" : "catalog-book"}
-                  key={catalogBook.id}
-                >
-                  <button
-                    className="catalog-book-open"
-                    disabled={busy}
-                    onClick={() => void openBook(catalogBook)}
-                    type="button"
+          <div className="catalog-books-section">
+            <div className="catalog-header">
+              <h1>Books</h1>
+              <label className="catalog-heading-upload" title="Upload document">
+                {busy ? <Loader2 className="spin" size={14} aria-hidden="true" /> : <Upload size={14} aria-hidden="true" />}
+                <span>Upload</span>
+                <input disabled={busy} type="file" accept={DOCUMENT_UPLOAD_ACCEPT} onChange={handleCatalogUpload} />
+              </label>
+            </div>
+            <div className="catalog-list">
+              {catalogBooks.length ? (
+                catalogBooks.map((catalogBook) => (
+                  <div
+                    className={catalogBook.id === activeBookId ? "catalog-book active" : "catalog-book"}
+                    key={catalogBook.id}
                   >
-                    <BookCover book={catalogBook} />
-                    <span className="catalog-book-copy">
-                      <strong>{catalogBook.title}</strong>
-                      <small>
-                        {catalogBook.author || catalogBook.file_name} · {formatBytes(catalogBook.file_size)}
-                      </small>
-                    </span>
-                  </button>
-                  <button
-                    className="catalog-delete"
-                    disabled={busy}
-                    onClick={() => void deleteBook(catalogBook)}
-                    title="Delete book"
-                    type="button"
-                  >
-                    <Trash2 size={16} aria-hidden="true" />
-                  </button>
+                    <button
+                      className="catalog-book-open"
+                      disabled={busy}
+                      onClick={() => void openBook(catalogBook)}
+                      type="button"
+                    >
+                      <BookCover book={catalogBook} />
+                      <span className="catalog-book-copy">
+                        <strong>{catalogBook.title}</strong>
+                        <small>
+                          {catalogBook.author || catalogBook.file_name} · {formatBytes(catalogBook.file_size)}
+                        </small>
+                      </span>
+                    </button>
+                    <button
+                      className="catalog-delete"
+                      disabled={busy}
+                      onClick={() => void deleteBook(catalogBook)}
+                      title="Delete book"
+                      type="button"
+                    >
+                      <Trash2 size={16} aria-hidden="true" />
+                    </button>
+                  </div>
+                ))
+              ) : (
+                <div className="empty-library-container">
+                  <BookOpen size={28} aria-hidden="true" className="empty-icon" />
+                  <h2>No books yet</h2>
+                  <p>Upload an EPUB or PDF, or browse the classics below to get started.</p>
+                  <label className="empty-upload-btn" title="Upload document">
+                    {busy ? <Loader2 className="spin" size={15} aria-hidden="true" /> : <Upload size={15} aria-hidden="true" />}
+                    <span>Upload</span>
+                    <input disabled={busy} type="file" accept={DOCUMENT_UPLOAD_ACCEPT} onChange={handleCatalogUpload} />
+                  </label>
                 </div>
-              ))
-            ) : (
-              <div className="empty-library-container">
-                <BookOpen size={28} aria-hidden="true" className="empty-icon" />
-                <h2>No books yet</h2>
-                <p>Upload an EPUB or PDF, or browse the classics below to get started.</p>
-                <label className="empty-upload-btn" title="Upload document">
-                  {busy ? <Loader2 className="spin" size={15} aria-hidden="true" /> : <Upload size={15} aria-hidden="true" />}
-                  <span>Upload</span>
-                  <input disabled={busy} type="file" accept={DOCUMENT_UPLOAD_ACCEPT} onChange={handleCatalogUpload} />
-                </label>
-              </div>
-            )}
+              )}
+            </div>
           </div>
 
           {/* Explore Classics Section */}
@@ -2924,12 +3053,6 @@ function App() {
           </div>
 
           <div className="explore-section">
-            <div className="explore-header">
-              <p className="explore-subtitle">
-                Fifty timeless masterpieces. Ready to read instantly or download directly.
-              </p>
-            </div>
-
             <div className="explore-grid">
               {CURATED_CLASSICS.map((classicBook) => {
                 const matchingBook = catalogBooks.find(
@@ -2997,8 +3120,8 @@ function App() {
   if (!book) return null;
 
   return (
-    <main className={readerImageMode ? "app-shell image-reader-shell" : "app-shell"}>
-      <header className={readerImageMode ? "topbar image-topbar" : "topbar"} style={{ position: "relative" }}>
+    <main className={immersiveReaderImageMode ? "app-shell image-reader-shell" : "app-shell"}>
+      <header className={immersiveReaderImageMode ? "topbar image-topbar" : "topbar"} style={{ position: "relative" }}>
         <button className="top-icon" type="button" title="Back to library" onClick={openCatalog}>
           <ChevronLeft size={22} aria-hidden="true" />
         </button>
@@ -3082,7 +3205,7 @@ function App() {
         </div>
       </header>
 
-      <section className={[readerImageMode ? "reader-frame image-mode-frame" : "reader-frame", isPdfBook ? "pdf-reader-frame" : ""].filter(Boolean).join(" ")}>
+      <section className={[immersiveReaderImageMode ? "reader-frame image-mode-frame" : "reader-frame", isPdfBook ? "pdf-reader-frame" : ""].filter(Boolean).join(" ")}>
         <aside className="chapter-sidebar">
           <div className="chapter-heading">{isPdfBook ? "Table of contents" : "Chapters"}</div>
           <nav className="chapter-list" aria-label={isPdfBook ? "Table of contents" : "Chapters"}>
@@ -3112,10 +3235,10 @@ function App() {
         </aside>
 
         <div className={[
-          readerImageMode ? "main-spread reader-only image-mode" : "main-spread reader-only",
+          immersiveReaderImageMode ? "main-spread reader-only image-mode" : "main-spread reader-only",
           isPdfBook ? `pdf-reader-main pdf-reader-${pdfReaderViewMode}` : ""
         ].filter(Boolean).join(" ")}>
-          {readerImageMode && renderReaderImageStage()}
+          {immersiveReaderImageMode && renderReaderImageStage()}
           {isPdfBook && pdfReaderViewMode === "split" ? (
             <div className="pdf-split-layout">
               <PdfDocumentView
@@ -3127,6 +3250,7 @@ function App() {
                 scrollOffsetRatio={pdfScrollOffsetRatio}
                 scrollPage={pdfScrollPage}
                 scrollRequest={pdfScrollRequest}
+                renderPageImage={renderPdfPageReaderImage}
                 speechHighlight={speechHighlight}
               />
               {renderTextReadingSurface("reading-surface pdf-text-pane")}
@@ -3141,6 +3265,7 @@ function App() {
               scrollOffsetRatio={pdfScrollOffsetRatio}
               scrollPage={pdfScrollPage}
               scrollRequest={pdfScrollRequest}
+              renderPageImage={renderPdfPageReaderImage}
               speechHighlight={speechHighlight}
             />
           ) : (
@@ -3202,11 +3327,13 @@ function App() {
         <div className="image-mode-control">
           <button
             className={readerImageMode ? "secondary-button active" : "secondary-button"}
-            disabled={!readerImageMode && !readerImageChunks.length}
+            disabled={!readerImageMode && activeReaderImageChunkIndex < 0}
             onClick={toggleReaderImageMode}
             title={
               isPdfBook && !pdfHasText
                 ? "Text extraction is required for PDF image mode"
+                : isPdfBook && activeReaderImageChunkIndex < 0
+                  ? "No page text is available for image mode here"
                 :
               readerImageMode
                 ? "Stop generating reading images"
@@ -3221,10 +3348,57 @@ function App() {
             )}
             <span>Image mode</span>
           </button>
+          {readerImageMode && !isPdfBook && (
+            <button
+              className="secondary-button image-style-button"
+              onClick={() => setReaderImageStyleOpen(true)}
+              title="Choose image style"
+              type="button"
+            >
+              <Palette size={16} aria-hidden="true" />
+              <span>Styles</span>
+            </button>
+          )}
         </div>
       </footer>
 
       {notice && <div className="notice">{notice}</div>}
+
+      {readerImageStyleOpen && (
+        <div className="image-style-modal-overlay" role="presentation" onClick={() => setReaderImageStyleOpen(false)}>
+          <section
+            aria-labelledby="image-style-title"
+            aria-modal="true"
+            className="image-style-modal"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+          >
+            <button className="image-style-close" onClick={() => setReaderImageStyleOpen(false)} title="Close" type="button">
+              <X size={18} aria-hidden="true" />
+            </button>
+            <div className="image-style-copy">
+              <span className="image-style-kicker">Image mode</span>
+              <h2 id="image-style-title">Styles</h2>
+            </div>
+            <div className="image-style-options">
+              {READER_IMAGE_STYLES.map((style) => (
+                <button
+                  className={readerImageStyle === style.id ? "image-style-option active" : "image-style-option"}
+                  key={style.id}
+                  onClick={() => selectReaderImageStyle(style.id)}
+                  type="button"
+                >
+                  <span>
+                    <strong>{style.label}</strong>
+                    <small>{style.summary}</small>
+                  </span>
+                  {readerImageStyle === style.id && <Check size={17} aria-hidden="true" />}
+                </button>
+              ))}
+            </div>
+          </section>
+        </div>
+      )}
 
       {readerImageUpgradeOpen && (
         <div className="image-limit-modal-overlay" role="presentation" onClick={() => setReaderImageUpgradeOpen(false)}>
