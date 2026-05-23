@@ -27,7 +27,7 @@ import {
   Users,
   X
 } from "lucide-react";
-import { ChangeEvent, CSSProperties, FormEvent, KeyboardEvent, PointerEvent, ReactNode, RefObject, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, CSSProperties, FormEvent, Fragment, KeyboardEvent, MouseEvent, PointerEvent, ReactNode, RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
 import { parsePdf, pdfjsLib } from "./pdf";
 import { createEdgeTtsPlayer, EdgeTtsPlayer } from "./edgeTts";
@@ -78,6 +78,7 @@ type ReaderImageState = {
   prompt?: string;
   src?: string;
   status: "loading" | "ready" | "error";
+  style?: ReaderImageStyle;
 };
 type CachedReaderImage = {
   bookId: string;
@@ -748,7 +749,8 @@ function PdfPageCanvas({
   rootRef,
   sideImage,
   speechHighlight,
-  paragraphs
+  paragraphs,
+  onWordClick
 }: {
   active: boolean;
   metrics?: PdfPageMetrics;
@@ -758,6 +760,7 @@ function PdfPageCanvas({
   rootRef: RefObject<HTMLElement | null>;
   sideImage?: ReactNode;
   speechHighlight: SpeechHighlight | null;
+  onWordClick?: (pageNumber: number, pageWordIndex: number) => void;
 }) {
   const pageRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -900,11 +903,22 @@ function PdfPageCanvas({
       >
         <canvas ref={canvasRef} aria-label={`PDF page ${pageNumber}`} />
         {textLayerWords.length ? (
-          <div className="pdf-text-layer" aria-hidden="true">
+          <div
+            className="pdf-text-layer"
+            aria-hidden="true"
+            onClick={(e) => {
+              const target = e.target as HTMLElement;
+              const wordIndexStr = target.getAttribute("data-page-word-index");
+              if (wordIndexStr !== null && onWordClick) {
+                onWordClick(pageNumber, parseInt(wordIndexStr, 10));
+              }
+            }}
+          >
             {textLayerWords.map((word, index) => (
               <span
                 className={word.pageWordIndex === activePageWordIndex ? "pdf-spoken-word" : "pdf-text-word"}
                 key={`${word.pageWordIndex}-${index}`}
+                data-page-word-index={word.pageWordIndex}
                 style={{
                   fontSize: `${word.fontSize}px`,
                   height: `${word.height}px`,
@@ -936,7 +950,8 @@ function PdfDocumentView({
   scrollRequest,
   renderPageImage,
   speechHighlight,
-  pdfPageLayout
+  pdfPageLayout,
+  onWordClick
 }: {
   currentPage: number;
   file: File | null;
@@ -949,6 +964,7 @@ function PdfDocumentView({
   renderPageImage?: (pageNumber: number) => ReactNode;
   speechHighlight: SpeechHighlight | null;
   pdfPageLayout: "single" | "double";
+  onWordClick?: (pageNumber: number, pageWordIndex: number) => void;
 }) {
   const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [error, setError] = useState("");
@@ -1096,6 +1112,7 @@ function PdfDocumentView({
             rootRef={surfaceRef}
             sideImage={renderPageImage?.(page1)}
             speechHighlight={speechHighlight}
+            onWordClick={onWordClick}
           />
           {page2 && (
             <PdfPageCanvas
@@ -1107,6 +1124,7 @@ function PdfDocumentView({
               rootRef={surfaceRef}
               sideImage={renderPageImage?.(page2)}
               speechHighlight={speechHighlight}
+              onWordClick={onWordClick}
             />
           )}
         </div>
@@ -1123,6 +1141,7 @@ function PdfDocumentView({
           rootRef={surfaceRef}
           sideImage={renderPageImage?.(index + 1)}
           speechHighlight={speechHighlight}
+          onWordClick={onWordClick}
         />
       ));
     }
@@ -1906,7 +1925,8 @@ function App() {
           [chunk.index]: {
             prompt: cachedImage.prompt,
             src: cachedImage.src,
-            status: "ready"
+            status: "ready",
+            style
           }
         }));
         return;
@@ -1914,7 +1934,7 @@ function App() {
 
       setReaderImages((items) => ({
         ...items,
-        [chunk.index]: { status: "loading" }
+        [chunk.index]: { status: "loading", style }
       }));
 
       const { data, error } = await supabase.functions.invoke("generate-reader-image", {
@@ -1952,7 +1972,8 @@ function App() {
             imageLimit,
             limitReached: true,
             plan,
-            status: "error"
+            status: "error",
+            style
           }
         }));
         return;
@@ -1977,7 +1998,8 @@ function App() {
         [chunk.index]: {
           prompt,
           src: data.imageUrl,
-          status: "ready"
+          status: "ready",
+          style
         }
       }));
     } catch (error) {
@@ -1986,7 +2008,8 @@ function App() {
         ...items,
         [chunk.index]: {
           error: error instanceof Error ? error.message : "Could not generate this image.",
-          status: "error"
+          status: "error",
+          style
         }
       }));
     } finally {
@@ -2003,7 +2026,7 @@ function App() {
     await Promise.all(
       targets.map((chunk) => {
         const existing = readerImages[chunk.index];
-        if (existing?.status === "ready" || existing?.status === "loading") return Promise.resolve();
+        if (existing?.style === readerImageStyle && (existing?.status === "ready" || existing?.status === "loading")) return Promise.resolve();
         return generateReaderImage(chunk, runId);
       })
     );
@@ -2180,6 +2203,92 @@ function App() {
       text: paragraph.text,
       wordRanges
     });
+  };
+
+  const speakEdgeFromWord = (paragraph: ReaderParagraph, wordCharStart: number) => {
+    if (paragraph.kind === "image") return;
+
+    const fullRanges = wordRangesFromText(paragraph.text);
+    const wordIndex = fullRanges.findIndex((r) => r.start === wordCharStart);
+    if (wordIndex < 0) return;
+
+    edgeTtsPlayerRef.current?.stop();
+    edgeTtsPlayerRef.current = null;
+
+    const slicedText = paragraph.text.slice(wordCharStart);
+    const slicedRanges = wordRangesFromText(slicedText);
+
+    if (slicedRanges[0]) {
+      setSpeechHighlight({ paragraphId: paragraph.id, start: wordCharStart + slicedRanges[0].start, end: wordCharStart + slicedRanges[0].end });
+    }
+
+    setPlayback("playing");
+
+    const paragraphIndex = book?.paragraphs.findIndex((p) => p.id === paragraph.id) ?? -1;
+    if (paragraphIndex >= 0 && paragraphIndex !== currentIndex) {
+      setCurrentIndex(paragraphIndex);
+    }
+
+    edgeTtsPlayerRef.current = createEdgeTtsPlayer({
+      onBoundary: (range) => {
+        setSpeechHighlight({ paragraphId: paragraph.id, start: wordCharStart + range.start, end: wordCharStart + range.end });
+      },
+      onEnded: () => {
+        edgeTtsPlayerRef.current = null;
+        setSpeechHighlight(null);
+        if (book && paragraphIndex >= 0 && paragraphIndex < book.paragraphs.length - 1) {
+          const nextIndex = paragraphIndex + 1;
+          pendingScrollIndex.current = nextIndex;
+          setCurrentIndex(nextIndex);
+        } else {
+          setPlayback("idle");
+        }
+      },
+      onError: (error) => {
+        edgeTtsPlayerRef.current = null;
+        setSpeechHighlight(null);
+        setNotice(error.message || "Edge voice could not play this paragraph.");
+        setPlayback("idle");
+      },
+      text: slicedText,
+      wordRanges: slicedRanges
+    });
+  };
+
+  const handleParagraphClick = (e: MouseEvent<HTMLElement>, paragraph: ReaderParagraph, index: number) => {
+    const target = e.target as HTMLElement;
+    const wordSpan = target.closest(".reader-word");
+    if (wordSpan) {
+      const startAttr = wordSpan.getAttribute("data-word-start");
+      if (startAttr !== null) {
+        const start = parseInt(startAttr, 10);
+        speakEdgeFromWord(paragraph, start);
+        return;
+      }
+    }
+    moveTo(index);
+  };
+
+  const handlePdfWordClick = (pageNumber: number, pageWordIndex: number) => {
+    if (!book) return;
+    const pageParagraphs = book.paragraphs.filter((paragraph) => paragraph.pageNumber === pageNumber);
+    if (pageParagraphs.length === 0) return;
+
+    let accumulatedWordCount = 0;
+    for (const paragraph of pageParagraphs) {
+      const paragraphRanges = wordRangesFromText(paragraph.text);
+      const paragraphWordCount = paragraphRanges.length;
+
+      if (pageWordIndex >= accumulatedWordCount && pageWordIndex < accumulatedWordCount + paragraphWordCount) {
+        const localWordIndex = pageWordIndex - accumulatedWordCount;
+        const clickedRange = paragraphRanges[localWordIndex];
+        if (clickedRange) {
+          speakEdgeFromWord(paragraph, clickedRange.start);
+          return;
+        }
+      }
+      accumulatedWordCount += paragraphWordCount;
+    }
   };
 
   const handleAuth = async (event: FormEvent<HTMLFormElement>) => {
@@ -2654,17 +2763,37 @@ function App() {
   };
 
   const renderReaderText = (paragraph: ReaderParagraph) => {
-    if (speechHighlight?.paragraphId !== paragraph.id || speechHighlight.end <= speechHighlight.start) {
+    if (paragraph.kind === "image") return null;
+    const ranges = wordRangesFromText(paragraph.text);
+    if (ranges.length === 0) {
       return paragraph.text;
     }
+    const isSpoken = speechHighlight?.paragraphId === paragraph.id;
+    const leading = paragraph.text.slice(0, ranges[0].start);
+
+    const words = ranges.map((range, i) => {
+      const word = paragraph.text.slice(range.start, range.end);
+      const gap = paragraph.text.slice(range.end, ranges[i + 1]?.start);
+      const active = isSpoken && speechHighlight && speechHighlight.start === range.start && speechHighlight.end === range.end;
+
+      return (
+        <Fragment key={range.start}>
+          <span
+            className={active ? "reader-word spoken-word" : "reader-word"}
+            data-word-start={range.start}
+            data-word-end={range.end}
+          >
+            {word}
+          </span>
+          {gap}
+        </Fragment>
+      );
+    });
 
     return (
       <>
-        {paragraph.text.slice(0, speechHighlight.start)}
-        <span className="spoken-word">
-          {paragraph.text.slice(speechHighlight.start, speechHighlight.end)}
-        </span>
-        {paragraph.text.slice(speechHighlight.end)}
+        {leading}
+        {words}
       </>
     );
   };
@@ -2810,7 +2939,7 @@ function App() {
                     ]
                       .filter(Boolean)
                       .join(" ")}
-                    onClick={() => moveTo(index)}
+                    onClick={(e) => handleParagraphClick(e, paragraph, index)}
                     ref={setParagraphRef(paragraph.id)}
                   >
                     {renderReaderText(paragraph)}
@@ -2824,7 +2953,7 @@ function App() {
                     ]
                       .filter(Boolean)
                       .join(" ")}
-                    onClick={() => moveTo(index)}
+                    onClick={(e) => handleParagraphClick(e, paragraph, index)}
                     ref={setParagraphRef(paragraph.id)}
                   >
                     {renderReaderText(paragraph)}
@@ -2840,7 +2969,7 @@ function App() {
                     ]
                       .filter(Boolean)
                       .join(" ")}
-                    onClick={() => moveTo(index)}
+                    onClick={(e) => handleParagraphClick(e, paragraph, index)}
                     ref={setParagraphRef(paragraph.id)}
                   >
                     {renderReaderText(paragraph)}
@@ -3349,6 +3478,7 @@ function App() {
               renderPageImage={renderPdfPageReaderImage}
               speechHighlight={speechHighlight}
               pdfPageLayout={pdfPageLayout}
+              onWordClick={handlePdfWordClick}
             />
           ) : (
             renderTextReadingSurface()
@@ -3430,7 +3560,7 @@ function App() {
             )}
             <span>Image mode</span>
           </button>
-          {readerImageMode && !isPdfBook && (
+          {readerImageMode && (
             <button
               className="secondary-button image-style-button"
               onClick={() => setReaderImageStyleOpen(true)}

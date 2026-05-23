@@ -929,6 +929,22 @@ button:disabled {
   box-shadow: 0 0 0 6px rgba(226, 232, 240, 0.1);
 }
 
+.reader-word {
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.reader-word:hover {
+  background: rgba(126, 197, 255, 0.18);
+  box-shadow: 0 0 0 2px rgba(126, 197, 255, 0.18);
+}
+
+.image-mode .reader-word:hover {
+  background: rgba(226, 232, 240, 0.14);
+  box-shadow: 0 0 0 2px rgba(226, 232, 240, 0.14);
+}
+
 .spoken-word {
   border-radius: 4px;
   background: #7ec5ff;
@@ -936,10 +952,20 @@ button:disabled {
   color: #071b2c;
 }
 
+.spoken-word:hover {
+  background: #7ec5ff;
+  box-shadow: 0 0 0 2px #7ec5ff;
+}
+
 .image-mode .spoken-word {
   background: #e2e8f0;
   box-shadow: 0 0 0 2px #e2e8f0;
   color: #111827;
+}
+
+.image-mode .spoken-word:hover {
+  background: #e2e8f0;
+  box-shadow: 0 0 0 2px #e2e8f0;
 }
 
 .reader-paragraph.quote {
@@ -1255,7 +1281,7 @@ button:disabled {
   position: absolute;
   top: 12px;
   z-index: 2;
-  width: clamp(112px, 13vw, 168px);
+  width: clamp(180px, 20vw, 300px);
   pointer-events: auto;
 }
 
@@ -1275,9 +1301,13 @@ button:disabled {
 
 .pdf-page-image-slot .reader-generated-image img,
 .pdf-page-image-slot .reader-generated-placeholder {
-  aspect-ratio: 1 / 1;
+  aspect-ratio: 2 / 3;
   border-radius: 7px;
   box-shadow: 0 14px 32px rgba(20, 20, 20, 0.14);
+}
+
+.pdf-page-image-slot .reader-generated-image img {
+  object-fit: cover;
 }
 
 .pdf-page-image-slot .reader-generated-placeholder {
@@ -1353,10 +1383,29 @@ button:disabled {
   color: transparent;
   line-height: 1;
   white-space: pre;
+  pointer-events: auto;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.pdf-text-word:hover {
+  background: rgba(126, 197, 255, 0.28);
+  box-shadow: 0 0 0 2px rgba(126, 197, 255, 0.28);
+}
+
+.image-mode .pdf-text-word:hover {
+  background: rgba(226, 232, 240, 0.22);
+  box-shadow: 0 0 0 2px rgba(226, 232, 240, 0.22);
 }
 
 .pdf-spoken-word {
   border-radius: 2px;
+  background: rgba(126, 197, 255, 0.68);
+  box-shadow: 0 0 0 2px rgba(126, 197, 255, 0.68);
+}
+
+.pdf-spoken-word:hover {
   background: rgba(126, 197, 255, 0.68);
   box-shadow: 0 0 0 2px rgba(126, 197, 255, 0.68);
 }
@@ -2052,9 +2101,9 @@ button:disabled {
   .pdf-page-image-slot.left,
   .pdf-page-image-slot.right {
     position: static;
-    width: min(220px, 72vw);
+    width: min(340px, 85vw);
     padding-top: 0;
-    margin: 0 auto 10px;
+    margin: 0 auto 14px;
   }
 
   .pdf-page-image-slot .reader-generated-image,
