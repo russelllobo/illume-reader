@@ -854,7 +854,8 @@ function PdfPageCanvas({
         const itemWidth = Math.max(1, item.width * scale);
         const itemTextLength = Math.max(item.str.length, 1);
 
-        for (const match of item.str.matchAll(/\S+/g)) {
+        const matches = Array.from(item.str.matchAll(/\S+/g));
+        for (const match of matches) {
           const start = match.index ?? 0;
           const width = Math.max(2, itemWidth * (match[0].length / itemTextLength));
           words.push({
@@ -2725,7 +2726,8 @@ function App() {
     let closestIndex = currentIndex;
     let closestDistance = Number.POSITIVE_INFINITY;
 
-    for (const [index, paragraph] of book.paragraphs.entries()) {
+    for (let index = 0; index < book.paragraphs.length; index++) {
+      const paragraph = book.paragraphs[index];
       const node = paragraphRefs.current.get(paragraph.id);
       if (!node) continue;
 
