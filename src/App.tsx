@@ -600,7 +600,8 @@ const buildPdfReaderImageChunks = (book: ReaderBook): ReaderImageChunk[] => {
   for (let pageNumber = 1; pageNumber <= (book.pageCount ?? 0); pageNumber += 1) {
     const pageWords: string[] = [];
 
-    for (const paragraph of book.paragraphs) {
+    for (let pIndex = 0; pIndex < book.paragraphs.length; pIndex++) {
+      const paragraph = book.paragraphs[pIndex];
       if (paragraph.kind === "image" || paragraph.pageNumber !== pageNumber) continue;
       pageWords.push(...wordsFromText(paragraph.text));
     }
@@ -846,7 +847,8 @@ function PdfPageCanvas({
       let pageWordIndex = 0;
       const words: PdfTextLayerWord[] = [];
 
-      for (const item of textContent.items) {
+      for (let itemIndex = 0; itemIndex < textContent.items.length; itemIndex++) {
+        const item = textContent.items[itemIndex];
         if (!("str" in item) || !item.str.trim()) continue;
 
         const transform = pdfjsLib.Util.transform(viewport.transform, item.transform);
@@ -1745,7 +1747,8 @@ function App() {
     if (!user || !catalogBooks.length) return;
 
     const hydrateMissingCovers = async () => {
-      for (const catalogBook of catalogBooks) {
+      for (let bookIndex = 0; bookIndex < catalogBooks.length; bookIndex++) {
+        const catalogBook = catalogBooks[bookIndex];
         if (catalogBook.cover_url || coverLookupRef.current.has(catalogBook.id)) continue;
 
         coverLookupRef.current.add(catalogBook.id);
@@ -2276,7 +2279,8 @@ function App() {
     if (pageParagraphs.length === 0) return;
 
     let accumulatedWordCount = 0;
-    for (const paragraph of pageParagraphs) {
+    for (let pIndex = 0; pIndex < pageParagraphs.length; pIndex++) {
+      const paragraph = pageParagraphs[pIndex];
       const paragraphRanges = wordRangesFromText(paragraph.text);
       const paragraphWordCount = paragraphRanges.length;
 
