@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Communicate } from "edge-tts-universal";
 
-const DEFAULT_VOICE = "en-US-AvaNeural";
+const DEFAULT_VOICE = "en-US-AvaMultilingualNeural";
 
 export const config = {
   maxDuration: 30

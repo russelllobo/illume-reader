@@ -5,7 +5,7 @@ const TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 const WSS_URL = `wss://${BASE_URL}/edge/v1?TrustedClientToken=${TRUSTED_CLIENT_TOKEN}`;
 const CHROMIUM_FULL_VERSION = "143.0.3650.75";
 const SEC_MS_GEC_VERSION = `1-${CHROMIUM_FULL_VERSION}`;
-const DEFAULT_VOICE = "en-US-AvaNeural";
+const DEFAULT_VOICE = "en-US-AvaMultilingualNeural";
 const OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3";
 const WIN_EPOCH_SECONDS = 11_644_473_600;
 
