@@ -935,7 +935,8 @@ function PdfDocumentView({
   scrollPage,
   scrollRequest,
   renderPageImage,
-  speechHighlight
+  speechHighlight,
+  pdfPageLayout
 }: {
   currentPage: number;
   file: File | null;
@@ -947,6 +948,7 @@ function PdfDocumentView({
   scrollRequest: number;
   renderPageImage?: (pageNumber: number) => ReactNode;
   speechHighlight: SpeechHighlight | null;
+  pdfPageLayout: "single" | "double";
 }) {
   const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [error, setError] = useState("");
@@ -1076,9 +1078,41 @@ function PdfDocumentView({
     );
   }
 
-  return (
-    <section className="pdf-surface" onScroll={handleScroll} ref={surfaceRef} aria-label="PDF pages">
-      {Array.from({ length: pageCount || pdf.numPages }, (_, index) => (
+  const renderPages = () => {
+    const totalPages = pageCount || pdf.numPages;
+    if (pdfPageLayout === "double") {
+      const rows: [number, number | null][] = [];
+      for (let i = 0; i < totalPages; i += 2) {
+        rows.push([i + 1, i + 2 <= totalPages ? i + 2 : null]);
+      }
+      return rows.map(([page1, page2], rowIndex) => (
+        <div key={rowIndex} className="pdf-page-spread">
+          <PdfPageCanvas
+            active={currentPage === page1}
+            metrics={pageMetrics[page1 - 1]}
+            pageNumber={page1}
+            paragraphs={paragraphs}
+            pdf={pdf}
+            rootRef={surfaceRef}
+            sideImage={renderPageImage?.(page1)}
+            speechHighlight={speechHighlight}
+          />
+          {page2 && (
+            <PdfPageCanvas
+              active={currentPage === page2}
+              metrics={pageMetrics[page2 - 1]}
+              pageNumber={page2}
+              paragraphs={paragraphs}
+              pdf={pdf}
+              rootRef={surfaceRef}
+              sideImage={renderPageImage?.(page2)}
+              speechHighlight={speechHighlight}
+            />
+          )}
+        </div>
+      ));
+    } else {
+      return Array.from({ length: totalPages }, (_, index) => (
         <PdfPageCanvas
           active={currentPage === index + 1}
           key={index + 1}
@@ -1090,7 +1124,13 @@ function PdfDocumentView({
           sideImage={renderPageImage?.(index + 1)}
           speechHighlight={speechHighlight}
         />
-      ))}
+      ));
+    }
+  };
+
+  return (
+    <section className="pdf-surface" onScroll={handleScroll} ref={surfaceRef} aria-label="PDF pages">
+      {renderPages()}
     </section>
   );
 }
@@ -1508,6 +1548,17 @@ function App() {
   const edgeTtsPlayerRef = useRef<EdgeTtsPlayer | null>(null);
   const progressSaveTimer = useRef<number | null>(null);
   const coverLookupRef = useRef(new Set<string>());
+  const isInitialOpenRef = useRef(false);
+  const isInstantScrollRef = useRef(false);
+  const [progressNotice, setProgressNotice] = useState(false);
+  const [pdfPageLayout, setPdfPageLayout] = useState<"single" | "double">(() => {
+    const saved = window.localStorage.getItem("pdf-page-layout");
+    return saved === "double" ? "double" : "single";
+  });
+
+  useEffect(() => {
+    window.localStorage.setItem("pdf-page-layout", pdfPageLayout);
+  }, [pdfPageLayout]);
 
   const [importingClassicId, setImportingClassicId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1772,8 +1823,25 @@ function App() {
     pendingScrollIndex.current = null;
     const target = book.paragraphs[targetIndex];
     const node = target ? paragraphRefs.current.get(target.id) : null;
-    node?.scrollIntoView({ block: "start", behavior: "smooth" });
+    if (node) {
+      if (isInitialOpenRef.current || isInstantScrollRef.current) {
+        node.scrollIntoView({ block: "start", behavior: "auto" });
+        isInitialOpenRef.current = false;
+        isInstantScrollRef.current = false;
+      } else {
+        node.scrollIntoView({ block: "start", behavior: "smooth" });
+      }
+    }
   }, [book?.paragraphs, currentIndex]);
+
+  useEffect(() => {
+    if (progressNotice) {
+      const timer = window.setTimeout(() => {
+        setProgressNotice(false);
+      }, 3000);
+      return () => window.clearTimeout(timer);
+    }
+  }, [progressNotice]);
 
   useEffect(() => {
     if (!activeBookId || !book || view !== "reader") return;
@@ -2342,6 +2410,10 @@ function App() {
     setCurrentPage(initialPage);
     setCurrentIndex(safeIndex);
     pendingScrollIndex.current = parsed.paragraphs.length ? safeIndex : null;
+    isInitialOpenRef.current = true;
+    if (safeIndex > 0 || initialPage > 1) {
+      setProgressNotice(true);
+    }
     setView("reader");
   };
 
@@ -2467,17 +2539,24 @@ function App() {
     speakEdge(current);
   };
 
-  const moveTo = (index: number, options: { scroll?: boolean; stop?: boolean } = {}) => {
+  const moveTo = (index: number, options: { scroll?: boolean; stop?: boolean; instant?: boolean } = {}) => {
     if (!book) return;
-    const { scroll = true, stop = true } = options;
+    const { scroll = true, stop = true, instant = false } = options;
     const target = Math.max(0, Math.min(index, book.paragraphs.length - 1));
+
+    setProgressNotice(false);
 
     if (stop) {
       stopAudio();
       setPlayback("idle");
     }
 
-    if (scroll) pendingScrollIndex.current = target;
+    if (scroll) {
+      pendingScrollIndex.current = target;
+      if (instant) {
+        isInstantScrollRef.current = true;
+      }
+    }
     const targetPage = book.paragraphs[target]?.pageNumber;
     if (targetPage) setCurrentPage(targetPage);
     setCurrentIndex(target);
@@ -2495,13 +2574,16 @@ function App() {
     const firstParagraph = book.paragraphs.findIndex(
       (paragraph) => paragraph.chapterIndex === chapterIndex
     );
-    if (firstParagraph >= 0) moveTo(firstParagraph);
+    if (firstParagraph >= 0) moveTo(firstParagraph, { instant: true });
   };
 
   const moveToPdfPage = (page: number, options: { offsetRatio?: number; scroll?: boolean } = {}) => {
     if (!book?.pageCount) return;
     const { offsetRatio = 0, scroll = true } = options;
     const safePage = Math.max(1, Math.min(page, book.pageCount));
+
+    setProgressNotice(false);
+
     setCurrentPage(safePage);
     setPdfVisibleOffsetRatio(Math.max(0, Math.min(1, offsetRatio)));
     if (scroll) {
@@ -2519,6 +2601,7 @@ function App() {
   const openCatalog = () => {
     stopAudio();
     setPlayback("idle");
+    setProgressNotice(false);
     if (activeBookId && book) void saveReadingProgress(activeBookId, currentIndex, currentPage);
     setView("catalog");
   };
@@ -2550,6 +2633,21 @@ function App() {
   const setParagraphRef = (id: string) => (node: HTMLElement | null) => {
     if (node) {
       paragraphRefs.current.set(id, node);
+
+      const targetIndex = pendingScrollIndex.current;
+      if (targetIndex !== null && book) {
+        const target = book.paragraphs[targetIndex];
+        if (target && target.id === id) {
+          pendingScrollIndex.current = null;
+          if (isInitialOpenRef.current || isInstantScrollRef.current) {
+            node.scrollIntoView({ block: "start", behavior: "auto" });
+            isInitialOpenRef.current = false;
+            isInstantScrollRef.current = false;
+          } else {
+            node.scrollIntoView({ block: "start", behavior: "smooth" });
+          }
+        }
+      }
     } else {
       paragraphRefs.current.delete(id);
     }
@@ -3140,64 +3238,54 @@ function App() {
                 </div>
                 
                 <div className="settings-popover-body">
-                  {isPdfBook && (
+                  {isPdfBook ? (
                     <div className="settings-section">
-                      <span className="settings-section-label">PDF View</span>
+                      <span className="settings-section-label">Page Layout</span>
                       <div className="pdf-view-options">
                         <button
-                          aria-pressed={pdfReaderViewMode === "pdf"}
-                          className={pdfReaderViewMode === "pdf" ? "pdf-view-btn active" : "pdf-view-btn"}
-                          onClick={() => setPdfReaderViewMode("pdf")}
+                          aria-pressed={pdfPageLayout === "single"}
+                          className={pdfPageLayout === "single" ? "pdf-view-btn active" : "pdf-view-btn"}
+                          onClick={() => setPdfPageLayout("single")}
                           type="button"
                         >
                           <FileText size={15} aria-hidden="true" />
-                          <span>PDF</span>
+                          <span>1 Page</span>
                         </button>
                         <button
-                          aria-pressed={pdfReaderViewMode === "text"}
-                          className={pdfReaderViewMode === "text" ? "pdf-view-btn active" : "pdf-view-btn"}
-                          disabled={!pdfHasText}
-                          onClick={() => setPdfReaderViewMode("text")}
-                          type="button"
-                        >
-                          <Type size={15} aria-hidden="true" />
-                          <span>Text</span>
-                        </button>
-                        <button
-                          aria-pressed={pdfReaderViewMode === "split"}
-                          className={pdfReaderViewMode === "split" ? "pdf-view-btn active" : "pdf-view-btn"}
-                          disabled={!pdfHasText}
-                          onClick={() => setPdfReaderViewMode("split")}
+                          aria-pressed={pdfPageLayout === "double"}
+                          className={pdfPageLayout === "double" ? "pdf-view-btn active" : "pdf-view-btn"}
+                          onClick={() => setPdfPageLayout("double")}
                           type="button"
                         >
                           <Columns3 size={15} aria-hidden="true" />
-                          <span>Split</span>
+                          <span>2 Pages</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="settings-section">
+                      <span className="settings-section-label">Typography</span>
+                      <div className="settings-font-options">
+                        <button
+                          aria-pressed={readerFontMode === "serif"}
+                          className={readerFontMode === "serif" ? "settings-font-btn active" : "settings-font-btn"}
+                          onClick={() => setReaderFontMode("serif")}
+                        >
+                          <span className="font-btn-preview serif-preview">Aa</span>
+                          <span className="font-btn-label">Elegant Serif</span>
+                        </button>
+                        
+                        <button
+                          aria-pressed={readerFontMode === "sans"}
+                          className={readerFontMode === "sans" ? "settings-font-btn active" : "settings-font-btn"}
+                          onClick={() => setReaderFontMode("sans")}
+                        >
+                          <span className="font-btn-preview sans-preview">Aa</span>
+                          <span className="font-btn-label">Modern Sans</span>
                         </button>
                       </div>
                     </div>
                   )}
-                  <div className="settings-section">
-                    <span className="settings-section-label">Typography</span>
-                    <div className="settings-font-options">
-                      <button
-                        aria-pressed={readerFontMode === "serif"}
-                        className={readerFontMode === "serif" ? "settings-font-btn active" : "settings-font-btn"}
-                        onClick={() => setReaderFontMode("serif")}
-                      >
-                        <span className="font-btn-preview serif-preview">Aa</span>
-                        <span className="font-btn-label">Elegant Serif</span>
-                      </button>
-                      
-                      <button
-                        aria-pressed={readerFontMode === "sans"}
-                        className={readerFontMode === "sans" ? "settings-font-btn active" : "settings-font-btn"}
-                        onClick={() => setReaderFontMode("sans")}
-                      >
-                        <span className="font-btn-preview sans-preview">Aa</span>
-                        <span className="font-btn-label">Modern Sans</span>
-                      </button>
-                    </div>
-                  </div>
                 </div>
               </div>
             </>
@@ -3210,24 +3298,33 @@ function App() {
           <div className="chapter-heading">{isPdfBook ? "Table of contents" : "Chapters"}</div>
           <nav className="chapter-list" aria-label={isPdfBook ? "Table of contents" : "Chapters"}>
             {book.chapters.length ? (
-              book.chapters.map((chapter, index) => (
-                <button
-                  className={index === (isPdfBook ? activePdfChapterIndex : current?.chapterIndex) ? "chapter-item active" : "chapter-item"}
-                  key={`${chapter}-${index}`}
-                  ref={(node) => {
-                    if (node) {
-                      chapterRefs.current.set(index, node);
-                    } else {
-                      chapterRefs.current.delete(index);
-                    }
-                  }}
-                  type="button"
-                  onClick={() => moveToChapter(index)}
-                  title={chapter.trim()}
-                >
-                  {chapter}
-                </button>
-              ))
+              book.chapters.map((chapter, index) => {
+                const isActive = index === (isPdfBook ? activePdfChapterIndex : current?.chapterIndex);
+                return (
+                  <div key={`${chapter}-${index}`} className="chapter-item-container" style={{ display: "flex", flexDirection: "column" }}>
+                    <button
+                      className={isActive ? "chapter-item active" : "chapter-item"}
+                      ref={(node) => {
+                        if (node) {
+                          chapterRefs.current.set(index, node);
+                        } else {
+                          chapterRefs.current.delete(index);
+                        }
+                      }}
+                      type="button"
+                      onClick={() => moveToChapter(index)}
+                      title={chapter.trim()}
+                    >
+                      {chapter}
+                    </button>
+                    {progressNotice && isActive && (
+                      <span className="toc-progress-notice">
+                        Continuing where you left off
+                      </span>
+                    )}
+                  </div>
+                );
+              })
             ) : (
               <span className="chapter-empty">{isPdfBook ? "No table of contents found." : "No chapters found."}</span>
             )}
@@ -3236,26 +3333,10 @@ function App() {
 
         <div className={[
           immersiveReaderImageMode ? "main-spread reader-only image-mode" : "main-spread reader-only",
-          isPdfBook ? `pdf-reader-main pdf-reader-${pdfReaderViewMode}` : ""
+          isPdfBook ? `pdf-reader-main pdf-reader-${pdfReaderViewMode} pdf-layout-${pdfPageLayout}` : ""
         ].filter(Boolean).join(" ")}>
           {immersiveReaderImageMode && renderReaderImageStage()}
-          {isPdfBook && pdfReaderViewMode === "split" ? (
-            <div className="pdf-split-layout">
-              <PdfDocumentView
-                currentPage={currentPage}
-                file={activeBookFile}
-                onPageChange={moveToPdfPage}
-                pageCount={pdfPageCount}
-                paragraphs={book.paragraphs}
-                scrollOffsetRatio={pdfScrollOffsetRatio}
-                scrollPage={pdfScrollPage}
-                scrollRequest={pdfScrollRequest}
-                renderPageImage={renderPdfPageReaderImage}
-                speechHighlight={speechHighlight}
-              />
-              {renderTextReadingSurface("reading-surface pdf-text-pane")}
-            </div>
-          ) : isPdfBook && pdfReaderViewMode === "pdf" ? (
+          {isPdfBook ? (
             <PdfDocumentView
               currentPage={currentPage}
               file={activeBookFile}
@@ -3267,6 +3348,7 @@ function App() {
               scrollRequest={pdfScrollRequest}
               renderPageImage={renderPdfPageReaderImage}
               speechHighlight={speechHighlight}
+              pdfPageLayout={pdfPageLayout}
             />
           ) : (
             renderTextReadingSurface()

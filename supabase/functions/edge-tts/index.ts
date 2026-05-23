@@ -5,7 +5,7 @@ const TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 const WSS_URL = `wss://${BASE_URL}/edge/v1?TrustedClientToken=${TRUSTED_CLIENT_TOKEN}`;
 const CHROMIUM_FULL_VERSION = "143.0.3650.75";
 const SEC_MS_GEC_VERSION = `1-${CHROMIUM_FULL_VERSION}`;
-const DEFAULT_VOICE = "en-GB-SoniaNeural";
+const DEFAULT_VOICE = "en-US-AvaNeural";
 const OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3";
 const WIN_EPOCH_SECONDS = 11_644_473_600;
 
@@ -81,7 +81,8 @@ ${JSON.stringify(config)}\r
 };
 
 const ssmlMessage = (text: string, voice: string) => {
-  const ssml = `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-GB'><voice name='${voice}'><prosody pitch='+0Hz' rate='-5%' volume='+0%'>${escapeXml(text)}</prosody></voice></speak>`;
+  const lang = voice.split("-").slice(0, 2).join("-") || "en-US";
+  const ssml = `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='${lang}'><voice name='${voice}'><prosody pitch='+0Hz' rate='-5%' volume='+0%'>${escapeXml(text)}</prosody></voice></speak>`;
 
   return `X-RequestId:${connectId()}\r
 Content-Type:application/ssml+xml\r

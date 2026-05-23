@@ -4286,3 +4286,66 @@ html.landing-scroll {
     justify-self: start;
   }
 }
+
+.toc-progress-notice {
+  display: inline-block;
+  align-self: flex-start;
+  margin-top: 2px;
+  margin-bottom: 6px;
+  margin-right: 12px;
+  padding: 3px 8px;
+  background: #f0f7f4;
+  border: 1px solid #cce3d8;
+  border-radius: 6px;
+  color: #1b5e3a;
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: 0.1px;
+  max-width: calc(100% - 16px);
+  word-wrap: break-word;
+  animation: tocNoticeSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.image-mode-frame .toc-progress-notice {
+  background: rgba(30, 48, 40, 0.42);
+  border-color: rgba(30, 100, 60, 0.28);
+  color: #55d090;
+}
+
+@keyframes tocNoticeSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.pdf-page-spread {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 22px;
+  width: 100%;
+}
+
+.pdf-page-spread .pdf-page-row {
+  width: min(100%, var(--pdf-page-width, 900px));
+  flex: 1 1 320px;
+}
+
+@media (min-width: 768px) {
+  .pdf-page-spread {
+    flex-wrap: nowrap;
+    max-width: min(100%, calc(2 * var(--pdf-page-width, 900px) + 22px));
+  }
+
+  .pdf-page-spread .pdf-page-row {
+    width: min(calc(50% - 11px), var(--pdf-page-width, 450px));
+    flex: 0 1 auto;
+  }
+}

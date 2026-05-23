@@ -50,7 +50,7 @@ const edgeTtsDevProxy = () => ({
                 connectionTimeout: 8000,
                 pitch: "+0Hz",
                 rate: "-5%",
-                voice: String(input.voice ?? "en-GB-SoniaNeural"),
+                voice: String(input.voice ?? "en-US-AvaNeural"),
                 volume: "+0%"
               });
 
@@ -72,7 +72,7 @@ const edgeTtsDevProxy = () => ({
         res.setHeader("Cache-Control", "no-store");
         res.setHeader("Transfer-Encoding", "chunked");
 
-        child.stdin.end(JSON.stringify({ text, voice: String(payload.voice ?? "en-GB-SoniaNeural") }));
+        child.stdin.end(JSON.stringify({ text, voice: String(payload.voice ?? "en-US-AvaNeural") }));
         child.stdout.pipe(res, { end: false });
 
         let stderr = "";

@@ -24,7 +24,7 @@ type TimedWordRange = WordRange & {
   startsAt: number;
 };
 
-const EDGE_TTS_VOICE = "en-GB-SoniaNeural";
+const EDGE_TTS_VOICE = "en-US-AvaNeural";
 const STREAMING_MIME = "audio/mpeg";
 
 const normalizeWord = (value: string) =>
