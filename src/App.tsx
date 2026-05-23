@@ -1,25 +1,34 @@
 import type { Session, User } from "@supabase/supabase-js";
 import {
+  BarChart3,
   BookOpen,
   ChevronLeft,
+  Columns3,
   CreditCard,
   Crown,
+  Database,
+  FileText,
+  HardDrive,
   Image as ImageIcon,
   Loader2,
   LogOut,
   Pause,
   Play,
+  RefreshCw,
   RotateCcw,
   RotateCw,
   Trash2,
+  Type,
   Upload,
   Plus,
   Check,
   Settings,
+  Users,
   X
 } from "lucide-react";
-import { ChangeEvent, FormEvent, KeyboardEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, CSSProperties, FormEvent, KeyboardEvent, PointerEvent, RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
+import { parsePdf, pdfjsLib } from "./pdf";
 import { createEdgeTtsPlayer, EdgeTtsPlayer } from "./edgeTts";
 import { supabase } from "./supabase";
 import { LandingPage } from "./LandingPage";
@@ -28,6 +37,7 @@ import { LandingPage } from "./LandingPage";
 
 type PlaybackState = "idle" | "playing" | "paused";
 type ReaderFontMode = "serif" | "sans";
+type PdfReaderViewMode = "pdf" | "text" | "split";
 type SpeechHighlight = {
   end: number;
   paragraphId: string;
@@ -36,6 +46,19 @@ type SpeechHighlight = {
 type WordRange = {
   end: number;
   start: number;
+};
+type PdfTextLayerWord = {
+  fontSize: number;
+  height: number;
+  left: number;
+  pageWordIndex: number;
+  text: string;
+  top: number;
+  width: number;
+};
+type PdfPageMetrics = {
+  height: number;
+  width: number;
 };
 type ReaderImageChunk = {
   endWord: number;
@@ -68,6 +91,8 @@ type BookRow = {
   cover_url: string | null;
   created_at: string;
   current_index: number;
+  current_page?: number | null;
+  document_type?: "epub" | "pdf";
   file_name: string;
   file_size: number;
   id: string;
@@ -88,8 +113,40 @@ type BillingProfile = {
   stripe_subscription_id: string | null;
   user_id: string;
 };
+type ReaderDashboardBook = {
+  createdAt: string;
+  documentType: "epub" | "pdf" | string;
+  fileName: string;
+  fileSize: number;
+  id: string;
+  title: string;
+};
+type ReaderDashboardUser = {
+  bookStorageBytes: number;
+  books: ReaderDashboardBook[];
+  createdAt: string | null;
+  email: string;
+  id: string;
+  imageStorageBytes: number;
+  imagesGenerated: number;
+};
+type ReaderDashboardData = {
+  generatedAt: string;
+  storage: {
+    booksBytes: number;
+    imagesBytes: number;
+    totalBytes: number;
+  };
+  totals: {
+    books: number;
+    imagesGenerated: number;
+    users: number;
+  };
+  users: ReaderDashboardUser[];
+};
 
 const EPUB_BUCKET = "epubs";
+const DOCUMENT_UPLOAD_ACCEPT = ".epub,application/epub+zip,.pdf,application/pdf";
 const BOOK_CACHE_NAME = "epub-vision-reader-books-v1";
 const READER_IMAGE_DB_NAME = "epub-vision-reader-images";
 const READER_IMAGE_STORE_NAME = "images";
@@ -547,12 +604,33 @@ const formatBytes = (bytes: number) => {
   return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
 };
 
+const formatShortDate = (value: string | null) => {
+  if (!value) return "Unknown";
+
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric"
+  }).format(new Date(value));
+};
+
+const bookFormat = (row: Pick<BookRow, "document_type" | "file_name" | "mime_type">): "epub" | "pdf" => {
+  if (row.document_type === "pdf" || row.mime_type === "application/pdf" || row.file_name.toLowerCase().endsWith(".pdf")) {
+    return "pdf";
+  }
+  return "epub";
+};
+
+const isPdfFile = (file: File) => file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+
+const isEpubFile = (file: File) => file.type === "application/epub+zip" || file.name.toLowerCase().endsWith(".epub");
+
 const safeFileName = (name: string) =>
   name
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "")
-    .slice(0, 120) || "book.epub";
+    .slice(0, 120) || "document";
 
 const blobLooksLikeEpub = async (blob: Blob) => {
   const bytes = new Uint8Array(await blob.slice(0, 4).arrayBuffer());
@@ -592,11 +670,13 @@ const getCoverInitials = (title: string) =>
 
 function BookCover({ book }: { book: BookRow }) {
   const [hasError, setHasError] = useState(false);
+  const format = bookFormat(book);
 
   return (
     <span className="catalog-cover-art">
       {!book.cover_url || hasError ? (
         <span className="generated-cover" style={{ background: getBookHue(book) }}>
+          {format === "pdf" ? <FileText size={28} aria-hidden="true" /> : null}
           <span className="fallback-title">{book.title}</span>
         </span>
       ) : (
@@ -606,7 +686,520 @@ function BookCover({ book }: { book: BookRow }) {
           onError={() => setHasError(true)}
         />
       )}
+      <span className={`catalog-format-badge ${format}`}>{format.toUpperCase()}</span>
     </span>
+  );
+}
+
+function PdfPageCanvas({
+  active,
+  metrics,
+  pageNumber,
+  pdf,
+  rootRef,
+  speechHighlight,
+  paragraphs
+}: {
+  active: boolean;
+  metrics?: PdfPageMetrics;
+  pageNumber: number;
+  paragraphs: ReaderParagraph[];
+  pdf: pdfjsLib.PDFDocumentProxy;
+  rootRef: RefObject<HTMLElement | null>;
+  speechHighlight: SpeechHighlight | null;
+}) {
+  const pageRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [shouldRender, setShouldRender] = useState(active);
+  const [pageSize, setPageSize] = useState({ height: 0, width: 0 });
+  const [textLayerWords, setTextLayerWords] = useState<PdfTextLayerWord[]>([]);
+
+  const activePageWordIndex = useMemo(() => {
+    if (!speechHighlight || speechHighlight.end <= speechHighlight.start) return null;
+
+    const activeParagraph = paragraphs.find((paragraph) => paragraph.id === speechHighlight.paragraphId);
+    if (!activeParagraph || activeParagraph.pageNumber !== pageNumber) return null;
+
+    const pageParagraphs = paragraphs.filter((paragraph) => paragraph.pageNumber === pageNumber);
+    const activeParagraphIndex = pageParagraphs.findIndex((paragraph) => paragraph.id === activeParagraph.id);
+    if (activeParagraphIndex < 0) return null;
+
+    const wordsBeforeParagraph = pageParagraphs
+      .slice(0, activeParagraphIndex)
+      .reduce((total, paragraph) => total + wordsFromText(paragraph.text).length, 0);
+    const wordIndexInParagraph = wordRangesFromText(activeParagraph.text).findIndex(
+      (range) => range.start === speechHighlight.start && range.end === speechHighlight.end
+    );
+
+    return wordIndexInParagraph >= 0 ? wordsBeforeParagraph + wordIndexInParagraph : null;
+  }, [pageNumber, paragraphs, speechHighlight]);
+
+  useEffect(() => {
+    const node = pageRef.current;
+    if (!node || !rootRef.current) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) setShouldRender(true);
+      },
+      { root: rootRef.current, rootMargin: "900px 0px" }
+    );
+
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [rootRef]);
+
+  useEffect(() => {
+    if (active) setShouldRender(true);
+  }, [active]);
+
+  useEffect(() => {
+    if (!shouldRender) return;
+
+    let cancelled = false;
+    let task: pdfjsLib.RenderTask | null = null;
+
+    const render = async () => {
+      const canvas = canvasRef.current;
+      const holder = pageRef.current;
+      if (!canvas || !holder) return;
+
+      const page = await pdf.getPage(pageNumber);
+      if (cancelled) return;
+
+      const unscaledViewport = page.getViewport({ scale: 1 });
+      const availableWidth = Math.max(280, holder.clientWidth - 8);
+      const scale = Math.min(2.1, availableWidth / unscaledViewport.width);
+      const viewport = page.getViewport({ scale });
+      const deviceScale = window.devicePixelRatio || 1;
+      const context = canvas.getContext("2d");
+      if (!context) return;
+
+      canvas.width = Math.floor(viewport.width * deviceScale);
+      canvas.height = Math.floor(viewport.height * deviceScale);
+      canvas.style.width = `${Math.floor(viewport.width)}px`;
+      canvas.style.height = `${Math.floor(viewport.height)}px`;
+      setPageSize({ height: Math.floor(viewport.height), width: Math.floor(viewport.width) });
+
+      context.setTransform(deviceScale, 0, 0, deviceScale, 0, 0);
+      task = page.render({ canvas, canvasContext: context, viewport });
+      await task.promise.catch(() => undefined);
+
+      if (cancelled) return;
+      const textContent = await page.getTextContent();
+      if (cancelled) return;
+
+      let pageWordIndex = 0;
+      const words: PdfTextLayerWord[] = [];
+
+      for (const item of textContent.items) {
+        if (!("str" in item) || !item.str.trim()) continue;
+
+        const transform = pdfjsLib.Util.transform(viewport.transform, item.transform);
+        const fontSize = Math.max(1, Math.hypot(transform[2], transform[3]) || item.height * scale);
+        const itemWidth = Math.max(1, item.width * scale);
+        const itemTextLength = Math.max(item.str.length, 1);
+
+        for (const match of item.str.matchAll(/\S+/g)) {
+          const start = match.index ?? 0;
+          const width = Math.max(2, itemWidth * (match[0].length / itemTextLength));
+          words.push({
+            fontSize,
+            height: fontSize * 1.18,
+            left: transform[4] + itemWidth * (start / itemTextLength),
+            pageWordIndex,
+            text: match[0],
+            top: transform[5] - fontSize,
+            width
+          });
+          pageWordIndex += 1;
+        }
+      }
+
+      setTextLayerWords(words);
+    };
+
+    void render();
+
+    return () => {
+      cancelled = true;
+      task?.cancel();
+    };
+  }, [pageNumber, pdf, shouldRender]);
+
+  return (
+    <div
+      className={active ? "pdf-page active" : "pdf-page"}
+      data-page-number={pageNumber}
+      ref={pageRef}
+      style={{
+        "--pdf-page-aspect-ratio": `${metrics?.width ?? (pageSize.width || 3)} / ${metrics?.height ?? (pageSize.height || 4)}`,
+        ...(pageSize.width && pageSize.height ? {
+        "--pdf-page-height": `${pageSize.height}px`,
+        "--pdf-page-width": `${pageSize.width}px`
+        } : {})
+      } as CSSProperties}
+    >
+      <canvas ref={canvasRef} aria-label={`PDF page ${pageNumber}`} />
+      {textLayerWords.length ? (
+        <div className="pdf-text-layer" aria-hidden="true">
+          {textLayerWords.map((word, index) => (
+            <span
+              className={word.pageWordIndex === activePageWordIndex ? "pdf-spoken-word" : "pdf-text-word"}
+              key={`${word.pageWordIndex}-${index}`}
+              style={{
+                fontSize: `${word.fontSize}px`,
+                height: `${word.height}px`,
+                left: `${word.left}px`,
+                top: `${word.top}px`,
+                width: `${word.width}px`
+              }}
+            >
+              {word.text}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {!shouldRender && <div className="pdf-page-placeholder">Page {pageNumber}</div>}
+    </div>
+  );
+}
+
+function PdfDocumentView({
+  currentPage,
+  file,
+  onPageChange,
+  pageCount,
+  paragraphs,
+  scrollOffsetRatio,
+  scrollPage,
+  scrollRequest,
+  speechHighlight
+}: {
+  currentPage: number;
+  file: File | null;
+  onPageChange: (page: number, options?: { offsetRatio?: number; scroll?: boolean }) => void;
+  pageCount: number;
+  paragraphs: ReaderParagraph[];
+  scrollOffsetRatio: number;
+  scrollPage: number;
+  scrollRequest: number;
+  speechHighlight: SpeechHighlight | null;
+}) {
+  const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
+  const [error, setError] = useState("");
+  const [pageMetrics, setPageMetrics] = useState<PdfPageMetrics[]>([]);
+  const surfaceRef = useRef<HTMLElement | null>(null);
+  const scrollFrameRef = useRef<number | null>(null);
+  const userScrolledRef = useRef(false);
+
+  useEffect(() => {
+    if (!file) {
+      setPdf(null);
+      setPageMetrics([]);
+      return;
+    }
+
+    let cancelled = false;
+    let loadedPdf: pdfjsLib.PDFDocumentProxy | null = null;
+
+    const load = async () => {
+      setError("");
+      try {
+        const bytes = await file.arrayBuffer();
+        loadedPdf = await pdfjsLib.getDocument({ data: bytes }).promise;
+        const metrics = await Promise.all(
+          Array.from({ length: loadedPdf.numPages }, async (_, index) => {
+            const page = await loadedPdf!.getPage(index + 1);
+            const viewport = page.getViewport({ scale: 1 });
+            return { height: viewport.height, width: viewport.width };
+          })
+        );
+        if (!cancelled) {
+          setPageMetrics(metrics);
+          setPdf(loadedPdf);
+        }
+      } catch (loadError) {
+        if (!cancelled) setError(loadError instanceof Error ? loadError.message : "Could not render this PDF.");
+      }
+    };
+
+    void load();
+
+    return () => {
+      cancelled = true;
+      void loadedPdf?.destroy();
+    };
+  }, [file]);
+
+  const scrollToPageTarget = (page: number, offsetRatio = 0, behavior: ScrollBehavior = "auto") => {
+    const surface = surfaceRef.current;
+    if (!surface) return;
+
+    const target = surface.querySelector<HTMLElement>(`[data-page-number="${page}"]`);
+    if (!target) return;
+
+    const targetTop =
+      target.getBoundingClientRect().top -
+      surface.getBoundingClientRect().top +
+      surface.scrollTop +
+      target.clientHeight * Math.max(0, Math.min(1, offsetRatio));
+    surface.scrollTo({ top: Math.max(0, targetTop - 18), behavior });
+  };
+
+  useEffect(() => {
+    const surface = surfaceRef.current;
+    if (!surface || userScrolledRef.current) return;
+
+    scrollToPageTarget(currentPage, 0);
+  }, [currentPage, pdf]);
+
+  useEffect(() => {
+    const surface = surfaceRef.current;
+    if (!surface || !pdf || scrollRequest <= 0) return;
+
+    userScrolledRef.current = false;
+    requestAnimationFrame(() => {
+      scrollToPageTarget(scrollPage, scrollOffsetRatio);
+    });
+  }, [pdf, scrollOffsetRatio, scrollPage, scrollRequest]);
+
+  useEffect(() => () => {
+    if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
+  }, []);
+
+  const handleScroll = () => {
+    const surface = surfaceRef.current;
+    if (!surface) return;
+    userScrolledRef.current = true;
+    if (scrollFrameRef.current !== null) return;
+
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+
+      const viewportTop = surface.getBoundingClientRect().top + 72;
+      let closestPage = currentPage;
+      let closestDistance = Number.POSITIVE_INFINITY;
+      let closestOffsetRatio = 0;
+
+      surface.querySelectorAll<HTMLElement>("[data-page-number]").forEach((node) => {
+        const page = Number(node.dataset.pageNumber);
+        const bounds = node.getBoundingClientRect();
+        const distance = Math.abs(bounds.top - viewportTop);
+        if (Number.isFinite(page) && distance < closestDistance) {
+          closestDistance = distance;
+          closestPage = page;
+          closestOffsetRatio = Math.max(0, Math.min(1, (viewportTop - bounds.top) / Math.max(1, bounds.height)));
+        }
+      });
+
+      onPageChange(closestPage, { offsetRatio: closestOffsetRatio, scroll: false });
+    });
+  };
+
+  if (error) {
+    return (
+      <section className="pdf-surface pdf-empty-state">
+        <FileText size={28} aria-hidden="true" />
+        <span>{error}</span>
+      </section>
+    );
+  }
+
+  if (!file || !pdf) {
+    return (
+      <section className="pdf-surface pdf-empty-state">
+        <Loader2 className="spin" size={28} aria-hidden="true" />
+      </section>
+    );
+  }
+
+  return (
+    <section className="pdf-surface" onScroll={handleScroll} ref={surfaceRef} aria-label="PDF pages">
+      {Array.from({ length: pageCount || pdf.numPages }, (_, index) => (
+        <PdfPageCanvas
+          active={currentPage === index + 1}
+          key={index + 1}
+          metrics={pageMetrics[index]}
+          pageNumber={index + 1}
+          paragraphs={paragraphs}
+          pdf={pdf}
+          rootRef={surfaceRef}
+          speechHighlight={speechHighlight}
+        />
+      ))}
+    </section>
+  );
+}
+
+function ReaderDashboard({
+  busy,
+  data,
+  error,
+  onRefresh,
+  onSignInWithGoogle,
+  onSignOut,
+  session
+}: {
+  busy: boolean;
+  data: ReaderDashboardData | null;
+  error: string;
+  onRefresh: () => void;
+  onSignInWithGoogle: () => void;
+  onSignOut: () => void;
+  session: Session | null;
+}) {
+  const [showDetails, setShowDetails] = useState(false);
+  const email = session?.user.email ?? "";
+  const isOwner = email.toLowerCase() === "r.lobo2003@gmail.com";
+  const storageTotal = data?.storage.totalBytes ?? 0;
+
+  if (!session) {
+    return (
+      <main className="dashboard-shell auth-dashboard-shell">
+        <section className="dashboard-auth-panel">
+          <div className="dashboard-mark">
+            <Database size={24} aria-hidden="true" />
+          </div>
+          <h1>Reader dashboard</h1>
+          <p>Sign in with Google to view project storage, users, books, and generated images.</p>
+          <button className="dashboard-primary-button" disabled={busy} onClick={onSignInWithGoogle} type="button">
+            {busy ? <Loader2 className="spin" size={18} aria-hidden="true" /> : <Users size={18} aria-hidden="true" />}
+            <span>Sign in with Google</span>
+          </button>
+        </section>
+      </main>
+    );
+  }
+
+  if (!isOwner) {
+    return (
+      <main className="dashboard-shell auth-dashboard-shell">
+        <section className="dashboard-auth-panel">
+          <div className="dashboard-mark blocked">
+            <X size={24} aria-hidden="true" />
+          </div>
+          <h1>No access</h1>
+          <p>This dashboard is restricted to r.lobo2003@gmail.com.</p>
+          <button className="dashboard-secondary-button" onClick={onSignOut} type="button">
+            <LogOut size={17} aria-hidden="true" />
+            <span>Sign out</span>
+          </button>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="dashboard-shell">
+      <header className="dashboard-topbar">
+        <div>
+          <span className="dashboard-kicker">Reader project</span>
+          <h1>Dashboard</h1>
+        </div>
+        <div className="dashboard-actions">
+          <button className="dashboard-secondary-button" disabled={busy} onClick={onRefresh} type="button">
+            {busy ? <Loader2 className="spin" size={17} aria-hidden="true" /> : <RefreshCw size={17} aria-hidden="true" />}
+            <span>Refresh</span>
+          </button>
+          <button className="dashboard-secondary-button" onClick={onSignOut} type="button">
+            <LogOut size={17} aria-hidden="true" />
+            <span>Sign out</span>
+          </button>
+        </div>
+      </header>
+
+      {error && <div className="dashboard-error">{error}</div>}
+
+      <section className="dashboard-metrics" aria-label="Reader project metrics">
+        <article className="dashboard-metric">
+          <HardDrive size={20} aria-hidden="true" />
+          <span>Supabase storage</span>
+          <strong>{formatBytes(storageTotal)}</strong>
+        </article>
+        <article className="dashboard-metric">
+          <BookOpen size={20} aria-hidden="true" />
+          <span>Books</span>
+          <strong>{formatBytes(data?.storage.booksBytes ?? 0)}</strong>
+          <small>{data?.totals.books ?? 0} uploaded</small>
+        </article>
+        <article className="dashboard-metric">
+          <ImageIcon size={20} aria-hidden="true" />
+          <span>Images</span>
+          <strong>{formatBytes(data?.storage.imagesBytes ?? 0)}</strong>
+          <small>{data?.totals.imagesGenerated ?? 0} generated</small>
+        </article>
+        <article className="dashboard-metric">
+          <Users size={20} aria-hidden="true" />
+          <span>Users</span>
+          <strong>{data?.totals.users ?? 0}</strong>
+        </article>
+      </section>
+
+      <section className="dashboard-user-section">
+        <div className="dashboard-section-heading">
+          <div>
+            <h2>Users</h2>
+            <p>{data ? `Updated ${formatShortDate(data.generatedAt)}` : "Loading project data"}</p>
+          </div>
+          <button
+            aria-pressed={showDetails}
+            className={showDetails ? "dashboard-toggle active" : "dashboard-toggle"}
+            onClick={() => setShowDetails((value) => !value)}
+            type="button"
+          >
+            <BarChart3 size={16} aria-hidden="true" />
+            <span>{showDetails ? "Hide details" : "Show books & images"}</span>
+          </button>
+        </div>
+
+        <div className="dashboard-user-list">
+          {(data?.users ?? []).map((item) => (
+            <article className="dashboard-user-row" key={item.id}>
+              <div className="dashboard-user-main">
+                <div className="dashboard-avatar">{item.email[0]?.toUpperCase() ?? "U"}</div>
+                <div>
+                  <h3>{item.email}</h3>
+                  <p>Joined {formatShortDate(item.createdAt)}</p>
+                </div>
+              </div>
+              <div className="dashboard-user-stats">
+                <span>{item.books.length} books</span>
+                <span>{item.imagesGenerated} images</span>
+                <span>{formatBytes(item.bookStorageBytes + item.imageStorageBytes)}</span>
+              </div>
+              {showDetails && (
+                <div className="dashboard-user-details">
+                  <div className="dashboard-detail-summary">
+                    <span>Books: {formatBytes(item.bookStorageBytes)}</span>
+                    <span>Images: {formatBytes(item.imageStorageBytes)}</span>
+                  </div>
+                  {item.books.length ? (
+                    <div className="dashboard-book-list">
+                      {item.books.map((book) => (
+                        <div className="dashboard-book-row" key={book.id}>
+                          <FileText size={15} aria-hidden="true" />
+                          <span>{book.title || book.fileName}</span>
+                          <small>{book.documentType.toUpperCase()} · {formatBytes(book.fileSize)}</small>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="dashboard-empty-detail">No uploaded books yet.</p>
+                  )}
+                </div>
+              )}
+            </article>
+          ))}
+          {!data && !error && (
+            <div className="dashboard-loading">
+              <Loader2 className="spin" size={22} aria-hidden="true" />
+              <span>Loading dashboard</span>
+            </div>
+          )}
+        </div>
+      </section>
+    </main>
   );
 }
 
@@ -817,7 +1410,14 @@ function App() {
   const [activeBookId, setActiveBookId] = useState("");
   const [view, setView] = useState<"catalog" | "reader">("catalog");
   const [book, setBook] = useState<ReaderBook | null>(null);
+  const [activeBookFile, setActiveBookFile] = useState<File | null>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pdfScrollOffsetRatio, setPdfScrollOffsetRatio] = useState(0);
+  const [pdfScrollPage, setPdfScrollPage] = useState(1);
+  const [pdfScrollRequest, setPdfScrollRequest] = useState(0);
+  const [pdfVisibleOffsetRatio, setPdfVisibleOffsetRatio] = useState(0);
+  const [pdfReaderViewMode, setPdfReaderViewMode] = useState<PdfReaderViewMode>("pdf");
   const [playback, setPlayback] = useState<PlaybackState>("idle");
   const [readerFontMode, setReaderFontMode] = useState<ReaderFontMode>(initialReaderFontMode);
   const [notice, setNotice] = useState("");
@@ -829,6 +1429,7 @@ function App() {
   const [readerImageCount, setReaderImageCount] = useState(0);
   const [readerImageUpgradeOpen, setReaderImageUpgradeOpen] = useState(false);
   const parsedBooks = useRef(new Map<string, ReaderBook>());
+  const parsedBookFiles = useRef(new Map<string, File>());
   const readingSurfaceRef = useRef<HTMLElement | null>(null);
   const paragraphRefs = useRef(new Map<string, HTMLElement>());
   const chapterRefs = useRef(new Map<number, HTMLButtonElement>());
@@ -843,10 +1444,46 @@ function App() {
   const [importingClassicId, setImportingClassicId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [dashboardData, setDashboardData] = useState<ReaderDashboardData | null>(null);
+  const [dashboardError, setDashboardError] = useState("");
+  const [dashboardLoading, setDashboardLoading] = useState(false);
 
   const user = session?.user ?? null;
+  const isReaderDashboard =
+    window.location.hostname === "russell.systems" ||
+    window.location.hostname === "www.russell.systems" ||
+    window.location.pathname.startsWith("/dashboard");
   const current = book?.paragraphs[currentIndex];
-  const progress = book ? ((currentIndex + 1) / book.paragraphs.length) * 100 : 0;
+  const isPdfBook = book?.format === "pdf";
+  const pdfPageCount = book?.pageCount ?? 0;
+  const pdfHasText = Boolean(isPdfBook && book.paragraphs.length);
+  const isPdfPageOnlyMode = isPdfBook && pdfReaderViewMode === "pdf";
+  const progress = book
+    ? isPdfPageOnlyMode && pdfPageCount
+      ? (currentPage / pdfPageCount) * 100
+      : book.paragraphs.length
+        ? ((currentIndex + 1) / book.paragraphs.length) * 100
+        : 0
+    : 0;
+  const activePdfChapterIndex = useMemo(() => {
+    if (!isPdfBook || !book?.chapterPageNumbers?.length) return -1;
+
+    let index = 0;
+    for (let entryIndex = 0; entryIndex < book.chapterPageNumbers.length; entryIndex += 1) {
+      const chapterPage = book.chapterPageNumbers[entryIndex];
+      const chapterOffset = book.chapterPageOffsets?.[entryIndex] ?? 0;
+      if (
+        chapterPage < currentPage ||
+        (chapterPage === currentPage && chapterOffset <= pdfVisibleOffsetRatio + 0.015)
+      ) {
+        index = entryIndex;
+      } else {
+        break;
+      }
+    }
+
+    return index;
+  }, [book?.chapterPageNumbers, book?.chapterPageOffsets, currentPage, isPdfBook, pdfVisibleOffsetRatio]);
   const storageUsed = catalogBooks.reduce((total, item) => total + item.file_size, 0);
   const isPro = billingProfile?.plan === "pro" && ["active", "trialing"].includes(billingProfile.status);
   const readerImageLimit = isPro ? PRO_READER_IMAGE_ACCOUNT_LIMIT : FREE_READER_IMAGE_LIFETIME_LIMIT;
@@ -925,22 +1562,38 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (isReaderDashboard) return;
+
     if (!user) {
       setCatalogBooks([]);
       setBillingProfile(null);
       setReaderImageCount(0);
       setReaderImageUpgradeOpen(false);
       setBook(null);
+      setActiveBookFile(null);
       setView("catalog");
       setActiveBookId("");
-      coverLookupRef.current.clear();
+    coverLookupRef.current.clear();
+      parsedBookFiles.current.clear();
       return;
     }
 
     void loadLibrary(user);
     void loadBillingProfile(user);
     void loadReaderImageUsage();
-  }, [user?.id]);
+  }, [isReaderDashboard, user?.id]);
+
+  useEffect(() => {
+    if (!isReaderDashboard || !user) {
+      setDashboardData(null);
+      setDashboardError("");
+      setDashboardLoading(false);
+      return;
+    }
+
+    if (user.email?.toLowerCase() !== "r.lobo2003@gmail.com") return;
+    void loadReaderDashboard();
+  }, [isReaderDashboard, user?.id]);
 
   useEffect(() => {
     if (!user || !catalogBooks.length) return;
@@ -1019,9 +1672,14 @@ function App() {
   }, [currentIndex]);
 
   useEffect(() => {
-    const chapterButton = chapterRefs.current.get(current?.chapterIndex ?? -1);
+    const chapterButton = chapterRefs.current.get(isPdfBook ? activePdfChapterIndex : current?.chapterIndex ?? -1);
     chapterButton?.scrollIntoView({ block: "nearest" });
-  }, [current?.chapterIndex]);
+  }, [activePdfChapterIndex, current?.chapterIndex, isPdfBook]);
+
+  useEffect(() => {
+    if (!current?.pageNumber || pdfReaderViewMode === "pdf") return;
+    setCurrentPage(current.pageNumber);
+  }, [current?.pageNumber, pdfReaderViewMode]);
 
   useEffect(() => {
     const targetIndex = pendingScrollIndex.current;
@@ -1038,13 +1696,13 @@ function App() {
     if (progressSaveTimer.current !== null) window.clearTimeout(progressSaveTimer.current);
 
     progressSaveTimer.current = window.setTimeout(() => {
-      void saveReadingProgress(activeBookId, currentIndex);
+      void saveReadingProgress(activeBookId, currentIndex, currentPage);
     }, 600);
 
     return () => {
       if (progressSaveTimer.current !== null) window.clearTimeout(progressSaveTimer.current);
     };
-  }, [activeBookId, book, currentIndex, view]);
+  }, [activeBookId, book, currentIndex, currentPage, view]);
 
   useEffect(() => {
     if (!readerImageMode || activeReaderImageChunkIndex < 0) return;
@@ -1060,7 +1718,7 @@ function App() {
         progressSaveTimer.current = null;
       }
 
-      void saveReadingProgress(activeBookId, currentIndex);
+      void saveReadingProgress(activeBookId, currentIndex, currentPage);
     };
 
     const handleVisibilityChange = () => {
@@ -1074,7 +1732,7 @@ function App() {
       window.removeEventListener("beforeunload", flushProgress);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [activeBookId, book, currentIndex, view]);
+  }, [activeBookId, book, currentIndex, currentPage, view]);
 
   const generateReaderImage = async (chunk: ReaderImageChunk, runId = readerImageRunRef.current) => {
     if (!book || !activeBookId) return;
@@ -1259,11 +1917,28 @@ function App() {
     if (!error) setReaderImageCount(data?.generated_count ?? 0);
   };
 
-  const saveReadingProgress = async (bookId: string, index: number) => {
+  const loadReaderDashboard = async () => {
+    setDashboardLoading(true);
+    setDashboardError("");
+
+    const { data, error } = await supabase.functions.invoke("reader-dashboard", {
+      method: "GET"
+    });
+
+    if (error) {
+      setDashboardError(error.message);
+    } else {
+      setDashboardData(data as ReaderDashboardData);
+    }
+
+    setDashboardLoading(false);
+  };
+
+  const saveReadingProgress = async (bookId: string, index: number, page = currentPage) => {
     const savedAt = new Date().toISOString();
     const { error } = await supabase
       .from("books")
-      .update({ current_index: index, last_opened_at: savedAt })
+      .update({ current_index: index, current_page: Math.max(1, page), last_opened_at: savedAt })
       .eq("id", bookId);
 
     if (error) return;
@@ -1271,7 +1946,7 @@ function App() {
     setCatalogBooks((items) =>
       items.map((item) =>
         item.id === bookId
-          ? { ...item, current_index: index, last_opened_at: savedAt, updated_at: savedAt }
+          ? { ...item, current_index: index, current_page: Math.max(1, page), last_opened_at: savedAt, updated_at: savedAt }
           : item
       )
     );
@@ -1420,29 +2095,35 @@ function App() {
     window.location.assign(data.url);
   };
 
-  const importEpubFile = async (file: File, openAfterImport = true) => {
+  const importDocumentFile = async (file: File, openAfterImport = true) => {
     if (!user) return;
 
-    if (!file.name.toLowerCase().endsWith(".epub")) {
-      throw new Error("Please select an EPUB file.");
+    if (!isEpubFile(file) && !isPdfFile(file)) {
+      throw new Error("Please select an EPUB or PDF file.");
     }
 
     if (storageUsed + file.size > USER_STORAGE_QUOTA_BYTES) {
       throw new Error(`This upload would exceed your ${formatBytes(USER_STORAGE_QUOTA_BYTES)} library limit.`);
     }
 
-    const parsed = await parseEpub(file);
+    const format = isPdfFile(file) ? "pdf" : "epub";
+    const parsed = format === "pdf" ? await parsePdf(file) : await parseEpub(file);
     const embeddedCoverUrl = parsed.coverUrl ? await shrinkCoverDataUrl(parsed.coverUrl) : "";
-    const coverUrl = embeddedCoverUrl || await getOpenLibraryCoverUrl(parsed.title, parsed.author);
+    const coverUrl = embeddedCoverUrl || (format === "epub" ? await getOpenLibraryCoverUrl(parsed.title, parsed.author) : "");
     const id = crypto.randomUUID();
     const storagePath = `${user.id}/${id}/${safeFileName(file.name)}`;
 
     const upload = await supabase.storage.from(EPUB_BUCKET).upload(storagePath, file, {
-      contentType: file.type || "application/epub+zip",
+      contentType: file.type || (format === "pdf" ? "application/pdf" : "application/epub+zip"),
       upsert: false
     });
 
-    if (upload.error) throw upload.error;
+    if (upload.error) {
+      if (format === "pdf" && /mime type .*not supported/i.test(upload.error.message)) {
+        throw new Error("PDF uploads are not enabled in Supabase Storage yet. Apply the PDF support migration so the epubs bucket allows application/pdf.");
+      }
+      throw upload.error;
+    }
 
     const newBook = {
       id,
@@ -1450,13 +2131,15 @@ function App() {
       title: parsed.title,
       author: parsed.author,
       cover_url: coverUrl || null,
+      document_type: format,
       storage_path: storagePath,
       file_name: file.name,
       file_size: file.size,
-      mime_type: file.type || "application/epub+zip",
+      mime_type: file.type || (format === "pdf" ? "application/pdf" : "application/epub+zip"),
       paragraph_count: parsed.paragraphs.length,
       chapter_count: parsed.chapters.length,
       current_index: 0,
+      current_page: 1,
       last_opened_at: new Date().toISOString()
     };
     const { data, error } = await supabase.from("books").insert(newBook).select("*").single();
@@ -1468,10 +2151,11 @@ function App() {
 
     const row = data as BookRow;
     parsedBooks.current.set(row.id, parsed);
+    parsedBookFiles.current.set(row.id, file);
     void cacheBookFile(row, file);
     setCatalogBooks((items) => [row, ...items]);
     if (openAfterImport) {
-      openParsedBook(row, parsed, 0);
+      openParsedBook(row, parsed, 0, file);
     }
   };
 
@@ -1495,7 +2179,7 @@ function App() {
       const filename = `${safeFileName(classic.title)}.epub`;
       const file = new File([blob], filename, { type: "application/epub+zip" });
 
-      await importEpubFile(file, false);
+      await importDocumentFile(file, false);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Failed to import classic book.");
     } finally {
@@ -1514,16 +2198,16 @@ function App() {
     setBusy(true);
 
     try {
-      await importEpubFile(file);
+      await importDocumentFile(file);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Could not upload this EPUB.");
+      setNotice(error instanceof Error ? error.message : "Could not upload this document.");
     } finally {
       setBusy(false);
       event.target.value = "";
     }
   };
 
-  const openParsedBook = (row: BookRow, parsed: ReaderBook, targetIndex = row.current_index) => {
+  const openParsedBook = (row: BookRow, parsed: ReaderBook, targetIndex = row.current_index, file?: File) => {
     stopAudio();
     setPlayback("idle");
     setNotice("");
@@ -1534,16 +2218,26 @@ function App() {
     imageRequestsRef.current.clear();
     setActiveBookId(row.id);
     setBook(parsed);
-    const safeIndex = Math.max(0, Math.min(targetIndex, parsed.paragraphs.length - 1));
+    setActiveBookFile(file ?? null);
+    setPdfReaderViewMode(parsed.format === "pdf" ? "pdf" : "text");
+    const safeIndex = parsed.paragraphs.length ? Math.max(0, Math.min(targetIndex, parsed.paragraphs.length - 1)) : 0;
+    const pageFromIndex = parsed.paragraphs[safeIndex]?.pageNumber ?? 1;
+    const initialPage = Math.max(1, Math.min(row.current_page ?? pageFromIndex, parsed.pageCount ?? pageFromIndex));
+    setPdfScrollOffsetRatio(0);
+    setPdfScrollPage(initialPage);
+    setPdfScrollRequest(0);
+    setPdfVisibleOffsetRatio(0);
+    setCurrentPage(initialPage);
     setCurrentIndex(safeIndex);
-    pendingScrollIndex.current = safeIndex;
+    pendingScrollIndex.current = parsed.paragraphs.length ? safeIndex : null;
     setView("reader");
   };
 
   const openBook = async (row: BookRow) => {
     const cached = parsedBooks.current.get(row.id);
-    if (cached) {
-      openParsedBook(row, cached);
+    const cachedFile = parsedBookFiles.current.get(row.id);
+    if (cached && (cached.format !== "pdf" || cachedFile)) {
+      openParsedBook(row, cached, undefined, cachedFile);
       return;
     }
 
@@ -1556,12 +2250,13 @@ function App() {
       if (!file) {
         const { data, error } = await supabase.storage.from(EPUB_BUCKET).download(row.storage_path);
         if (error) throw error;
-        file = new File([data], row.file_name, { type: row.mime_type || "application/epub+zip" });
+        file = new File([data], row.file_name, { type: row.mime_type || (bookFormat(row) === "pdf" ? "application/pdf" : "application/epub+zip") });
         void cacheBookFile(row, file);
       }
 
-      const parsed = await parseEpub(file);
-      if (!row.cover_url && parsed.coverUrl) {
+      const format = bookFormat(row);
+      const parsed = format === "pdf" ? await parsePdf(file) : await parseEpub(file);
+      if (format === "epub" && !row.cover_url && parsed.coverUrl) {
         const coverUrl = await shrinkCoverDataUrl(parsed.coverUrl);
         row = { ...row, cover_url: coverUrl };
         setCatalogBooks((items) => items.map((item) => (item.id === row.id ? row : item)));
@@ -1571,7 +2266,8 @@ function App() {
         }
       }
       parsedBooks.current.set(row.id, parsed);
-      openParsedBook(row, parsed);
+      parsedBookFiles.current.set(row.id, file);
+      openParsedBook(row, parsed, undefined, file);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not open this book.");
     } finally {
@@ -1615,11 +2311,13 @@ function App() {
     void deleteCachedBookFile(row.id);
     void deleteCachedReaderImagesForBook(row.id);
     parsedBooks.current.delete(row.id);
+    parsedBookFiles.current.delete(row.id);
     void loadReaderImageUsage();
     setCatalogBooks((items) => items.filter((item) => item.id !== row.id));
 
     if (activeBookId === row.id) {
       setBook(null);
+      setActiveBookFile(null);
       setActiveBookId("");
       setView("catalog");
     }
@@ -1668,21 +2366,48 @@ function App() {
     }
 
     if (scroll) pendingScrollIndex.current = target;
+    const targetPage = book.paragraphs[target]?.pageNumber;
+    if (targetPage) setCurrentPage(targetPage);
     setCurrentIndex(target);
   };
 
   const moveToChapter = (chapterIndex: number) => {
     if (!book) return;
+    if (book.format === "pdf") {
+      const pageNumber = book.chapterPageNumbers?.[chapterIndex];
+      const offsetRatio = book.chapterPageOffsets?.[chapterIndex] ?? 0;
+      if (pageNumber) moveToPdfPage(pageNumber, { offsetRatio });
+      return;
+    }
+
     const firstParagraph = book.paragraphs.findIndex(
       (paragraph) => paragraph.chapterIndex === chapterIndex
     );
     if (firstParagraph >= 0) moveTo(firstParagraph);
   };
 
+  const moveToPdfPage = (page: number, options: { offsetRatio?: number; scroll?: boolean } = {}) => {
+    if (!book?.pageCount) return;
+    const { offsetRatio = 0, scroll = true } = options;
+    const safePage = Math.max(1, Math.min(page, book.pageCount));
+    setCurrentPage(safePage);
+    setPdfVisibleOffsetRatio(Math.max(0, Math.min(1, offsetRatio)));
+    if (scroll) {
+      setPdfScrollOffsetRatio(Math.max(0, Math.min(1, offsetRatio)));
+      setPdfScrollPage(safePage);
+      setPdfScrollRequest((request) => request + 1);
+    }
+    const firstParagraph = book.paragraphs.findIndex((paragraph) => paragraph.pageNumber === safePage);
+    if (firstParagraph >= 0) {
+      if (pdfReaderViewMode !== "pdf") pendingScrollIndex.current = firstParagraph;
+      setCurrentIndex(firstParagraph);
+    }
+  };
+
   const openCatalog = () => {
     stopAudio();
     setPlayback("idle");
-    if (activeBookId && book) void saveReadingProgress(activeBookId, currentIndex);
+    if (activeBookId && book) void saveReadingProgress(activeBookId, currentIndex, currentPage);
     setView("catalog");
   };
 
@@ -1815,10 +2540,111 @@ function App() {
     );
   };
 
+  const renderTextReadingSurface = (className = "reading-surface") => {
+    if (!book) return null;
+
+    return (
+      <section
+        className={className}
+        aria-live="polite"
+        onScroll={handleReadingScroll}
+        ref={readingSurfaceRef}
+      >
+        {book.paragraphs.length ? (
+        <article className={`reader-copy reader-font-${readerFontMode}`}>
+          {book.paragraphs.map((paragraph, index) => {
+            const showChapterHeading =
+              index === 0 ||
+              paragraph.chapterIndex !== book.paragraphs[index - 1]?.chapterIndex;
+            const isChapterHeading =
+              showChapterHeading &&
+              paragraph.kind === "heading" &&
+              paragraph.text.trim().toLowerCase() === paragraph.chapterTitle.trim().toLowerCase();
+            const isActive = index === currentIndex;
+            const isSpeaking = speechHighlight?.paragraphId === paragraph.id;
+
+            return (
+              <div className="reader-block" key={paragraph.id}>
+                {!readerImageMode && readerImageInsertions.get(index)?.map((chunk) => renderGeneratedReaderImage(chunk))}
+                {showChapterHeading && !isChapterHeading && (
+                  <h2 className="reader-chapter-title">{paragraph.chapterTitle}</h2>
+                )}
+                {paragraph.kind === "image" && paragraph.image ? (
+                  <figure
+                    className={["reader-image", isActive ? "active" : ""].filter(Boolean).join(" ")}
+                    onClick={() => moveTo(index)}
+                    ref={setParagraphRef(paragraph.id)}
+                  >
+                    <img alt={paragraph.image.alt} src={paragraph.image.src} />
+                    {paragraph.image.alt && <figcaption>{paragraph.image.alt}</figcaption>}
+                  </figure>
+                ) : isChapterHeading ? (
+                  <h2
+                    className={[
+                      "reader-chapter-title",
+                      isActive ? "reader-current-heading" : "",
+                      isSpeaking ? "speaking" : ""
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                    onClick={() => moveTo(index)}
+                    ref={setParagraphRef(paragraph.id)}
+                  >
+                    {renderReaderText(paragraph)}
+                  </h2>
+                ) : paragraph.kind === "heading" ? (
+                  <h3
+                    className={[
+                      "reader-heading",
+                      isActive ? "active" : "",
+                      isSpeaking ? "speaking" : ""
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                    onClick={() => moveTo(index)}
+                    ref={setParagraphRef(paragraph.id)}
+                  >
+                    {renderReaderText(paragraph)}
+                  </h3>
+                ) : (
+                  <p
+                    className={[
+                      "reader-paragraph",
+                      paragraph.kind === "quote" ? "quote" : "",
+                      paragraph.kind === "list" ? "list" : "",
+                      isActive ? "active" : "",
+                      isSpeaking ? "speaking" : ""
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                    onClick={() => moveTo(index)}
+                    ref={setParagraphRef(paragraph.id)}
+                  >
+                    {renderReaderText(paragraph)}
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </article>
+      ) : (
+        <div className="pdf-text-empty">
+          <FileText size={30} aria-hidden="true" />
+          <span>No selectable text was found in this PDF.</span>
+        </div>
+        )}
+      </section>
+    );
+  };
+
   const scrubToPointer = (event: PointerEvent<HTMLDivElement>) => {
     if (!book) return;
     const bounds = event.currentTarget.getBoundingClientRect();
     const ratio = Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width));
+    if (isPdfPageOnlyMode && book.pageCount) {
+      moveToPdfPage(Math.max(1, Math.round(ratio * (book.pageCount - 1)) + 1));
+      return;
+    }
     moveTo(Math.round(ratio * (book.paragraphs.length - 1)));
   };
 
@@ -1827,21 +2653,37 @@ function App() {
 
     if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
       event.preventDefault();
+      if (isPdfPageOnlyMode) {
+        moveToPdfPage(currentPage - 1);
+        return;
+      }
       moveTo(currentIndex - 1);
     }
 
     if (event.key === "ArrowRight" || event.key === "ArrowUp") {
       event.preventDefault();
+      if (isPdfPageOnlyMode) {
+        moveToPdfPage(currentPage + 1);
+        return;
+      }
       moveTo(currentIndex + 1);
     }
 
     if (event.key === "Home") {
       event.preventDefault();
+      if (isPdfPageOnlyMode) {
+        moveToPdfPage(1);
+        return;
+      }
       moveTo(0);
     }
 
     if (event.key === "End") {
       event.preventDefault();
+      if (isPdfPageOnlyMode && book.pageCount) {
+        moveToPdfPage(book.pageCount);
+        return;
+      }
       moveTo(book.paragraphs.length - 1);
     }
   };
@@ -1851,6 +2693,20 @@ function App() {
       <main className="auth-shell">
         <Loader2 className="spin" size={28} aria-hidden="true" />
       </main>
+    );
+  }
+
+  if (isReaderDashboard) {
+    return (
+      <ReaderDashboard
+        busy={busy || dashboardLoading}
+        data={dashboardData}
+        error={dashboardError}
+        onRefresh={() => void loadReaderDashboard()}
+        onSignInWithGoogle={() => void signInWithGoogle()}
+        onSignOut={() => void signOut()}
+        session={session}
+      />
     );
   }
 
@@ -1875,17 +2731,23 @@ function App() {
     return (
       <main className="app-shell catalog-shell">
         <header className="topbar catalog-topbar" style={{ position: "relative" }}>
-          <div>
-            <div className="top-title">Library</div>
-            <div className="storage-meter">
-              {formatBytes(storageUsed)} of {formatBytes(USER_STORAGE_QUOTA_BYTES)}
+          <div className="catalog-storage-summary">
+            <div className="library-brand-mark" aria-label={isPro ? "illume Pro" : "illume"}>
+              <img src="/landing/logo.jpeg" alt="" aria-hidden="true" />
+              <span>illume</span>
+              {isPro && (
+                <span className="library-pro-badge">
+                  <Crown size={12} aria-hidden="true" />
+                  <span>Pro</span>
+                </span>
+              )}
             </div>
           </div>
           <div className="top-actions">
-            <label className="catalog-upload" title="Upload EPUB">
+            <label className="catalog-upload" title="Upload document">
               {busy ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Upload size={16} aria-hidden="true" />}
-              <span>Upload EPUB</span>
-              <input disabled={busy} type="file" accept=".epub,application/epub+zip" onChange={handleCatalogUpload} />
+              <span>Upload</span>
+              <input disabled={busy} type="file" accept={DOCUMENT_UPLOAD_ACCEPT} onChange={handleCatalogUpload} />
             </label>
             
             <div className="profile-button-wrapper" style={{ position: "relative", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -2046,11 +2908,11 @@ function App() {
               <div className="empty-library-container">
                 <BookOpen size={28} aria-hidden="true" className="empty-icon" />
                 <h2>No books yet</h2>
-                <p>Upload an EPUB or browse the classics below to get started.</p>
-                <label className="empty-upload-btn" title="Upload EPUB">
+                <p>Upload an EPUB or PDF, or browse the classics below to get started.</p>
+                <label className="empty-upload-btn" title="Upload document">
                   {busy ? <Loader2 className="spin" size={15} aria-hidden="true" /> : <Upload size={15} aria-hidden="true" />}
-                  <span>Upload EPUB</span>
-                  <input disabled={busy} type="file" accept=".epub,application/epub+zip" onChange={handleCatalogUpload} />
+                  <span>Upload</span>
+                  <input disabled={busy} type="file" accept={DOCUMENT_UPLOAD_ACCEPT} onChange={handleCatalogUpload} />
                 </label>
               </div>
             )}
@@ -2155,6 +3017,42 @@ function App() {
                 </div>
                 
                 <div className="settings-popover-body">
+                  {isPdfBook && (
+                    <div className="settings-section">
+                      <span className="settings-section-label">PDF View</span>
+                      <div className="pdf-view-options">
+                        <button
+                          aria-pressed={pdfReaderViewMode === "pdf"}
+                          className={pdfReaderViewMode === "pdf" ? "pdf-view-btn active" : "pdf-view-btn"}
+                          onClick={() => setPdfReaderViewMode("pdf")}
+                          type="button"
+                        >
+                          <FileText size={15} aria-hidden="true" />
+                          <span>PDF</span>
+                        </button>
+                        <button
+                          aria-pressed={pdfReaderViewMode === "text"}
+                          className={pdfReaderViewMode === "text" ? "pdf-view-btn active" : "pdf-view-btn"}
+                          disabled={!pdfHasText}
+                          onClick={() => setPdfReaderViewMode("text")}
+                          type="button"
+                        >
+                          <Type size={15} aria-hidden="true" />
+                          <span>Text</span>
+                        </button>
+                        <button
+                          aria-pressed={pdfReaderViewMode === "split"}
+                          className={pdfReaderViewMode === "split" ? "pdf-view-btn active" : "pdf-view-btn"}
+                          disabled={!pdfHasText}
+                          onClick={() => setPdfReaderViewMode("split")}
+                          type="button"
+                        >
+                          <Columns3 size={15} aria-hidden="true" />
+                          <span>Split</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   <div className="settings-section">
                     <span className="settings-section-label">Typography</span>
                     <div className="settings-font-options">
@@ -2184,125 +3082,79 @@ function App() {
         </div>
       </header>
 
-      <section className={readerImageMode ? "reader-frame image-mode-frame" : "reader-frame"}>
+      <section className={[readerImageMode ? "reader-frame image-mode-frame" : "reader-frame", isPdfBook ? "pdf-reader-frame" : ""].filter(Boolean).join(" ")}>
         <aside className="chapter-sidebar">
-          <div className="chapter-heading">Chapters</div>
-          <nav className="chapter-list" aria-label="Chapters">
-            {book.chapters.map((chapter, index) => (
-              <button
-                className={index === current?.chapterIndex ? "chapter-item active" : "chapter-item"}
-                key={`${chapter}-${index}`}
-                ref={(node) => {
-                  if (node) {
-                    chapterRefs.current.set(index, node);
-                  } else {
-                    chapterRefs.current.delete(index);
-                  }
-                }}
-                type="button"
-                onClick={() => moveToChapter(index)}
-                title={chapter}
-              >
-                {chapter}
-              </button>
-            ))}
+          <div className="chapter-heading">{isPdfBook ? "Table of contents" : "Chapters"}</div>
+          <nav className="chapter-list" aria-label={isPdfBook ? "Table of contents" : "Chapters"}>
+            {book.chapters.length ? (
+              book.chapters.map((chapter, index) => (
+                <button
+                  className={index === (isPdfBook ? activePdfChapterIndex : current?.chapterIndex) ? "chapter-item active" : "chapter-item"}
+                  key={`${chapter}-${index}`}
+                  ref={(node) => {
+                    if (node) {
+                      chapterRefs.current.set(index, node);
+                    } else {
+                      chapterRefs.current.delete(index);
+                    }
+                  }}
+                  type="button"
+                  onClick={() => moveToChapter(index)}
+                  title={chapter.trim()}
+                >
+                  {chapter}
+                </button>
+              ))
+            ) : (
+              <span className="chapter-empty">{isPdfBook ? "No table of contents found." : "No chapters found."}</span>
+            )}
           </nav>
         </aside>
 
-        <div className={readerImageMode ? "main-spread reader-only image-mode" : "main-spread reader-only"}>
+        <div className={[
+          readerImageMode ? "main-spread reader-only image-mode" : "main-spread reader-only",
+          isPdfBook ? `pdf-reader-main pdf-reader-${pdfReaderViewMode}` : ""
+        ].filter(Boolean).join(" ")}>
           {readerImageMode && renderReaderImageStage()}
-          <section
-            className="reading-surface"
-            aria-live="polite"
-            onScroll={handleReadingScroll}
-            ref={readingSurfaceRef}
-          >
-            <article className={`reader-copy reader-font-${readerFontMode}`}>
-              {book.paragraphs.map((paragraph, index) => {
-                const showChapterHeading =
-                  index === 0 ||
-                  paragraph.chapterIndex !== book.paragraphs[index - 1]?.chapterIndex;
-                const isChapterHeading =
-                  showChapterHeading &&
-                  paragraph.kind === "heading" &&
-                  paragraph.text.trim().toLowerCase() === paragraph.chapterTitle.trim().toLowerCase();
-                const isActive = index === currentIndex;
-                const isSpeaking = speechHighlight?.paragraphId === paragraph.id;
-
-                return (
-                  <div className="reader-block" key={paragraph.id}>
-                    {!readerImageMode && readerImageInsertions.get(index)?.map((chunk) => renderGeneratedReaderImage(chunk))}
-                    {showChapterHeading && !isChapterHeading && (
-                      <h2 className="reader-chapter-title">{paragraph.chapterTitle}</h2>
-                    )}
-                    {paragraph.kind === "image" && paragraph.image ? (
-                      <figure
-                        className={["reader-image", isActive ? "active" : ""].filter(Boolean).join(" ")}
-                        onClick={() => moveTo(index)}
-                        ref={setParagraphRef(paragraph.id)}
-                      >
-                        <img alt={paragraph.image.alt} src={paragraph.image.src} />
-                        {paragraph.image.alt && <figcaption>{paragraph.image.alt}</figcaption>}
-                      </figure>
-                    ) : isChapterHeading ? (
-                      <h2
-                        className={[
-                          "reader-chapter-title",
-                          isActive ? "reader-current-heading" : "",
-                          isSpeaking ? "speaking" : ""
-                        ]
-                          .filter(Boolean)
-                          .join(" ")}
-                        onClick={() => moveTo(index)}
-                        ref={setParagraphRef(paragraph.id)}
-                      >
-                        {renderReaderText(paragraph)}
-                      </h2>
-                    ) : paragraph.kind === "heading" ? (
-                      <h3
-                        className={[
-                          "reader-heading",
-                          isActive ? "active" : "",
-                          isSpeaking ? "speaking" : ""
-                        ]
-                          .filter(Boolean)
-                          .join(" ")}
-                        onClick={() => moveTo(index)}
-                        ref={setParagraphRef(paragraph.id)}
-                      >
-                        {renderReaderText(paragraph)}
-                      </h3>
-                    ) : (
-                      <p
-                        className={[
-                          "reader-paragraph",
-                          paragraph.kind === "quote" ? "quote" : "",
-                          paragraph.kind === "list" ? "list" : "",
-                          isActive ? "active" : "",
-                          isSpeaking ? "speaking" : ""
-                        ]
-                          .filter(Boolean)
-                          .join(" ")}
-                        onClick={() => moveTo(index)}
-                        ref={setParagraphRef(paragraph.id)}
-                      >
-                        {renderReaderText(paragraph)}
-                      </p>
-                    )}
-                  </div>
-                );
-              })}
-            </article>
-          </section>
+          {isPdfBook && pdfReaderViewMode === "split" ? (
+            <div className="pdf-split-layout">
+              <PdfDocumentView
+                currentPage={currentPage}
+                file={activeBookFile}
+                onPageChange={moveToPdfPage}
+                pageCount={pdfPageCount}
+                paragraphs={book.paragraphs}
+                scrollOffsetRatio={pdfScrollOffsetRatio}
+                scrollPage={pdfScrollPage}
+                scrollRequest={pdfScrollRequest}
+                speechHighlight={speechHighlight}
+              />
+              {renderTextReadingSurface("reading-surface pdf-text-pane")}
+            </div>
+          ) : isPdfBook && pdfReaderViewMode === "pdf" ? (
+            <PdfDocumentView
+              currentPage={currentPage}
+              file={activeBookFile}
+              onPageChange={moveToPdfPage}
+              pageCount={pdfPageCount}
+              paragraphs={book.paragraphs}
+              scrollOffsetRatio={pdfScrollOffsetRatio}
+              scrollPage={pdfScrollPage}
+              scrollRequest={pdfScrollRequest}
+              speechHighlight={speechHighlight}
+            />
+          ) : (
+            renderTextReadingSurface()
+          )}
         </div>
       </section>
 
       <div
         className="progress-wrap"
         aria-label="Reading progress"
-        aria-valuemax={book.paragraphs.length}
+        aria-valuemax={isPdfPageOnlyMode ? pdfPageCount : book.paragraphs.length}
         aria-valuemin={1}
-        aria-valuenow={currentIndex + 1}
+        aria-valuenow={isPdfPageOnlyMode ? currentPage : currentIndex + 1}
         onKeyDown={handleProgressKey}
         onPointerDown={(event) => {
           event.currentTarget.setPointerCapture(event.pointerId);
@@ -2324,9 +3176,9 @@ function App() {
           <button
             className="rail-icon"
             type="button"
-            onClick={() => moveTo(currentIndex - 1)}
-            disabled={currentIndex <= 0}
-            title="Previous paragraph"
+            onClick={() => isPdfPageOnlyMode ? moveToPdfPage(currentPage - 1) : moveTo(currentIndex - 1)}
+            disabled={isPdfPageOnlyMode ? currentPage <= 1 : currentIndex <= 0}
+            title={isPdfPageOnlyMode ? "Previous page" : "Previous paragraph"}
           >
             <RotateCcw size={21} aria-hidden="true" />
           </button>
@@ -2340,9 +3192,9 @@ function App() {
           <button
             className="rail-icon"
             type="button"
-            onClick={() => moveTo(currentIndex + 1)}
-            disabled={currentIndex >= book.paragraphs.length - 1}
-            title="Next paragraph"
+            onClick={() => isPdfPageOnlyMode ? moveToPdfPage(currentPage + 1) : moveTo(currentIndex + 1)}
+            disabled={isPdfPageOnlyMode ? currentPage >= pdfPageCount : currentIndex >= book.paragraphs.length - 1}
+            title={isPdfPageOnlyMode ? "Next page" : "Next paragraph"}
           >
             <RotateCw size={21} aria-hidden="true" />
           </button>
@@ -2353,6 +3205,9 @@ function App() {
             disabled={!readerImageMode && !readerImageChunks.length}
             onClick={toggleReaderImageMode}
             title={
+              isPdfBook && !pdfHasText
+                ? "Text extraction is required for PDF image mode"
+                :
               readerImageMode
                 ? "Stop generating reading images"
                 : "Show reader images"

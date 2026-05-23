@@ -5,6 +5,7 @@ export type ReaderParagraph = {
   chapterIndex: number;
   chapterTitle: string;
   kind?: "heading" | "paragraph" | "quote" | "list" | "image";
+  pageNumber?: number;
   text: string;
   image?: {
     alt: string;
@@ -18,6 +19,11 @@ export type ReaderBook = {
   title: string;
   author: string;
   coverUrl: string;
+  fileName?: string;
+  format: "epub" | "pdf";
+  pageCount?: number;
+  chapterPageNumbers?: number[];
+  chapterPageOffsets?: number[];
   paragraphs: ReaderParagraph[];
   chapters: string[];
 };
@@ -434,6 +440,8 @@ export const parseEpub = async (file: File): Promise<ReaderBook> => {
     title,
     author,
     coverUrl,
+    fileName: file.name,
+    format: "epub",
     paragraphs,
     chapters
   };

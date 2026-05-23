@@ -1,6 +1,6 @@
 # Reader Library
 
-A Supabase-backed EPUB reader with per-user login, a synced catalogue, private EPUB storage, reading progress sync, and browser text-to-speech.
+A Supabase-backed EPUB/PDF reader with per-user login, a synced catalogue, private document storage, reading progress sync, browser text-to-speech, and optional AI image mode.
 
 ## Run locally
 
@@ -36,14 +36,22 @@ Deploy the reader Edge Functions:
 ```bash
 supabase functions deploy generate-reader-image
 supabase functions deploy delete-reader-book
+supabase functions deploy reader-dashboard
 ```
 
-The database migration creates:
+## Owner dashboard
+
+The owner dashboard is available when the app is served from `https://russell.systems` or at `/dashboard`.
+It requires Google authentication and only allows `r.lobo2003@gmail.com`. The dashboard uses the
+`reader-dashboard` Edge Function to read aggregate user, book, generated image, and Supabase Storage usage
+without exposing privileged database access to the browser.
+
+The database migrations create:
 
 - `public.books`
 - `public.billing_profiles`
 - `public.reader_image_usage`
-- a private `epubs` storage bucket
+- a private `epubs` storage bucket for EPUB and PDF uploads
 - RLS policies for per-user book rows and files
 
 ## Stripe Billing
