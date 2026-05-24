@@ -1344,6 +1344,265 @@ function PdfDocumentView({
   );
 }
 
+const renderReaderText = (
+  paragraph: ReaderParagraph,
+  shouldRenderWords: boolean,
+  speechHighlight: SpeechHighlight | null
+) => {
+  if (paragraph.kind === "image") return null;
+  if (!shouldRenderWords) return paragraph.text;
+
+  const ranges = wordRangesFromText(paragraph.text);
+  if (ranges.length === 0) {
+    return paragraph.text;
+  }
+  const isSpoken = speechHighlight?.paragraphId === paragraph.id;
+  const leading = paragraph.text.slice(0, ranges[0].start);
+
+  const words = ranges.map((range, i) => {
+    const word = paragraph.text.slice(range.start, range.end);
+    const gap = paragraph.text.slice(range.end, ranges[i + 1]?.start);
+    const active = isSpoken && speechHighlight && speechHighlight.start === range.start && speechHighlight.end === range.end;
+
+    return (
+      <Fragment key={range.start}>
+        <span
+          className={active ? "reader-word spoken-word" : "reader-word"}
+          data-word-start={range.start}
+          data-word-end={range.end}
+        >
+          {word}
+        </span>
+        {gap}
+      </Fragment>
+    );
+  });
+
+  return (
+    <>
+      {leading}
+      {words}
+    </>
+  );
+};
+
+type TextReaderParagraphBlockProps = {
+  currentIndex: number;
+  index: number;
+  insertionChunks?: ReaderImageChunk[];
+  paragraph: ReaderParagraph;
+  previousParagraph?: ReaderParagraph;
+  readerActionsRef: RefObject<TextReaderActions>;
+  readerImageMode: boolean;
+  renderGeneratedReaderImage: (chunk: ReaderImageChunk) => ReactNode;
+  setParagraphRef: (id: string) => (node: HTMLElement | null) => void;
+  speechHighlight: SpeechHighlight | null;
+};
+
+const paragraphSpeechKey = (speechHighlight: SpeechHighlight | null, paragraphId: string) =>
+  speechHighlight?.paragraphId === paragraphId ? `${speechHighlight.start}:${speechHighlight.end}` : "";
+
+type TextReaderActions = {
+  moveTo: (index: number) => void;
+  paragraphClick: (event: MouseEvent<HTMLElement>, paragraph: ReaderParagraph, index: number) => void;
+  scroll: () => void;
+};
+
+const TextReaderParagraphBlock = memo(function TextReaderParagraphBlock({
+  currentIndex,
+  index,
+  insertionChunks,
+  paragraph,
+  previousParagraph,
+  readerActionsRef,
+  readerImageMode,
+  renderGeneratedReaderImage,
+  setParagraphRef,
+  speechHighlight
+}: TextReaderParagraphBlockProps) {
+  const [isHovered, setIsHovered] = useState(false);
+  const showChapterHeading = index === 0 || paragraph.chapterIndex !== previousParagraph?.chapterIndex;
+  const isChapterHeading =
+    showChapterHeading &&
+    paragraph.kind === "heading" &&
+    paragraph.text.trim().toLowerCase() === paragraph.chapterTitle.trim().toLowerCase();
+  const isActive = index === currentIndex;
+  const isSpeaking = speechHighlight?.paragraphId === paragraph.id;
+  const shouldRenderWords = isActive || isSpeaking || isHovered;
+  const text = renderReaderText(paragraph, shouldRenderWords, speechHighlight);
+
+  const handlePointerEnter = () => setIsHovered(true);
+  const handlePointerLeave = () => setIsHovered(false);
+
+  return (
+    <div className="reader-block">
+      {readerImageMode && insertionChunks?.map((chunk) => renderGeneratedReaderImage(chunk))}
+      {showChapterHeading && !isChapterHeading && (
+        <h2 className="reader-chapter-title">{paragraph.chapterTitle}</h2>
+      )}
+      {paragraph.kind === "image" && paragraph.image ? (
+        <figure
+          className={["reader-image", isActive ? "active" : ""].filter(Boolean).join(" ")}
+          onClick={() => readerActionsRef.current.moveTo(index)}
+          ref={setParagraphRef(paragraph.id)}
+        >
+          <img alt={paragraph.image.alt} src={paragraph.image.src} />
+          {paragraph.image.alt && <figcaption>{paragraph.image.alt}</figcaption>}
+        </figure>
+      ) : isChapterHeading ? (
+        <h2
+          className={[
+            "reader-chapter-title",
+            isActive ? "reader-current-heading" : "",
+            isSpeaking ? "speaking" : ""
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          onClick={(event) => readerActionsRef.current.paragraphClick(event, paragraph, index)}
+          onPointerEnter={handlePointerEnter}
+          onPointerLeave={handlePointerLeave}
+          ref={setParagraphRef(paragraph.id)}
+        >
+          {text}
+        </h2>
+      ) : paragraph.kind === "heading" ? (
+        <h3
+          className={[
+            "reader-heading",
+            isActive ? "active" : "",
+            isSpeaking ? "speaking" : ""
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          onClick={(event) => readerActionsRef.current.paragraphClick(event, paragraph, index)}
+          onPointerEnter={handlePointerEnter}
+          onPointerLeave={handlePointerLeave}
+          ref={setParagraphRef(paragraph.id)}
+        >
+          {text}
+        </h3>
+      ) : (
+        <p
+          className={[
+            "reader-paragraph",
+            paragraph.kind === "quote" ? "quote" : "",
+            paragraph.kind === "list" ? "list" : "",
+            isActive ? "active" : "",
+            isSpeaking ? "speaking" : ""
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          onClick={(event) => readerActionsRef.current.paragraphClick(event, paragraph, index)}
+          onPointerEnter={handlePointerEnter}
+          onPointerLeave={handlePointerLeave}
+          ref={setParagraphRef(paragraph.id)}
+        >
+          {text}
+        </p>
+      )}
+    </div>
+  );
+}, (previous, next) => {
+  const previousActive = previous.index === previous.currentIndex;
+  const nextActive = next.index === next.currentIndex;
+
+  return (
+    previous.paragraph === next.paragraph &&
+    previous.previousParagraph === next.previousParagraph &&
+    previous.readerImageMode === next.readerImageMode &&
+    previous.insertionChunks === next.insertionChunks &&
+    previousActive === nextActive &&
+    paragraphSpeechKey(previous.speechHighlight, previous.paragraph.id) ===
+      paragraphSpeechKey(next.speechHighlight, next.paragraph.id)
+  );
+});
+
+type TextReadingSurfaceProps = {
+  book: ReaderBook;
+  className?: string;
+  currentIndex: number;
+  readerActionsRef: RefObject<TextReaderActions>;
+  readerFontMode: ReaderFontMode;
+  readerImageInsertions: Map<number, ReaderImageChunk[]>;
+  readerImageMode: boolean;
+  readerLineHeight: number;
+  readerLineWidth: number;
+  readerTextScale: number;
+  readingSurfaceRef: RefObject<HTMLElement | null>;
+  renderGeneratedReaderImage: (chunk: ReaderImageChunk) => ReactNode;
+  setParagraphRef: (id: string) => (node: HTMLElement | null) => void;
+  speechHighlight: SpeechHighlight | null;
+};
+
+const TextReadingSurface = memo(function TextReadingSurface({
+  book,
+  className = "reading-surface",
+  currentIndex,
+  readerActionsRef,
+  readerFontMode,
+  readerImageInsertions,
+  readerImageMode,
+  readerLineHeight,
+  readerLineWidth,
+  readerTextScale,
+  readingSurfaceRef,
+  renderGeneratedReaderImage,
+  setParagraphRef,
+  speechHighlight
+}: TextReadingSurfaceProps) {
+  return (
+    <section
+      className={className}
+      aria-live="polite"
+      onScroll={() => readerActionsRef.current.scroll()}
+      ref={readingSurfaceRef}
+    >
+      {book.paragraphs.length ? (
+        <article
+          className={`reader-copy reader-font-${readerFontMode}`}
+          style={{
+            "--reader-line-height": readerLineHeight,
+            "--reader-line-width": `${readerLineWidth}em`,
+            "--reader-text-scale": readerTextScale
+          } as CSSProperties}
+        >
+          {book.paragraphs.map((paragraph, index) => (
+            <TextReaderParagraphBlock
+              currentIndex={currentIndex}
+              index={index}
+              insertionChunks={readerImageInsertions.get(index)}
+              key={paragraph.id}
+              paragraph={paragraph}
+              previousParagraph={book.paragraphs[index - 1]}
+              readerActionsRef={readerActionsRef}
+              readerImageMode={readerImageMode}
+              renderGeneratedReaderImage={renderGeneratedReaderImage}
+              setParagraphRef={setParagraphRef}
+              speechHighlight={speechHighlight}
+            />
+          ))}
+        </article>
+      ) : (
+        <div className="pdf-text-empty">
+          <FileText size={30} aria-hidden="true" />
+          <span>No selectable text was found in this PDF.</span>
+        </div>
+      )}
+    </section>
+  );
+}, (previous, next) => (
+  previous.book === next.book &&
+  previous.className === next.className &&
+  previous.currentIndex === next.currentIndex &&
+  previous.readerFontMode === next.readerFontMode &&
+  previous.readerImageInsertions === next.readerImageInsertions &&
+  previous.readerImageMode === next.readerImageMode &&
+  previous.readerLineHeight === next.readerLineHeight &&
+  previous.readerLineWidth === next.readerLineWidth &&
+  previous.readerTextScale === next.readerTextScale &&
+  previous.speechHighlight === next.speechHighlight
+));
+
 function ReaderDashboard({
   busy,
   data,
@@ -1965,7 +2224,6 @@ function App() {
   const [readerImageStyleOpen, setReaderImageStyleOpen] = useState(false);
   const [readerImageUpgradeOpen, setReaderImageUpgradeOpen] = useState(false);
   const [chapterDrawerOpen, setChapterDrawerOpen] = useState(() => window.matchMedia("(min-width: 981px)").matches);
-  const [hoveredReaderParagraphId, setHoveredReaderParagraphId] = useState<string | null>(null);
   const parsedBooks = useRef(new Map<string, ReaderBook>());
   const parsedBookFiles = useRef(new Map<string, File>());
   const bookOpenRunRef = useRef(0);
@@ -1981,6 +2239,11 @@ function App() {
   const suppressNextPlaybackStartRef = useRef(false);
   const speedControlRef = useRef<HTMLDivElement | null>(null);
   const imageStyleMenuRef = useRef<HTMLDivElement | null>(null);
+  const textReaderActionsRef = useRef<TextReaderActions>({
+    moveTo: () => undefined,
+    paragraphClick: () => undefined,
+    scroll: () => undefined
+  });
   const progressSaveTimer = useRef<number | null>(null);
   const pendingDeleteRef = useRef<PendingDelete | null>(null);
   const uploadedBookNoticeTimer = useRef<number | null>(null);
@@ -3112,14 +3375,6 @@ function App() {
     moveTo(index);
   };
 
-  const handleReaderParagraphEnter = (paragraphId: string) => {
-    setHoveredReaderParagraphId((currentId) => (currentId === paragraphId ? currentId : paragraphId));
-  };
-
-  const handleReaderParagraphLeave = (paragraphId: string) => {
-    setHoveredReaderParagraphId((currentId) => (currentId === paragraphId ? null : currentId));
-  };
-
   const handlePdfWordClick = useCallback((pageNumber: number, pageWordIndex: number) => {
     if (!book) return;
     const pageParagraphs = book.paragraphs.filter((paragraph) => paragraph.pageNumber === pageNumber);
@@ -3772,6 +4027,9 @@ function App() {
     setCurrentIndex(target);
   };
 
+  textReaderActionsRef.current.moveTo = moveTo;
+  textReaderActionsRef.current.paragraphClick = handleParagraphClick;
+
   const rememberReturnPoint = () => {
     if (!book) return;
     setReturnPoint({
@@ -3947,6 +4205,8 @@ function App() {
     });
   };
 
+  textReaderActionsRef.current.scroll = handleReadingScroll;
+
   const setParagraphRef = (id: string) => (node: HTMLElement | null) => {
     if (node) {
       paragraphRefs.current.set(id, node);
@@ -3968,44 +4228,6 @@ function App() {
     } else {
       paragraphRefs.current.delete(id);
     }
-  };
-
-  const renderReaderText = (paragraph: ReaderParagraph, shouldRenderWords: boolean) => {
-    if (paragraph.kind === "image") return null;
-    if (!shouldRenderWords) return paragraph.text;
-
-    const ranges = wordRangesFromText(paragraph.text);
-    if (ranges.length === 0) {
-      return paragraph.text;
-    }
-    const isSpoken = speechHighlight?.paragraphId === paragraph.id;
-    const leading = paragraph.text.slice(0, ranges[0].start);
-
-    const words = ranges.map((range, i) => {
-      const word = paragraph.text.slice(range.start, range.end);
-      const gap = paragraph.text.slice(range.end, ranges[i + 1]?.start);
-      const active = isSpoken && speechHighlight && speechHighlight.start === range.start && speechHighlight.end === range.end;
-
-      return (
-        <Fragment key={range.start}>
-          <span
-            className={active ? "reader-word spoken-word" : "reader-word"}
-            data-word-start={range.start}
-            data-word-end={range.end}
-          >
-            {word}
-          </span>
-          {gap}
-        </Fragment>
-      );
-    });
-
-    return (
-      <>
-        {leading}
-        {words}
-      </>
-    );
   };
 
   const renderGeneratedReaderImage = useCallback((chunk: ReaderImageChunk) => {
@@ -4112,110 +4334,22 @@ function App() {
     if (!book) return null;
 
     return (
-      <section
+      <TextReadingSurface
+        book={book}
         className={className}
-        aria-live="polite"
-        onScroll={handleReadingScroll}
-        ref={readingSurfaceRef}
-      >
-        {book.paragraphs.length ? (
-        <article
-          className={`reader-copy reader-font-${readerFontMode}`}
-          style={{
-            "--reader-line-height": readerLineHeight,
-            "--reader-line-width": `${readerLineWidth}em`,
-            "--reader-text-scale": readerTextScale
-          } as CSSProperties}
-        >
-          {book.paragraphs.map((paragraph, index) => {
-            const showChapterHeading =
-              index === 0 ||
-              paragraph.chapterIndex !== book.paragraphs[index - 1]?.chapterIndex;
-            const isChapterHeading =
-              showChapterHeading &&
-              paragraph.kind === "heading" &&
-              paragraph.text.trim().toLowerCase() === paragraph.chapterTitle.trim().toLowerCase();
-            const isActive = index === currentIndex;
-            const isSpeaking = speechHighlight?.paragraphId === paragraph.id;
-            const shouldRenderWords = isActive || isSpeaking || hoveredReaderParagraphId === paragraph.id;
-
-            return (
-              <div className="reader-block" key={paragraph.id}>
-                {readerImageMode && readerImageInsertions.get(index)?.map((chunk) => renderGeneratedReaderImage(chunk))}
-                {showChapterHeading && !isChapterHeading && (
-                  <h2 className="reader-chapter-title">{paragraph.chapterTitle}</h2>
-                )}
-                {paragraph.kind === "image" && paragraph.image ? (
-                  <figure
-                    className={["reader-image", isActive ? "active" : ""].filter(Boolean).join(" ")}
-                    onClick={() => moveTo(index)}
-                    ref={setParagraphRef(paragraph.id)}
-                  >
-                    <img alt={paragraph.image.alt} src={paragraph.image.src} />
-                    {paragraph.image.alt && <figcaption>{paragraph.image.alt}</figcaption>}
-                  </figure>
-                ) : isChapterHeading ? (
-                  <h2
-                    className={[
-                      "reader-chapter-title",
-                      isActive ? "reader-current-heading" : "",
-                      isSpeaking ? "speaking" : ""
-                    ]
-                      .filter(Boolean)
-                      .join(" ")}
-                    onClick={(e) => handleParagraphClick(e, paragraph, index)}
-                    onPointerEnter={() => handleReaderParagraphEnter(paragraph.id)}
-                    onPointerLeave={() => handleReaderParagraphLeave(paragraph.id)}
-                    ref={setParagraphRef(paragraph.id)}
-                  >
-                    {renderReaderText(paragraph, shouldRenderWords)}
-                  </h2>
-                ) : paragraph.kind === "heading" ? (
-                  <h3
-                    className={[
-                      "reader-heading",
-                      isActive ? "active" : "",
-                      isSpeaking ? "speaking" : ""
-                    ]
-                      .filter(Boolean)
-                      .join(" ")}
-                    onClick={(e) => handleParagraphClick(e, paragraph, index)}
-                    onPointerEnter={() => handleReaderParagraphEnter(paragraph.id)}
-                    onPointerLeave={() => handleReaderParagraphLeave(paragraph.id)}
-                    ref={setParagraphRef(paragraph.id)}
-                  >
-                    {renderReaderText(paragraph, shouldRenderWords)}
-                  </h3>
-                ) : (
-                  <p
-                    className={[
-                      "reader-paragraph",
-                      paragraph.kind === "quote" ? "quote" : "",
-                      paragraph.kind === "list" ? "list" : "",
-                      isActive ? "active" : "",
-                      isSpeaking ? "speaking" : ""
-                    ]
-                      .filter(Boolean)
-                      .join(" ")}
-                    onClick={(e) => handleParagraphClick(e, paragraph, index)}
-                    onPointerEnter={() => handleReaderParagraphEnter(paragraph.id)}
-                    onPointerLeave={() => handleReaderParagraphLeave(paragraph.id)}
-                    ref={setParagraphRef(paragraph.id)}
-                  >
-                    {renderReaderText(paragraph, shouldRenderWords)}
-                  </p>
-                )}
-              </div>
-            );
-          })}
-        </article>
-      ) : (
-        <div className="pdf-text-empty">
-          <FileText size={30} aria-hidden="true" />
-          <span>No selectable text was found in this PDF.</span>
-        </div>
-        )}
-      </section>
+        currentIndex={currentIndex}
+        readerActionsRef={textReaderActionsRef}
+        readerFontMode={readerFontMode}
+        readerImageInsertions={readerImageInsertions}
+        readerImageMode={readerImageMode}
+        readerLineHeight={readerLineHeight}
+        readerLineWidth={readerLineWidth}
+        readerTextScale={readerTextScale}
+        readingSurfaceRef={readingSurfaceRef}
+        renderGeneratedReaderImage={renderGeneratedReaderImage}
+        setParagraphRef={setParagraphRef}
+        speechHighlight={speechHighlight}
+      />
     );
   };
 
@@ -4862,6 +4996,8 @@ function App() {
     return null;
   }
 
+  const readerImageStage = !isPdfBook && readerImageMode ? renderReaderImageStage() : null;
+
   return (
     <main
       className="app-shell reader-themed-shell"
@@ -4899,7 +5035,7 @@ function App() {
             aria-expanded={settingsOpen}
             className="top-icon typography-trigger"
             onClick={() => {
-              setSettingsOpen(!settingsOpen);
+              setSettingsOpen((isOpen) => !isOpen);
               setReaderMenuOpen(null);
             }}
             title="Typography"
@@ -5150,6 +5286,7 @@ function App() {
 
         <div className={[
           readerImageMode ? "main-spread reader-only image-mode" : "main-spread reader-only",
+          readerImageStage ? "has-reader-image" : "",
           isPdfBook ? `pdf-reader-main pdf-reader-${pdfReaderViewMode} pdf-layout-${pdfPageLayout}` : ""
         ].filter(Boolean).join(" ")}>
           {isPdfBook ? (
@@ -5170,6 +5307,7 @@ function App() {
           ) : (
             renderTextReadingSurface()
           )}
+          {readerImageStage}
         </div>
       </section>
 
