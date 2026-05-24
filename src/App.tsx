@@ -307,7 +307,7 @@ const READER_IMAGE_STYLES: Array<{ id: ReaderImageStyle; label: string; summary:
     label: "Cute",
     summary: "Kawaii anime feel with pastel modern colors.",
     previewAlt: "Cute image style example",
-    previewSrc: "/cute.jpg"
+    previewSrc: "/cute_kawaii.jpg"
   }
 ];
 const USER_STORAGE_QUOTA_BYTES = Number(
