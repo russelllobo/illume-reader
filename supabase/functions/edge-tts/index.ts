@@ -27,6 +27,13 @@ const cleanVoice = (value: unknown) => {
   return /^[a-z]{2,}-[A-Z]{2,}-.+Neural$/.test(voice) ? voice : DEFAULT_VOICE;
 };
 
+const cleanRate = (value: unknown) => {
+  const multiplier = typeof value === "number" ? value : Number(value);
+  const safeMultiplier = Number.isFinite(multiplier) ? Math.min(1.5, Math.max(0.7, multiplier)) : 1;
+  const percent = Math.round((safeMultiplier - 1) * 100);
+  return `${percent >= 0 ? "+" : ""}${percent}%`;
+};
+
 const connectId = () => crypto.randomUUID().replace(/-/g, "");
 
 const escapeXml = (text: string) =>
@@ -80,9 +87,9 @@ ${JSON.stringify(config)}\r
 `;
 };
 
-const ssmlMessage = (text: string, voice: string) => {
+const ssmlMessage = (text: string, voice: string, rate: string) => {
   const lang = voice.split("-").slice(0, 2).join("-") || "en-US";
-  const ssml = `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='${lang}'><voice name='${voice}'><prosody pitch='+0Hz' rate='-5%' volume='+0%'>${escapeXml(text)}</prosody></voice></speak>`;
+  const ssml = `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='${lang}'><voice name='${voice}'><prosody pitch='+0Hz' rate='${rate}' volume='+0%'>${escapeXml(text)}</prosody></voice></speak>`;
 
   return `X-RequestId:${connectId()}\r
 Content-Type:application/ssml+xml\r
@@ -129,7 +136,7 @@ const parseBinaryMessage = (message: Uint8Array) => {
 const websocketUrl = async () =>
   `${WSS_URL}&Sec-MS-GEC=${await generateSecMsGec()}&Sec-MS-GEC-Version=${SEC_MS_GEC_VERSION}&ConnectionId=${connectId()}`;
 
-const synthesizeSpeech = (text: string, voice: string) =>
+const synthesizeSpeech = (text: string, voice: string, rate: string) =>
   new ReadableStream<Uint8Array>({
     async start(controller) {
       const ws = new WebSocket(await websocketUrl());
@@ -156,7 +163,7 @@ const synthesizeSpeech = (text: string, voice: string) =>
       ws.binaryType = "arraybuffer";
       ws.onopen = () => {
         ws.send(speechConfigMessage());
-        ws.send(ssmlMessage(text, voice));
+        ws.send(ssmlMessage(text, voice, rate));
       };
       ws.onmessage = async (event) => {
         if (typeof event.data === "string") {
@@ -223,10 +230,11 @@ Deno.serve(async (req) => {
     const payload = await req.json();
     const text = cleanText(payload.text);
     const voice = cleanVoice(payload.voice);
+    const rate = cleanRate(payload.rate);
 
     if (!text) throw new Error("No text was provided for speech.");
 
-    return new Response(synthesizeSpeech(text, voice), {
+    return new Response(synthesizeSpeech(text, voice, rate), {
       headers: {
         ...corsHeaders,
         "Cache-Control": "no-store",

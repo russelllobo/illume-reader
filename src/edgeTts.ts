@@ -9,6 +9,7 @@ type EdgeTtsPlayerOptions = {
   onBoundary: (range: WordRange) => void;
   onEnded: () => void;
   onError: (error: Error) => void;
+  rate?: number;
   text: string;
   voice?: string;
   wordRanges: WordRange[];
@@ -17,6 +18,7 @@ type EdgeTtsPlayerOptions = {
 export type EdgeTtsPlayer = {
   pause: () => void;
   resume: () => void;
+  setRate: (rate: number) => void;
   stop: () => void;
 };
 
@@ -26,6 +28,14 @@ type TimedWordRange = WordRange & {
 
 const EDGE_TTS_VOICE = "en-US-AvaMultilingualNeural";
 const STREAMING_MIME = "audio/mpeg";
+
+const clampSpeechRate = (rate: number | undefined) =>
+  Math.min(1.5, Math.max(0.7, Number.isFinite(rate) ? rate ?? 1 : 1));
+
+const edgeRateFromMultiplier = (rate: number | undefined) => {
+  const percent = Math.round((clampSpeechRate(rate) - 1) * 100);
+  return `${percent >= 0 ? "+" : ""}${percent}%`;
+};
 
 const normalizeWord = (value: string) =>
   value
@@ -89,6 +99,7 @@ export const createEdgeTtsPlayer = ({
   onBoundary,
   onEnded,
   onError,
+  rate,
   text,
   voice = EDGE_TTS_VOICE,
   wordRanges
@@ -107,6 +118,8 @@ export const createEdgeTtsPlayer = ({
   let monitorTimer: number | null = null;
   let nextTimedRangeIndex = 0;
   let startupTimer: number | null = null;
+  const speechRate = clampSpeechRate(rate);
+  const edgeRate = edgeRateFromMultiplier(speechRate);
 
   const cleanup = () => {
     if (monitorTimer !== null) {
@@ -195,7 +208,7 @@ export const createEdgeTtsPlayer = ({
     wordRanges.forEach((range, index) => {
       timedRanges.push({
         ...range,
-        startsAt: index * 0.31
+        startsAt: (index * 0.31) / speechRate
       });
     });
   };
@@ -273,7 +286,7 @@ export const createEdgeTtsPlayer = ({
     const endpoint = edgeTtsEndpoint();
 
     const response = await fetch(endpoint, {
-      body: JSON.stringify({ text, voice }),
+      body: JSON.stringify({ rate: speechRate, text, voice }),
       headers: {
         "Content-Type": "application/json"
       },
@@ -310,7 +323,7 @@ export const createEdgeTtsPlayer = ({
     const communicate = new Communicate(text, {
       connectionTimeout: 8_000,
       pitch: "+0Hz",
-      rate: "-5%",
+      rate: edgeRate,
       voice,
       volume: "+0%"
     });
@@ -375,6 +388,9 @@ export const createEdgeTtsPlayer = ({
     pause: () => audio.pause(),
     resume: () => {
       void audio.play().catch(fail);
+    },
+    setRate: (nextRate: number) => {
+      audio.playbackRate = clampSpeechRate(nextRate) / speechRate;
     },
     stop: () => {
       cancelled = true;

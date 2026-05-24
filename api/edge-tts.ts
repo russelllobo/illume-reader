@@ -31,6 +31,13 @@ const cleanVoice = (value: unknown) => {
   return /^[a-z]{2,}-[A-Z]{2,}-.+Neural$/.test(voice) ? voice : DEFAULT_VOICE;
 };
 
+const cleanRate = (value: unknown) => {
+  const multiplier = typeof value === "number" ? value : Number(value);
+  const safeMultiplier = Number.isFinite(multiplier) ? Math.min(1.5, Math.max(0.7, multiplier)) : 1;
+  const percent = Math.round((safeMultiplier - 1) * 100);
+  return `${percent >= 0 ? "+" : ""}${percent}%`;
+};
+
 const sendJson = (res: ServerResponse, statusCode: number, body: unknown) => {
   res.statusCode = statusCode;
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -59,6 +66,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const payload = JSON.parse(await readBody(req));
     const text = cleanText(payload.text);
     const voice = cleanVoice(payload.voice);
+    const rate = cleanRate(payload.rate);
 
     if (!text) {
       sendJson(res, 400, { error: "No text was provided for speech." });
@@ -68,7 +76,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const communicate = new Communicate(text, {
       connectionTimeout: 8_000,
       pitch: "+0Hz",
-      rate: "-5%",
+      rate,
       voice,
       volume: "+0%"
     });

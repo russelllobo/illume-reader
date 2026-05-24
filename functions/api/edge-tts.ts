@@ -35,6 +35,13 @@ const cleanVoice = (value: unknown) => {
   return /^[a-z]{2,}-[A-Z]{2,}-.+Neural$/.test(voice) ? voice : DEFAULT_VOICE;
 };
 
+const cleanRate = (value: unknown) => {
+  const multiplier = typeof value === "number" ? value : Number(value);
+  const safeMultiplier = Number.isFinite(multiplier) ? Math.min(1.5, Math.max(0.7, multiplier)) : 1;
+  const percent = Math.round((safeMultiplier - 1) * 100);
+  return `${percent >= 0 ? "+" : ""}${percent}%`;
+};
+
 const bytesToHex = (bytes: Uint8Array) =>
   Array.from(bytes)
     .map((byte) => byte.toString(16).padStart(2, "0"))
@@ -100,9 +107,9 @@ ${JSON.stringify(config)}\r
 `;
 };
 
-const ssmlMessage = (text: string, voice: string) => {
+const ssmlMessage = (text: string, voice: string, rate: string) => {
   const lang = voice.split("-").slice(0, 2).join("-") || "en-US";
-  const ssml = `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='${lang}'><voice name='${voice}'><prosody pitch='+0Hz' rate='-5%' volume='+0%'>${escapeXml(text)}</prosody></voice></speak>`;
+  const ssml = `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='${lang}'><voice name='${voice}'><prosody pitch='+0Hz' rate='${rate}' volume='+0%'>${escapeXml(text)}</prosody></voice></speak>`;
 
   return `X-RequestId:${connectId()}\r
 Content-Type:application/ssml+xml\r
@@ -269,7 +276,7 @@ const openEdgeSocket = async () => {
   };
 };
 
-const synthesizeSpeech = (text: string, voice: string) =>
+const synthesizeSpeech = (text: string, voice: string, rate: string) =>
   new ReadableStream<Uint8Array>({
     async start(controller) {
       const edge = await openEdgeSocket();
@@ -299,7 +306,7 @@ const synthesizeSpeech = (text: string, voice: string) =>
       }, 10_000);
 
       await edge.writer.write(websocketFrame(0x1, speechConfigMessage()));
-      await edge.writer.write(websocketFrame(0x1, ssmlMessage(text, voice)));
+      await edge.writer.write(websocketFrame(0x1, ssmlMessage(text, voice, rate)));
 
       while (!closed) {
         let frame = parseWebSocketFrame(buffer);
@@ -365,10 +372,11 @@ export const onRequestPost: PagesFunction = async ({ request }) => {
     const payload = await request.json();
     const text = cleanText(payload.text);
     const voice = cleanVoice(payload.voice);
+    const rate = cleanRate(payload.rate);
 
     if (!text) return json({ error: "No text was provided for speech." }, 400);
 
-    return new Response(synthesizeSpeech(text, voice), {
+    return new Response(synthesizeSpeech(text, voice, rate), {
       headers: {
         ...corsHeaders,
         "Cache-Control": "no-store",

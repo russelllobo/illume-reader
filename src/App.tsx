@@ -1,9 +1,10 @@
 import type { Session, User } from "@supabase/supabase-js";
 import {
+  AlignJustify,
   BarChart3,
   BookOpen,
+  CaseSensitive,
   ChevronLeft,
-  Columns3,
   CreditCard,
   Crown,
   Database,
@@ -21,6 +22,8 @@ import {
   Trash2,
   Type,
   Upload,
+  MoveHorizontal,
+  Minus,
   Plus,
   Check,
   Settings,
@@ -1347,6 +1350,29 @@ const authRedirectUrl = () => {
 const initialReaderFontMode = (): ReaderFontMode =>
   window.localStorage.getItem("reader-font-mode") === "sans" ? "sans" : "serif";
 
+const initialReaderTextScale = () => {
+  const fontSize = Number(window.localStorage.getItem("reader-font-size"));
+  if (Number.isFinite(fontSize)) return Math.min(24, Math.max(9, fontSize)) / 16;
+
+  const value = Number(window.localStorage.getItem("reader-text-scale"));
+  return Number.isFinite(value) ? Math.min(1.5, Math.max(9 / 16, value)) : 1;
+};
+
+const initialReaderLineHeight = () => {
+  const value = Number(window.localStorage.getItem("reader-line-height"));
+  return Number.isFinite(value) ? Math.min(2, Math.max(1.1, value)) : 1.6;
+};
+
+const initialReaderLineWidth = () => {
+  const value = Number(window.localStorage.getItem("reader-line-width"));
+  return Number.isFinite(value) ? Math.min(60, Math.max(30, value)) : 38;
+};
+
+const initialNarrationRate = () => {
+  const value = Number(window.localStorage.getItem("reader-narration-rate"));
+  return Number.isFinite(value) ? Math.min(1.5, Math.max(0.7, value)) : 1;
+};
+
 const getOpenLibraryCoverUrl = async (title: string, author: string) => {
   const params = new URLSearchParams({
     title,
@@ -1557,6 +1583,10 @@ function App() {
   const [pdfReaderViewMode, setPdfReaderViewMode] = useState<PdfReaderViewMode>("pdf");
   const [playback, setPlayback] = useState<PlaybackState>("idle");
   const [readerFontMode, setReaderFontMode] = useState<ReaderFontMode>(initialReaderFontMode);
+  const [readerTextScale, setReaderTextScale] = useState(initialReaderTextScale);
+  const [readerLineHeight, setReaderLineHeight] = useState(initialReaderLineHeight);
+  const [readerLineWidth, setReaderLineWidth] = useState(initialReaderLineWidth);
+  const [narrationRate, setNarrationRate] = useState(initialNarrationRate);
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [checkoutResult, setCheckoutResult] = useState<"success" | "canceled" | "">("");
@@ -1567,6 +1597,7 @@ function App() {
   const [readerImageStyle, setReaderImageStyle] = useState<ReaderImageStyle>("cartoon");
   const [readerImageStyleOpen, setReaderImageStyleOpen] = useState(false);
   const [readerImageUpgradeOpen, setReaderImageUpgradeOpen] = useState(false);
+  const [hoveredReaderParagraphId, setHoveredReaderParagraphId] = useState<string | null>(null);
   const parsedBooks = useRef(new Map<string, ReaderBook>());
   const parsedBookFiles = useRef(new Map<string, File>());
   const readingSurfaceRef = useRef<HTMLElement | null>(null);
@@ -1825,6 +1856,24 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem("reader-font-mode", readerFontMode);
   }, [readerFontMode]);
+
+  useEffect(() => {
+    window.localStorage.setItem("reader-text-scale", readerTextScale.toFixed(2));
+    window.localStorage.setItem("reader-font-size", Math.round(readerTextScale * 16).toFixed(0));
+  }, [readerTextScale]);
+
+  useEffect(() => {
+    window.localStorage.setItem("reader-line-height", readerLineHeight.toFixed(1));
+  }, [readerLineHeight]);
+
+  useEffect(() => {
+    window.localStorage.setItem("reader-line-width", readerLineWidth.toFixed(0));
+  }, [readerLineWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem("reader-narration-rate", narrationRate.toFixed(2));
+    edgeTtsPlayerRef.current?.setRate(narrationRate);
+  }, [narrationRate]);
 
   useEffect(() => {
     const savedStyle = window.localStorage.getItem("reader-image-style");
@@ -2195,6 +2244,24 @@ function App() {
     setSpeechHighlight(null);
   };
 
+  const adjustReaderTextScale = (delta: number) => {
+    setReaderTextScale((scale) => Math.min(1.5, Math.max(9 / 16, Number((scale + delta / 16).toFixed(4)))));
+  };
+
+  const adjustReaderLineHeight = (delta: number) => {
+    setReaderLineHeight((height) => Math.min(2, Math.max(1.1, Number((height + delta).toFixed(1)))));
+  };
+
+  const adjustReaderLineWidth = (delta: number) => {
+    setReaderLineWidth((width) => Math.min(60, Math.max(30, Math.round(width + delta))));
+  };
+
+  const handleNarrationRateChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const value = Number(event.currentTarget.value);
+    if (!Number.isFinite(value)) return;
+    setNarrationRate(Math.min(1.5, Math.max(0.7, value)));
+  };
+
   const advance = () => {
     if (!book) return;
     const target = Math.min(currentIndex + 1, book.paragraphs.length - 1);
@@ -2235,6 +2302,7 @@ function App() {
         setPlayback("idle");
       },
       text: paragraph.text,
+      rate: narrationRate,
       wordRanges
     });
   };
@@ -2285,6 +2353,7 @@ function App() {
         setPlayback("idle");
       },
       text: slicedText,
+      rate: narrationRate,
       wordRanges: slicedRanges
     });
   };
@@ -2301,6 +2370,14 @@ function App() {
       }
     }
     moveTo(index);
+  };
+
+  const handleReaderParagraphEnter = (paragraphId: string) => {
+    setHoveredReaderParagraphId((currentId) => (currentId === paragraphId ? currentId : paragraphId));
+  };
+
+  const handleReaderParagraphLeave = (paragraphId: string) => {
+    setHoveredReaderParagraphId((currentId) => (currentId === paragraphId ? null : currentId));
   };
 
   const handlePdfWordClick = useCallback((pageNumber: number, pageWordIndex: number) => {
@@ -3009,7 +3086,14 @@ function App() {
         ref={readingSurfaceRef}
       >
         {book.paragraphs.length ? (
-        <article className={`reader-copy reader-font-${readerFontMode}`}>
+        <article
+          className={`reader-copy reader-font-${readerFontMode}`}
+          style={{
+            "--reader-line-height": readerLineHeight,
+            "--reader-line-width": `${readerLineWidth}em`,
+            "--reader-text-scale": readerTextScale
+          } as CSSProperties}
+        >
           {book.paragraphs.map((paragraph, index) => {
             const showChapterHeading =
               index === 0 ||
@@ -3020,7 +3104,7 @@ function App() {
               paragraph.text.trim().toLowerCase() === paragraph.chapterTitle.trim().toLowerCase();
             const isActive = index === currentIndex;
             const isSpeaking = speechHighlight?.paragraphId === paragraph.id;
-            const shouldRenderWords = isActive || isSpeaking;
+            const shouldRenderWords = isActive || isSpeaking || hoveredReaderParagraphId === paragraph.id;
 
             return (
               <div className="reader-block" key={paragraph.id}>
@@ -3047,6 +3131,8 @@ function App() {
                       .filter(Boolean)
                       .join(" ")}
                     onClick={(e) => handleParagraphClick(e, paragraph, index)}
+                    onPointerEnter={() => handleReaderParagraphEnter(paragraph.id)}
+                    onPointerLeave={() => handleReaderParagraphLeave(paragraph.id)}
                     ref={setParagraphRef(paragraph.id)}
                   >
                     {renderReaderText(paragraph, shouldRenderWords)}
@@ -3061,6 +3147,8 @@ function App() {
                       .filter(Boolean)
                       .join(" ")}
                     onClick={(e) => handleParagraphClick(e, paragraph, index)}
+                    onPointerEnter={() => handleReaderParagraphEnter(paragraph.id)}
+                    onPointerLeave={() => handleReaderParagraphLeave(paragraph.id)}
                     ref={setParagraphRef(paragraph.id)}
                   >
                     {renderReaderText(paragraph, shouldRenderWords)}
@@ -3077,6 +3165,8 @@ function App() {
                       .filter(Boolean)
                       .join(" ")}
                     onClick={(e) => handleParagraphClick(e, paragraph, index)}
+                    onPointerEnter={() => handleReaderParagraphEnter(paragraph.id)}
+                    onPointerLeave={() => handleReaderParagraphLeave(paragraph.id)}
                     ref={setParagraphRef(paragraph.id)}
                   >
                     {renderReaderText(paragraph, shouldRenderWords)}
@@ -3471,67 +3561,97 @@ function App() {
         </button>
         <div className="top-title">{book.title}</div>
         <div className="settings-button-wrapper" style={{ position: "relative", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <button className="top-icon" onClick={() => setSettingsOpen(!settingsOpen)} title="Reader Settings" type="button">
-            <Settings size={18} aria-hidden="true" />
+          <button
+            aria-expanded={settingsOpen}
+            className="top-icon typography-trigger"
+            onClick={() => setSettingsOpen(!settingsOpen)}
+            title="Typography"
+            type="button"
+          >
+            <CaseSensitive size={18} aria-hidden="true" />
           </button>
           
           {settingsOpen && (
             <>
               <div className="settings-popover-overlay" onClick={() => setSettingsOpen(false)} />
-              <div className="settings-popover-card">
-                <div className="settings-popover-header">
-                  <h2>Reader Settings</h2>
-                </div>
-                
+              <div className="settings-popover-card reader-typography-popover">
                 <div className="settings-popover-body">
-                  {isPdfBook ? (
-                    <div className="settings-section">
-                      <span className="settings-section-label">Page Layout</span>
-                      <div className="pdf-view-options">
-                        <button
-                          aria-pressed={pdfPageLayout === "single"}
-                          className={pdfPageLayout === "single" ? "pdf-view-btn active" : "pdf-view-btn"}
-                          onClick={() => setPdfPageLayout("single")}
-                          type="button"
-                        >
-                          <FileText size={15} aria-hidden="true" />
-                          <span>1 Page</span>
-                        </button>
-                        <button
-                          aria-pressed={pdfPageLayout === "double"}
-                          className={pdfPageLayout === "double" ? "pdf-view-btn active" : "pdf-view-btn"}
-                          onClick={() => setPdfPageLayout("double")}
-                          type="button"
-                        >
-                          <Columns3 size={15} aria-hidden="true" />
-                          <span>2 Pages</span>
-                        </button>
-                      </div>
+                  <div className="settings-section typography-settings-section" aria-label="Typography settings">
+                    <div className="typography-button-group" aria-label="Text size">
+                      <button
+                        aria-label="Decrease text size"
+                        disabled={readerTextScale <= 9 / 16}
+                        onClick={() => adjustReaderTextScale(-1)}
+                        title="Decrease text size"
+                        type="button"
+                      >
+                        <Minus size={14} aria-hidden="true" />
+                      </button>
+                      <button
+                        aria-label="Increase text size"
+                        disabled={readerTextScale >= 1.5}
+                        onClick={() => adjustReaderTextScale(1)}
+                        title="Increase text size"
+                        type="button"
+                      >
+                        <Plus size={14} aria-hidden="true" />
+                      </button>
                     </div>
-                  ) : (
-                    <div className="settings-section">
-                      <span className="settings-section-label">Typography</span>
-                      <div className="settings-font-options">
-                        <button
-                          aria-pressed={readerFontMode === "serif"}
-                          className={readerFontMode === "serif" ? "settings-font-btn active" : "settings-font-btn"}
-                          onClick={() => setReaderFontMode("serif")}
-                        >
-                          <span className="font-btn-preview serif-preview">Aa</span>
-                          <span className="font-btn-label">Elegant Serif</span>
-                        </button>
-                        
-                        <button
-                          aria-pressed={readerFontMode === "sans"}
-                          className={readerFontMode === "sans" ? "settings-font-btn active" : "settings-font-btn"}
-                          onClick={() => setReaderFontMode("sans")}
-                        >
-                          <span className="font-btn-preview sans-preview">Aa</span>
-                          <span className="font-btn-label">Modern Sans</span>
-                        </button>
-                      </div>
+
+                    <div className="typography-button-group" aria-label="Line width">
+                      <button
+                        aria-label="Narrow line width"
+                        disabled={readerLineWidth <= 30}
+                        onClick={() => adjustReaderLineWidth(-1)}
+                        title="Narrow line width"
+                        type="button"
+                      >
+                        <MoveHorizontal className="narrow-width-icon" size={17} aria-hidden="true" />
+                      </button>
+                      <button
+                        aria-label="Widen line width"
+                        disabled={readerLineWidth >= 60}
+                        onClick={() => adjustReaderLineWidth(1)}
+                        title="Widen line width"
+                        type="button"
+                      >
+                        <MoveHorizontal size={17} aria-hidden="true" />
+                      </button>
                     </div>
-                  )}
+
+                    <div className="typography-button-group" aria-label="Line height">
+                      <button
+                        aria-label="Decrease line height"
+                        disabled={readerLineHeight <= 1.1}
+                        onClick={() => adjustReaderLineHeight(-0.1)}
+                        title="Decrease line height"
+                        type="button"
+                      >
+                        <AlignJustify className="compact-lines-icon" size={16} aria-hidden="true" />
+                      </button>
+                      <button
+                        aria-label="Increase line height"
+                        disabled={readerLineHeight >= 2}
+                        onClick={() => adjustReaderLineHeight(0.1)}
+                        title="Increase line height"
+                        type="button"
+                      >
+                        <AlignJustify size={16} aria-hidden="true" />
+                      </button>
+                    </div>
+
+                    <label className="typography-select-wrapper">
+                      <Type size={17} aria-hidden="true" />
+                      <select
+                        aria-label="Reader font"
+                        onChange={(event) => setReaderFontMode(event.currentTarget.value as ReaderFontMode)}
+                        value={readerFontMode}
+                      >
+                        <option value="sans">Sans-serif</option>
+                        <option value="serif">Serif</option>
+                      </select>
+                    </label>
+                  </div>
                 </div>
               </div>
             </>
@@ -3625,7 +3745,21 @@ function App() {
       </div>
 
       <footer className="control-rail">
-        <div className="control-rail-left" />
+        <div className="control-rail-left">
+          <label className="narration-speed-control">
+            <span>Narration</span>
+            <input
+              aria-label="Narration speed"
+              max="1.5"
+              min="0.7"
+              onChange={handleNarrationRateChange}
+              step="0.05"
+              type="range"
+              value={narrationRate}
+            />
+            <strong>{narrationRate.toFixed(2)}x</strong>
+          </label>
+        </div>
         <div className="transport">
           <button
             className="rail-icon"
