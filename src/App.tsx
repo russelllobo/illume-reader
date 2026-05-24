@@ -74,6 +74,13 @@ type PendingDelete = {
   timer: number;
   wasActive: boolean;
 };
+type PendingBookImport = {
+  author: string;
+  coverUrl: string | null;
+  fileName: string;
+  id: string;
+  title: string;
+};
 type PersistedPendingDelete = {
   deadline: number;
   index: number;
@@ -206,6 +213,20 @@ type BookRow = {
   updated_at: string;
   user_id: string;
 };
+
+const bookActivityTime = (book: BookRow) => {
+  const openedAt = book.last_opened_at ? Date.parse(book.last_opened_at) : 0;
+  const createdAt = book.created_at ? Date.parse(book.created_at) : 0;
+  return Math.max(openedAt, createdAt);
+};
+
+const sortBooksByRecentActivity = (books: BookRow[]) =>
+  [...books].sort((a, b) => {
+    const activityDifference = bookActivityTime(b) - bookActivityTime(a);
+    if (activityDifference !== 0) return activityDifference;
+    return a.title.localeCompare(b.title);
+  });
+
 type BillingProfile = {
   cancel_at_period_end: boolean;
   current_period_end: string | null;
@@ -827,7 +848,7 @@ const getCoverInitials = (title: string) =>
     .map((word) => word[0]?.toUpperCase())
     .join("") || "EP";
 
-function BookCover({ book }: { book: BookRow }) {
+function BookCover({ book }: { book: Pick<BookRow, "cover_url" | "document_type" | "file_name" | "id" | "mime_type" | "title"> }) {
   const [hasError, setHasError] = useState(false);
   const format = bookFormat(book);
 
@@ -1816,6 +1837,7 @@ function App() {
   }, [pdfPageLayout]);
 
   const [importingClassicId, setImportingClassicId] = useState<string | null>(null);
+  const [pendingBookImports, setPendingBookImports] = useState<PendingBookImport[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [readerMenuOpen, setReaderMenuOpen] = useState<ReaderMenuId | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -1861,6 +1883,7 @@ function App() {
   }, [book?.chapterPageNumbers, book?.chapterPageOffsets, currentPage, isPdfBook, pdfVisibleOffsetRatio]);
   const immersiveReaderImageMode = readerImageMode && !isPdfBook;
   const storageUsed = catalogBooks.reduce((total, item) => total + item.file_size, 0);
+  const isBookImporting = pendingBookImports.length > 0;
   const isPro = billingProfile?.plan === "pro" && ["active", "trialing"].includes(billingProfile.status);
   const readerImageLimit = isPro ? PRO_READER_IMAGE_MONTHLY_LIMIT : FREE_READER_IMAGE_LIFETIME_LIMIT;
   const readerImageUsageLabel = `${readerImageCount} / ${readerImageLimit}`;
@@ -1998,7 +2021,7 @@ function App() {
         if (!coverUrl) continue;
 
         setCatalogBooks((items) =>
-          items.map((item) => (item.id === catalogBook.id ? { ...item, cover_url: coverUrl } : item))
+          sortBooksByRecentActivity(items.map((item) => (item.id === catalogBook.id ? { ...item, cover_url: coverUrl } : item)))
         );
         const { error: updateError } = await supabase.from("books").update({ cover_url: coverUrl }).eq("id", catalogBook.id);
         if (updateError) {
@@ -2459,7 +2482,7 @@ function App() {
     } else {
       const rows = (data ?? []) as BookRow[];
       const pending = readPendingBookDelete();
-      setCatalogBooks(pending ? rows.filter((row) => row.id !== pending.row.id) : rows);
+      setCatalogBooks(sortBooksByRecentActivity(pending ? rows.filter((row) => row.id !== pending.row.id) : rows));
 
       if (pending) {
         if (Date.now() >= pending.deadline) {
@@ -2468,9 +2491,7 @@ function App() {
             setNotice(deleteError instanceof Error ? deleteError.message : "Could not delete this book.");
             setCatalogBooks((items) => {
               if (items.some((item) => item.id === pending.row.id)) return items;
-              const nextItems = [...items];
-              nextItems.splice(Math.min(pending.index, nextItems.length), 0, pending.row);
-              return nextItems;
+              return sortBooksByRecentActivity([...items, pending.row]);
             });
           });
         } else if (!pendingDeleteRef.current || pendingDeleteRef.current.row.id !== pending.row.id) {
@@ -2494,9 +2515,7 @@ function App() {
               setNotice(deleteError instanceof Error ? deleteError.message : "Could not delete this book.");
               setCatalogBooks((items) => {
                 if (items.some((item) => item.id === pending.row.id)) return items;
-                const nextItems = [...items];
-                nextItems.splice(Math.min(pending.index, nextItems.length), 0, pending.row);
-                return nextItems;
+                return sortBooksByRecentActivity([...items, pending.row]);
               });
             });
           }, pending.deadline - Date.now());
@@ -2563,12 +2582,22 @@ function App() {
     if (error) return;
 
     setCatalogBooks((items) =>
-      items.map((item) =>
+      sortBooksByRecentActivity(items.map((item) =>
         item.id === bookId
           ? { ...item, current_index: index, current_page: Math.max(1, page), last_opened_at: savedAt, updated_at: savedAt }
           : item
-      )
+      ))
     );
+  };
+
+  const markBookOpened = (bookId: string) => {
+    const openedAt = new Date().toISOString();
+    setCatalogBooks((items) =>
+      sortBooksByRecentActivity(items.map((item) =>
+        item.id === bookId ? { ...item, last_opened_at: openedAt, updated_at: openedAt } : item
+      ))
+    );
+    void supabase.from("books").update({ last_opened_at: openedAt }).eq("id", bookId);
   };
 
   const stopAudio = () => {
@@ -2892,7 +2921,7 @@ function App() {
     </div>
   );
 
-  const importDocumentFile = async (file: File, openAfterImport = true) => {
+  const importDocumentFile = async (file: File, openAfterImport = true, pendingImportId?: string) => {
     if (!user) return;
 
     if (!isEpubFile(file) && !isPdfFile(file)) {
@@ -2950,7 +2979,10 @@ function App() {
     parsedBooks.current.set(row.id, parsed);
     parsedBookFiles.current.set(row.id, file);
     void cacheBookFile(row, file);
-    setCatalogBooks((items) => [row, ...items]);
+    setCatalogBooks((items) => sortBooksByRecentActivity([row, ...items]));
+    if (pendingImportId) {
+      setPendingBookImports((items) => items.filter((item) => item.id !== pendingImportId));
+    }
     if (openAfterImport) {
       openParsedBook(row, parsed, 0, file);
     }
@@ -2961,8 +2993,18 @@ function App() {
     stopAudio();
     setPlayback("idle");
     setNotice("");
+    const pendingImportId = `classic-${classic.id}-${Date.now()}`;
+    setPendingBookImports((items) => [
+      {
+        author: classic.author,
+        coverUrl: classic.coverUrl,
+        fileName: `${safeFileName(classic.title)}.epub`,
+        id: pendingImportId,
+        title: classic.title
+      },
+      ...items
+    ]);
     setImportingClassicId(classic.id);
-    setBusy(true);
 
     try {
       const response = await fetch(classicDownloadUrl(classic.downloadUrl));
@@ -2976,12 +3018,12 @@ function App() {
       const filename = `${safeFileName(classic.title)}.epub`;
       const file = new File([blob], filename, { type: "application/epub+zip" });
 
-      await importDocumentFile(file, false);
+      await importDocumentFile(file, false, pendingImportId);
     } catch (error) {
+      setPendingBookImports((items) => items.filter((item) => item.id !== pendingImportId));
       setNotice(error instanceof Error ? error.message : "Failed to import classic book.");
     } finally {
       setImportingClassicId(null);
-      setBusy(false);
     }
   };
 
@@ -2992,14 +3034,25 @@ function App() {
     stopAudio();
     setPlayback("idle");
     setNotice("");
-    setBusy(true);
+    const pendingImportId = `upload-${crypto.randomUUID()}`;
+    const displayTitle = file.name.replace(/\.[^.]+$/, "").trim() || file.name;
+    setPendingBookImports((items) => [
+      {
+        author: "Preparing document",
+        coverUrl: null,
+        fileName: file.name,
+        id: pendingImportId,
+        title: displayTitle
+      },
+      ...items
+    ]);
 
     try {
-      await importDocumentFile(file);
+      await importDocumentFile(file, false, pendingImportId);
     } catch (error) {
+      setPendingBookImports((items) => items.filter((item) => item.id !== pendingImportId));
       setNotice(error instanceof Error ? error.message : "Could not upload this document.");
     } finally {
-      setBusy(false);
       event.target.value = "";
     }
   };
@@ -3056,6 +3109,7 @@ function App() {
       setProgressNotice(true);
     }
     setView("reader");
+    markBookOpened(row.id);
     if (updateHistory) writeAppHistory({ illumeView: "reader", bookId: row.id });
   };
 
@@ -3085,7 +3139,7 @@ function App() {
       if (format === "epub" && !row.cover_url && parsed.coverUrl) {
         const coverUrl = await shrinkCoverDataUrl(parsed.coverUrl);
         row = { ...row, cover_url: coverUrl };
-        setCatalogBooks((items) => items.map((item) => (item.id === row.id ? row : item)));
+        setCatalogBooks((items) => sortBooksByRecentActivity(items.map((item) => (item.id === row.id ? row : item))));
         const { error: updateError } = await supabase.from("books").update({ cover_url: coverUrl }).eq("id", row.id);
         if (updateError) {
           console.error("Failed to save book cover to database:", updateError);
@@ -3144,9 +3198,7 @@ function App() {
     setPendingDelete(null);
     setCatalogBooks((items) => {
       if (items.some((item) => item.id === pending.row.id)) return items;
-      const nextItems = [...items];
-      nextItems.splice(Math.min(pending.index, nextItems.length), 0, pending.row);
-      return nextItems;
+      return sortBooksByRecentActivity([...items, pending.row]);
     });
     if (pending.book) parsedBooks.current.set(pending.row.id, pending.book);
     if (pending.file) parsedBookFiles.current.set(pending.row.id, pending.file);
@@ -3205,9 +3257,7 @@ function App() {
         clearPendingBookDelete(row.id);
         setCatalogBooks((items) => {
           if (items.some((item) => item.id === pending.row.id)) return items;
-          const nextItems = [...items];
-          nextItems.splice(Math.min(pending.index, nextItems.length), 0, pending.row);
-          return nextItems;
+          return sortBooksByRecentActivity([...items, pending.row]);
         });
       });
     }, DELETE_UNDO_TIMEOUT_MS);
@@ -3822,9 +3872,9 @@ function App() {
           </div>
           <div className="top-actions">
             <label className="catalog-upload" title="Upload document">
-              {busy ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Upload size={16} aria-hidden="true" />}
+              {isBookImporting ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Upload size={16} aria-hidden="true" />}
               <span>Upload</span>
-              <input disabled={busy} type="file" accept={DOCUMENT_UPLOAD_ACCEPT} onChange={handleCatalogUpload} />
+              <input disabled={isBookImporting} type="file" accept={DOCUMENT_UPLOAD_ACCEPT} onChange={handleCatalogUpload} />
             </label>
             
             <div className="profile-button-wrapper" style={{ position: "relative", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -3961,14 +4011,38 @@ function App() {
             <div className="catalog-header">
               <h1>Books</h1>
               <label className="catalog-heading-upload" title="Upload document">
-                {busy ? <Loader2 className="spin" size={14} aria-hidden="true" /> : <Upload size={14} aria-hidden="true" />}
+                {isBookImporting ? <Loader2 className="spin" size={14} aria-hidden="true" /> : <Upload size={14} aria-hidden="true" />}
                 <span>Upload</span>
-                <input disabled={busy} type="file" accept={DOCUMENT_UPLOAD_ACCEPT} onChange={handleCatalogUpload} />
+                <input disabled={isBookImporting} type="file" accept={DOCUMENT_UPLOAD_ACCEPT} onChange={handleCatalogUpload} />
               </label>
             </div>
             <div className="catalog-list">
-              {catalogBooks.length ? (
-                catalogBooks.map((catalogBook) => (
+              {catalogBooks.length || pendingBookImports.length ? (
+                <>
+                {pendingBookImports.map((pendingImport) => (
+                  <div className="catalog-book catalog-book-pending" key={pendingImport.id} aria-busy="true">
+                    <div className="catalog-book-open" role="status" aria-label={`${pendingImport.title} is being added`}>
+                      <BookCover
+                        book={{
+                          cover_url: pendingImport.coverUrl,
+                          document_type: "epub",
+                          file_name: pendingImport.fileName,
+                          id: pendingImport.id,
+                          mime_type: "application/epub+zip",
+                          title: pendingImport.title
+                        }}
+                      />
+                      <span className="catalog-book-copy">
+                        <strong>{pendingImport.title}</strong>
+                        <small>{pendingImport.author || pendingImport.fileName}</small>
+                      </span>
+                      <span className="catalog-import-progress" aria-hidden="true">
+                        <Loader2 className="spin" size={20} />
+                      </span>
+                    </div>
+                  </div>
+                ))}
+                {catalogBooks.map((catalogBook) => (
                   <div
                     className={catalogBook.id === activeBookId ? "catalog-book active" : "catalog-book"}
                     key={catalogBook.id}
@@ -3997,16 +4071,17 @@ function App() {
                       <Trash2 size={16} aria-hidden="true" />
                     </button>
                   </div>
-                ))
+                ))}
+                </>
               ) : (
                 <div className="empty-library-container">
                   <BookOpen size={28} aria-hidden="true" className="empty-icon" />
                   <h2>No books yet</h2>
                   <p>Upload an EPUB or PDF, or browse the classics below to get started.</p>
                   <label className="empty-upload-btn" title="Upload document">
-                    {busy ? <Loader2 className="spin" size={15} aria-hidden="true" /> : <Upload size={15} aria-hidden="true" />}
+                    {isBookImporting ? <Loader2 className="spin" size={15} aria-hidden="true" /> : <Upload size={15} aria-hidden="true" />}
                     <span>Upload</span>
-                    <input disabled={busy} type="file" accept={DOCUMENT_UPLOAD_ACCEPT} onChange={handleCatalogUpload} />
+                    <input disabled={isBookImporting} type="file" accept={DOCUMENT_UPLOAD_ACCEPT} onChange={handleCatalogUpload} />
                   </label>
                 </div>
               )}
@@ -4044,7 +4119,7 @@ function App() {
 
                         <button
                           className={`explore-action-btn primary-action ${alreadyAdded ? "already-added" : ""}`}
-                          disabled={busy || isImporting}
+                          disabled={isImporting || (!alreadyAdded && importingClassicId !== null)}
                           onClick={() => {
                             if (alreadyAdded && matchingBook) {
                               void openBook(matchingBook);

@@ -783,6 +783,10 @@ button:disabled {
   background: transparent;
 }
 
+.catalog-book-pending {
+  pointer-events: none;
+}
+
 .catalog-book-open {
   min-width: 0;
   width: 100%;
@@ -826,6 +830,38 @@ button:disabled {
 
 .catalog-cover-art img {
   object-fit: cover;
+}
+
+.catalog-book-pending .catalog-cover-art {
+  box-shadow: 0 12px 28px rgba(20, 20, 20, 0.12);
+}
+
+.catalog-book-pending .catalog-cover-art::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.catalog-import-progress {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 4;
+  width: 38px;
+  height: 38px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  background: rgba(17, 17, 17, 0.84);
+  color: #fff;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.22);
+}
+
+.catalog-book-pending .catalog-book-copy small {
+  color: #555;
 }
 
 .generated-cover {
@@ -3926,12 +3962,16 @@ button:disabled {
 .typography-font-group button {
   width: 100%;
   height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 0;
   background: transparent;
   color: #57534a;
   font-family: var(--font-sans);
   font-size: 0.73rem;
   font-weight: 750;
+  line-height: 1;
   cursor: pointer;
   transition: background 0.14s ease, color 0.14s ease;
 }
@@ -3966,7 +4006,7 @@ button:disabled {
 
 .typography-font-group button:last-child {
   font-family: var(--reader-serif-font);
-  font-size: 0.8rem;
+  font-size: 0.76rem;
   font-weight: 700;
 }
 
