@@ -115,6 +115,37 @@ const imageDataUrl = (base64: string) => `data:image/webp;base64,${base64}`;
 
 const currentMonthStart = () => new Date().toISOString().slice(0, 7) + "-01";
 
+const errorMessage = (error: unknown, fallback = "Could not generate image.") => {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object") {
+    const value = error as {
+      code?: unknown;
+      details?: unknown;
+      error?: unknown;
+      error_description?: unknown;
+      hint?: unknown;
+      message?: unknown;
+    };
+    const message =
+      typeof value.message === "string"
+        ? value.message
+        : typeof value.error_description === "string"
+          ? value.error_description
+          : typeof value.error === "string"
+            ? value.error
+            : "";
+    const details = typeof value.details === "string" ? value.details : "";
+    const hint = typeof value.hint === "string" ? value.hint : "";
+    const code = typeof value.code === "string" ? value.code : "";
+    const parts = [message, details, hint].filter(Boolean);
+
+    if (parts.length) return parts.join(" ");
+    if (code) return `Supabase error ${code}`;
+  }
+
+  return fallback;
+};
+
 const readerImageRowCount = async (adminClient: any, userId: string, periodStart?: string) => {
   let query = adminClient
     .from("reader_images")
@@ -412,16 +443,20 @@ Deno.serve(async (req) => {
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     } catch (error) {
-      await adminClient.rpc("refund_reader_image_generation", {
+      const { error: refundError } = await adminClient.rpc("refund_reader_image_generation", {
         p_period_start: usagePeriodStart,
         p_resets_monthly: usageResetsMonthly,
         p_user_id: userData.user.id
       });
+      if (refundError) {
+        console.error("Failed to refund reader image generation", refundError);
+      }
       throw error;
     }
   } catch (error) {
+    console.error("generate-reader-image failed", error);
     return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : "Could not generate image." }),
+      JSON.stringify({ error: errorMessage(error) }),
       { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }

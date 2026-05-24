@@ -807,7 +807,17 @@ const edgeFunctionErrorMessage = async (error: unknown) => {
 
   try {
     const body = await response.clone().json();
-    return typeof body?.error === "string" ? body.error : fallback;
+    const message = typeof body?.error === "string"
+      ? body.error
+      : typeof body?.message === "string"
+        ? body.message
+        : fallback;
+
+    if (body?.code === "UNAUTHORIZED_INVALID_JWT_FORMAT") {
+      return "Please sign in again before using this feature.";
+    }
+
+    return message;
   } catch {
     return fallback;
   }
@@ -2941,10 +2951,11 @@ function App() {
       }));
     } catch (error) {
       if (!readerImageModeRef.current || runId !== readerImageRunRef.current) return;
+      const message = await edgeFunctionErrorMessage(error);
       setReaderImages((items) => ({
         ...items,
         [chunk.index]: {
-          error: error instanceof Error ? error.message : "Could not generate this image.",
+          error: message,
           status: "error",
           style
         }
@@ -3454,7 +3465,7 @@ function App() {
     });
 
     if (error) {
-      setNotice(error.message);
+      setNotice(await edgeFunctionErrorMessage(error));
       setBusy(false);
       return;
     }
@@ -3477,7 +3488,7 @@ function App() {
     });
 
     if (error) {
-      setNotice(error.message);
+      setNotice(await edgeFunctionErrorMessage(error));
       setBusy(false);
       return;
     }
