@@ -4,6 +4,7 @@ import {
   BarChart3,
   BookOpen,
   CaseSensitive,
+  ChevronDown,
   ChevronLeft,
   CreditCard,
   Crown,
@@ -13,6 +14,7 @@ import {
   Image as ImageIcon,
   Loader2,
   LogOut,
+  Moon,
   Palette,
   Pause,
   Play,
@@ -20,7 +22,6 @@ import {
   RotateCcw,
   RotateCw,
   Trash2,
-  Type,
   Upload,
   MoveHorizontal,
   Minus,
@@ -41,8 +42,43 @@ import { LandingPage } from "./LandingPage";
 
 type PlaybackState = "idle" | "playing" | "paused";
 type ReaderFontMode = "serif" | "sans";
+type ReaderThemeMode = "light" | "dark";
+type ReaderTheme =
+  | "default"
+  | "flexoki"
+  | "ayu"
+  | "catppuccin"
+  | "everforest"
+  | "gruvbox"
+  | "nord"
+  | "rose-pine"
+  | "solarized";
+type ReaderMenuId = "appearance" | "theme";
 type ReaderImageStyle = "cartoon" | "cute";
 type PdfReaderViewMode = "pdf" | "text" | "split";
+type ReaderPreferences = {
+  fontMode: ReaderFontMode;
+  lineHeight: number;
+  lineWidth: number;
+  narrationRate: number;
+  textScale: number;
+  theme: ReaderTheme;
+  themeMode: ReaderThemeMode;
+};
+type PendingDelete = {
+  book: ReaderBook | null;
+  deadline: number;
+  file: File | null;
+  index: number;
+  row: BookRow;
+  timer: number;
+  wasActive: boolean;
+};
+type PersistedPendingDelete = {
+  deadline: number;
+  index: number;
+  row: BookRow;
+};
 type SpeechHighlight = {
   end: number;
   paragraphId: string;
@@ -106,9 +142,47 @@ type CachedReaderImage = {
 const NARRATION_RATE_MIN = 0.7;
 const NARRATION_RATE_MAX = 2;
 const NARRATION_RATE_PRESETS = [1, 1.25, 1.5, 2];
+const READER_TEXT_SCALE_MIN = 9 / 16;
+const READER_TEXT_SCALE_MAX = 1.5;
+const READER_LINE_HEIGHT_MIN = 1.1;
+const READER_LINE_HEIGHT_MAX = 2;
+const READER_LINE_WIDTH_MIN = 30;
+const READER_LINE_WIDTH_MAX = 60;
+const READER_THEMES: Array<{ label: string; value: ReaderTheme }> = [
+  { value: "default", label: "Default" },
+  { value: "flexoki", label: "Flexoki" },
+  { value: "ayu", label: "Ayu" },
+  { value: "catppuccin", label: "Catppuccin" },
+  { value: "everforest", label: "Everforest" },
+  { value: "gruvbox", label: "Gruvbox" },
+  { value: "nord", label: "Nord" },
+  { value: "rose-pine", label: "Rose Pine" },
+  { value: "solarized", label: "Solarized" }
+];
+const DEFAULT_READER_PREFERENCES: ReaderPreferences = {
+  fontMode: "serif",
+  lineHeight: 1.7,
+  lineWidth: 42,
+  narrationRate: 1,
+  textScale: 1.125,
+  theme: "default",
+  themeMode: "light"
+};
+const BOOK_READER_PREFERENCES_KEY = "reader-book-preferences-v1";
+const PENDING_BOOK_DELETE_KEY = "reader-pending-book-delete-v1";
+const DELETE_UNDO_TIMEOUT_MS = 6000;
 
 const clampNarrationRate = (value: number) =>
   Math.min(NARRATION_RATE_MAX, Math.max(NARRATION_RATE_MIN, value));
+
+const clampReaderTextScale = (value: number) =>
+  Math.min(READER_TEXT_SCALE_MAX, Math.max(READER_TEXT_SCALE_MIN, value));
+
+const clampReaderLineHeight = (value: number) =>
+  Math.min(READER_LINE_HEIGHT_MAX, Math.max(READER_LINE_HEIGHT_MIN, value));
+
+const clampReaderLineWidth = (value: number) =>
+  Math.min(READER_LINE_WIDTH_MAX, Math.max(READER_LINE_WIDTH_MIN, value));
 
 const formatNarrationRate = (value: number) =>
   Number.isInteger(value) ? `${value.toFixed(0)}x` : `${value.toFixed(2).replace(/0$/, "")}x`;
@@ -1369,29 +1443,118 @@ const authRedirectUrl = () => {
 };
 
 const initialReaderFontMode = (): ReaderFontMode =>
-  window.localStorage.getItem("reader-font-mode") === "sans" ? "sans" : "serif";
+  window.localStorage.getItem("reader-font-mode") === "sans" ? "sans" : DEFAULT_READER_PREFERENCES.fontMode;
+
+const initialReaderThemeMode = (): ReaderThemeMode =>
+  window.localStorage.getItem("reader-theme-mode") === "dark" ? "dark" : DEFAULT_READER_PREFERENCES.themeMode;
+
+const initialReaderTheme = (): ReaderTheme => {
+  const value = window.localStorage.getItem("reader-theme");
+  return READER_THEMES.some((theme) => theme.value === value) ? (value as ReaderTheme) : DEFAULT_READER_PREFERENCES.theme;
+};
 
 const initialReaderTextScale = () => {
   const fontSize = Number(window.localStorage.getItem("reader-font-size"));
-  if (Number.isFinite(fontSize)) return Math.min(24, Math.max(9, fontSize)) / 16;
+  if (Number.isFinite(fontSize)) return fontSize <= 9 ? DEFAULT_READER_PREFERENCES.textScale : clampReaderTextScale(fontSize / 16);
 
   const value = Number(window.localStorage.getItem("reader-text-scale"));
-  return Number.isFinite(value) ? Math.min(1.5, Math.max(9 / 16, value)) : 1;
+  return Number.isFinite(value)
+    ? value <= READER_TEXT_SCALE_MIN
+      ? DEFAULT_READER_PREFERENCES.textScale
+      : clampReaderTextScale(value)
+    : DEFAULT_READER_PREFERENCES.textScale;
 };
 
 const initialReaderLineHeight = () => {
   const value = Number(window.localStorage.getItem("reader-line-height"));
-  return Number.isFinite(value) ? Math.min(2, Math.max(1.1, value)) : 1.6;
+  return Number.isFinite(value) ? clampReaderLineHeight(value) : DEFAULT_READER_PREFERENCES.lineHeight;
 };
 
 const initialReaderLineWidth = () => {
   const value = Number(window.localStorage.getItem("reader-line-width"));
-  return Number.isFinite(value) ? Math.min(60, Math.max(30, value)) : 38;
+  return Number.isFinite(value) ? clampReaderLineWidth(value) : DEFAULT_READER_PREFERENCES.lineWidth;
 };
 
 const initialNarrationRate = () => {
   const value = Number(window.localStorage.getItem("reader-narration-rate"));
-  return Number.isFinite(value) ? clampNarrationRate(value) : 1;
+  return Number.isFinite(value) ? clampNarrationRate(value) : DEFAULT_READER_PREFERENCES.narrationRate;
+};
+
+const readBookReaderPreferences = () => {
+  const raw = window.localStorage.getItem(BOOK_READER_PREFERENCES_KEY);
+  if (!raw) return {};
+
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed as Record<string, Partial<ReaderPreferences>> : {};
+  } catch {
+    return {};
+  }
+};
+
+const normalizeReaderPreferences = (value: Partial<ReaderPreferences> | undefined): ReaderPreferences => {
+  const fontMode = value?.fontMode === "sans" ? "sans" : DEFAULT_READER_PREFERENCES.fontMode;
+  const themeMode = value?.themeMode === "dark" ? "dark" : DEFAULT_READER_PREFERENCES.themeMode;
+  const rawTheme = value?.theme;
+  const theme = READER_THEMES.some((item) => item.value === rawTheme) ? rawTheme as ReaderTheme : DEFAULT_READER_PREFERENCES.theme;
+  const textScale = typeof value?.textScale === "number" && Number.isFinite(value.textScale)
+    ? clampReaderTextScale(value.textScale)
+    : DEFAULT_READER_PREFERENCES.textScale;
+  const lineHeight = typeof value?.lineHeight === "number" && Number.isFinite(value.lineHeight)
+    ? clampReaderLineHeight(value.lineHeight)
+    : DEFAULT_READER_PREFERENCES.lineHeight;
+  const lineWidth = typeof value?.lineWidth === "number" && Number.isFinite(value.lineWidth)
+    ? clampReaderLineWidth(value.lineWidth)
+    : DEFAULT_READER_PREFERENCES.lineWidth;
+  const narrationRate = typeof value?.narrationRate === "number" && Number.isFinite(value.narrationRate)
+    ? clampNarrationRate(value.narrationRate)
+    : DEFAULT_READER_PREFERENCES.narrationRate;
+
+  return {
+    fontMode,
+    lineHeight,
+    lineWidth,
+    narrationRate,
+    textScale,
+    theme,
+    themeMode
+  };
+};
+
+const readerPreferencesForBook = (bookId: string) =>
+  normalizeReaderPreferences(readBookReaderPreferences()[bookId]);
+
+const writeBookReaderPreferences = (bookId: string, preferences: ReaderPreferences) => {
+  const items = readBookReaderPreferences();
+  items[bookId] = normalizeReaderPreferences(preferences);
+  window.localStorage.setItem(BOOK_READER_PREFERENCES_KEY, JSON.stringify(items));
+};
+
+const readPendingBookDelete = (): PersistedPendingDelete | null => {
+  const raw = window.localStorage.getItem(PENDING_BOOK_DELETE_KEY);
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<PersistedPendingDelete>;
+    if (!parsed || typeof parsed !== "object" || typeof parsed.deadline !== "number" || !parsed.row?.id) return null;
+    return {
+      deadline: parsed.deadline,
+      index: typeof parsed.index === "number" ? parsed.index : 0,
+      row: parsed.row as BookRow
+    };
+  } catch {
+    return null;
+  }
+};
+
+const writePendingBookDelete = (pending: PersistedPendingDelete) => {
+  window.localStorage.setItem(PENDING_BOOK_DELETE_KEY, JSON.stringify(pending));
+};
+
+const clearPendingBookDelete = (bookId?: string) => {
+  const pending = readPendingBookDelete();
+  if (bookId && pending?.row.id !== bookId) return;
+  window.localStorage.removeItem(PENDING_BOOK_DELETE_KEY);
 };
 
 const getOpenLibraryCoverUrl = async (title: string, author: string) => {
@@ -1604,12 +1767,15 @@ function App() {
   const [pdfReaderViewMode, setPdfReaderViewMode] = useState<PdfReaderViewMode>("pdf");
   const [playback, setPlayback] = useState<PlaybackState>("idle");
   const [readerFontMode, setReaderFontMode] = useState<ReaderFontMode>(initialReaderFontMode);
+  const [readerThemeMode, setReaderThemeMode] = useState<ReaderThemeMode>(initialReaderThemeMode);
+  const [readerTheme, setReaderTheme] = useState<ReaderTheme>(initialReaderTheme);
   const [readerTextScale, setReaderTextScale] = useState(initialReaderTextScale);
   const [readerLineHeight, setReaderLineHeight] = useState(initialReaderLineHeight);
   const [readerLineWidth, setReaderLineWidth] = useState(initialReaderLineWidth);
   const [narrationRate, setNarrationRate] = useState(initialNarrationRate);
   const [speedPopoverOpen, setSpeedPopoverOpen] = useState(false);
   const [notice, setNotice] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [busy, setBusy] = useState(false);
   const [checkoutResult, setCheckoutResult] = useState<"success" | "canceled" | "">("");
   const [speechHighlight, setSpeechHighlight] = useState<SpeechHighlight | null>(null);
@@ -1633,6 +1799,7 @@ function App() {
   const suppressNextPlaybackStartRef = useRef(false);
   const speedControlRef = useRef<HTMLDivElement | null>(null);
   const progressSaveTimer = useRef<number | null>(null);
+  const pendingDeleteRef = useRef<PendingDelete | null>(null);
   const readingScrollFrame = useRef<number | null>(null);
   const coverLookupRef = useRef(new Set<string>());
   const isInitialOpenRef = useRef(false);
@@ -1650,6 +1817,7 @@ function App() {
 
   const [importingClassicId, setImportingClassicId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [readerMenuOpen, setReaderMenuOpen] = useState<ReaderMenuId | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const [dashboardData, setDashboardData] = useState<ReaderDashboardData | null>(null);
   const [dashboardError, setDashboardError] = useState("");
@@ -1906,12 +2074,24 @@ function App() {
   useEffect(() => stopAudio, []);
 
   useEffect(() => () => {
+    if (pendingDeleteRef.current) window.clearTimeout(pendingDeleteRef.current.timer);
+  }, []);
+
+  useEffect(() => () => {
     if (readingScrollFrame.current !== null) window.cancelAnimationFrame(readingScrollFrame.current);
   }, []);
 
   useEffect(() => {
     window.localStorage.setItem("reader-font-mode", readerFontMode);
   }, [readerFontMode]);
+
+  useEffect(() => {
+    window.localStorage.setItem("reader-theme-mode", readerThemeMode);
+  }, [readerThemeMode]);
+
+  useEffect(() => {
+    window.localStorage.setItem("reader-theme", readerTheme);
+  }, [readerTheme]);
 
   useEffect(() => {
     window.localStorage.setItem("reader-text-scale", readerTextScale.toFixed(2));
@@ -1930,6 +2110,30 @@ function App() {
     window.localStorage.setItem("reader-narration-rate", narrationRate.toFixed(2));
     edgeTtsPlayerRef.current?.setRate(narrationRate);
   }, [narrationRate]);
+
+  useEffect(() => {
+    if (!activeBookId || view !== "reader") return;
+
+    writeBookReaderPreferences(activeBookId, {
+      fontMode: readerFontMode,
+      lineHeight: readerLineHeight,
+      lineWidth: readerLineWidth,
+      narrationRate,
+      textScale: readerTextScale,
+      theme: readerTheme,
+      themeMode: readerThemeMode
+    });
+  }, [
+    activeBookId,
+    narrationRate,
+    readerFontMode,
+    readerLineHeight,
+    readerLineWidth,
+    readerTextScale,
+    readerTheme,
+    readerThemeMode,
+    view
+  ]);
 
   useEffect(() => {
     if (!speedPopoverOpen) return;
@@ -2253,7 +2457,54 @@ function App() {
     if (error) {
       setNotice(error.message);
     } else {
-      setCatalogBooks((data ?? []) as BookRow[]);
+      const rows = (data ?? []) as BookRow[];
+      const pending = readPendingBookDelete();
+      setCatalogBooks(pending ? rows.filter((row) => row.id !== pending.row.id) : rows);
+
+      if (pending) {
+        if (Date.now() >= pending.deadline) {
+          void permanentlyDeleteBook(pending.row).catch((deleteError) => {
+            clearPendingBookDelete(pending.row.id);
+            setNotice(deleteError instanceof Error ? deleteError.message : "Could not delete this book.");
+            setCatalogBooks((items) => {
+              if (items.some((item) => item.id === pending.row.id)) return items;
+              const nextItems = [...items];
+              nextItems.splice(Math.min(pending.index, nextItems.length), 0, pending.row);
+              return nextItems;
+            });
+          });
+        } else if (!pendingDeleteRef.current || pendingDeleteRef.current.row.id !== pending.row.id) {
+          if (pendingDeleteRef.current) window.clearTimeout(pendingDeleteRef.current.timer);
+          const resumedPending: PendingDelete = {
+            book: parsedBooks.current.get(pending.row.id) ?? null,
+            deadline: pending.deadline,
+            file: parsedBookFiles.current.get(pending.row.id) ?? null,
+            index: pending.index,
+            row: pending.row,
+            timer: 0,
+            wasActive: activeBookId === pending.row.id
+          };
+
+          resumedPending.timer = window.setTimeout(() => {
+            if (pendingDeleteRef.current?.row.id !== pending.row.id) return;
+            pendingDeleteRef.current = null;
+            setPendingDelete(null);
+            void permanentlyDeleteBook(pending.row).catch((deleteError) => {
+              clearPendingBookDelete(pending.row.id);
+              setNotice(deleteError instanceof Error ? deleteError.message : "Could not delete this book.");
+              setCatalogBooks((items) => {
+                if (items.some((item) => item.id === pending.row.id)) return items;
+                const nextItems = [...items];
+                nextItems.splice(Math.min(pending.index, nextItems.length), 0, pending.row);
+                return nextItems;
+              });
+            });
+          }, pending.deadline - Date.now());
+
+          pendingDeleteRef.current = resumedPending;
+          setPendingDelete(resumedPending);
+        }
+      }
     }
 
     setBusy(false);
@@ -2327,15 +2578,15 @@ function App() {
   };
 
   const adjustReaderTextScale = (delta: number) => {
-    setReaderTextScale((scale) => Math.min(1.5, Math.max(9 / 16, Number((scale + delta / 16).toFixed(4)))));
+    setReaderTextScale((scale) => clampReaderTextScale(Number((scale + delta / 16).toFixed(4))));
   };
 
   const adjustReaderLineHeight = (delta: number) => {
-    setReaderLineHeight((height) => Math.min(2, Math.max(1.1, Number((height + delta).toFixed(1)))));
+    setReaderLineHeight((height) => clampReaderLineHeight(Number((height + delta).toFixed(1))));
   };
 
   const adjustReaderLineWidth = (delta: number) => {
-    setReaderLineWidth((width) => Math.min(60, Math.max(30, Math.round(width + delta))));
+    setReaderLineWidth((width) => clampReaderLineWidth(Math.round(width + delta)));
   };
 
   const handleNarrationRateChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -2778,6 +3029,14 @@ function App() {
     setReaderImageMode(false);
     setReaderImages({});
     imageRequestsRef.current.clear();
+    const readerPreferences = readerPreferencesForBook(row.id);
+    setReaderFontMode(readerPreferences.fontMode);
+    setReaderThemeMode(readerPreferences.themeMode);
+    setReaderTheme(readerPreferences.theme);
+    setReaderTextScale(readerPreferences.textScale);
+    setReaderLineHeight(readerPreferences.lineHeight);
+    setReaderLineWidth(readerPreferences.lineWidth);
+    setNarrationRate(readerPreferences.narrationRate);
     setActiveBookId(row.id);
     setBook(parsed);
     setActiveBookFile(file ?? null);
@@ -2842,11 +3101,7 @@ function App() {
     }
   };
 
-  const deleteBook = async (row: BookRow) => {
-    stopAudio();
-    setBusy(true);
-    setNotice("");
-
+  const permanentlyDeleteBook = async (row: BookRow) => {
     const { error } = await supabase.functions.invoke("delete-reader-book", {
       method: "POST",
       body: { bookId: row.id }
@@ -2857,9 +3112,7 @@ function App() {
 
       const { error: storageError } = await supabase.storage.from(EPUB_BUCKET).remove([row.storage_path]);
       if (storageError) {
-        setNotice(storageError.message);
-        setBusy(false);
-        return;
+        throw storageError;
       }
 
       const { error: deleteError } = await supabase
@@ -2869,9 +3122,7 @@ function App() {
         .eq("user_id", row.user_id);
 
       if (deleteError) {
-        setNotice(deleteError.message);
-        setBusy(false);
-        return;
+        throw deleteError;
       }
     }
 
@@ -2879,8 +3130,64 @@ function App() {
     void deleteCachedReaderImagesForBook(row.id);
     parsedBooks.current.delete(row.id);
     parsedBookFiles.current.delete(row.id);
+    clearPendingBookDelete(row.id);
     void loadReaderImageUsage();
+  };
+
+  const restorePendingDelete = () => {
+    const pending = pendingDeleteRef.current;
+    if (!pending) return;
+
+    window.clearTimeout(pending.timer);
+    pendingDeleteRef.current = null;
+    clearPendingBookDelete(pending.row.id);
+    setPendingDelete(null);
+    setCatalogBooks((items) => {
+      if (items.some((item) => item.id === pending.row.id)) return items;
+      const nextItems = [...items];
+      nextItems.splice(Math.min(pending.index, nextItems.length), 0, pending.row);
+      return nextItems;
+    });
+    if (pending.book) parsedBooks.current.set(pending.row.id, pending.book);
+    if (pending.file) parsedBookFiles.current.set(pending.row.id, pending.file);
+    if (pending.wasActive) {
+      setActiveBookId(pending.row.id);
+      setBook(pending.book);
+      setActiveBookFile(pending.file);
+    }
+  };
+
+  const deleteBook = (row: BookRow) => {
+    stopAudio();
+    setNotice("");
+
+    if (pendingDeleteRef.current) {
+      window.clearTimeout(pendingDeleteRef.current.timer);
+      const previousRow = pendingDeleteRef.current.row;
+      pendingDeleteRef.current = null;
+      setPendingDelete(null);
+      clearPendingBookDelete(previousRow.id);
+      void permanentlyDeleteBook(previousRow).catch((error) => {
+        setNotice(error instanceof Error ? error.message : "Could not delete this book.");
+      });
+    }
+
+    const pending: PendingDelete = {
+      book: parsedBooks.current.get(row.id) ?? (activeBookId === row.id ? book : null),
+      deadline: Date.now() + DELETE_UNDO_TIMEOUT_MS,
+      file: parsedBookFiles.current.get(row.id) ?? (activeBookId === row.id ? activeBookFile : null),
+      index: Math.max(0, catalogBooks.findIndex((item) => item.id === row.id)),
+      row,
+      timer: 0,
+      wasActive: activeBookId === row.id
+    };
+
     setCatalogBooks((items) => items.filter((item) => item.id !== row.id));
+    writePendingBookDelete({
+      deadline: pending.deadline,
+      index: pending.index,
+      row: pending.row
+    });
 
     if (activeBookId === row.id) {
       setBook(null);
@@ -2889,7 +3196,24 @@ function App() {
       setView("catalog");
     }
 
-    setBusy(false);
+    pending.timer = window.setTimeout(() => {
+      if (pendingDeleteRef.current?.row.id !== row.id) return;
+      pendingDeleteRef.current = null;
+      setPendingDelete(null);
+      void permanentlyDeleteBook(row).catch((error) => {
+        setNotice(error instanceof Error ? error.message : "Could not delete this book.");
+        clearPendingBookDelete(row.id);
+        setCatalogBooks((items) => {
+          if (items.some((item) => item.id === pending.row.id)) return items;
+          const nextItems = [...items];
+          nextItems.splice(Math.min(pending.index, nextItems.length), 0, pending.row);
+          return nextItems;
+        });
+      });
+    }, DELETE_UNDO_TIMEOUT_MS);
+
+    pendingDeleteRef.current = pending;
+    setPendingDelete(pending);
   };
 
   const togglePlayback = () => {
@@ -3623,6 +3947,15 @@ function App() {
           </div>
         </header>
 
+        {pendingDelete && (
+          <div className="undo-delete-toast" role="status" aria-live="polite">
+            <span>{pendingDelete.row.title} deleted</span>
+            <button type="button" onClick={restorePendingDelete}>
+              Undo
+            </button>
+          </div>
+        )}
+
         <section className="catalog-view" aria-label="Book library">
           <div className="catalog-books-section">
             <div className="catalog-header">
@@ -3754,7 +4087,11 @@ function App() {
   if (!book) return null;
 
   return (
-    <main className={immersiveReaderImageMode ? "app-shell image-reader-shell" : "app-shell"}>
+    <main
+      className={["app-shell reader-themed-shell", immersiveReaderImageMode ? "image-reader-shell" : ""].filter(Boolean).join(" ")}
+      data-reader-mode={readerThemeMode}
+      data-reader-theme={readerTheme}
+    >
       <header className={immersiveReaderImageMode ? "topbar image-topbar" : "topbar"} style={{ position: "relative" }}>
         <button className="top-icon" type="button" title="Back to library" onClick={() => openCatalog()}>
           <ChevronLeft size={22} aria-hidden="true" />
@@ -3764,7 +4101,10 @@ function App() {
           <button
             aria-expanded={settingsOpen}
             className="top-icon typography-trigger"
-            onClick={() => setSettingsOpen(!settingsOpen)}
+            onClick={() => {
+              setSettingsOpen(!settingsOpen);
+              setReaderMenuOpen(null);
+            }}
             title="Typography"
             type="button"
           >
@@ -3773,14 +4113,20 @@ function App() {
           
           {settingsOpen && (
             <>
-              <div className="settings-popover-overlay" onClick={() => setSettingsOpen(false)} />
+              <div
+                className="settings-popover-overlay"
+                onClick={() => {
+                  setSettingsOpen(false);
+                  setReaderMenuOpen(null);
+                }}
+              />
               <div className="settings-popover-card reader-typography-popover">
                 <div className="settings-popover-body">
                   <div className="settings-section typography-settings-section" aria-label="Typography settings">
                     <div className="typography-button-group" aria-label="Text size">
                       <button
                         aria-label="Decrease text size"
-                        disabled={readerTextScale <= 9 / 16}
+                        disabled={readerTextScale <= READER_TEXT_SCALE_MIN}
                         onClick={() => adjustReaderTextScale(-1)}
                         title="Decrease text size"
                         type="button"
@@ -3789,7 +4135,7 @@ function App() {
                       </button>
                       <button
                         aria-label="Increase text size"
-                        disabled={readerTextScale >= 1.5}
+                        disabled={readerTextScale >= READER_TEXT_SCALE_MAX}
                         onClick={() => adjustReaderTextScale(1)}
                         title="Increase text size"
                         type="button"
@@ -3801,7 +4147,7 @@ function App() {
                     <div className="typography-button-group" aria-label="Line width">
                       <button
                         aria-label="Narrow line width"
-                        disabled={readerLineWidth <= 30}
+                        disabled={readerLineWidth <= READER_LINE_WIDTH_MIN}
                         onClick={() => adjustReaderLineWidth(-1)}
                         title="Narrow line width"
                         type="button"
@@ -3810,7 +4156,7 @@ function App() {
                       </button>
                       <button
                         aria-label="Widen line width"
-                        disabled={readerLineWidth >= 60}
+                        disabled={readerLineWidth >= READER_LINE_WIDTH_MAX}
                         onClick={() => adjustReaderLineWidth(1)}
                         title="Widen line width"
                         type="button"
@@ -3822,7 +4168,7 @@ function App() {
                     <div className="typography-button-group" aria-label="Line height">
                       <button
                         aria-label="Decrease line height"
-                        disabled={readerLineHeight <= 1.1}
+                        disabled={readerLineHeight <= READER_LINE_HEIGHT_MIN}
                         onClick={() => adjustReaderLineHeight(-0.1)}
                         title="Decrease line height"
                         type="button"
@@ -3831,7 +4177,7 @@ function App() {
                       </button>
                       <button
                         aria-label="Increase line height"
-                        disabled={readerLineHeight >= 2}
+                        disabled={readerLineHeight >= READER_LINE_HEIGHT_MAX}
                         onClick={() => adjustReaderLineHeight(0.1)}
                         title="Increase line height"
                         type="button"
@@ -3840,17 +4186,101 @@ function App() {
                       </button>
                     </div>
 
-                    <label className="typography-select-wrapper">
-                      <Type size={17} aria-hidden="true" />
-                      <select
-                        aria-label="Reader font"
-                        onChange={(event) => setReaderFontMode(event.currentTarget.value as ReaderFontMode)}
-                        value={readerFontMode}
+                    <div className="typography-font-group" aria-label="Reader font">
+                      <button
+                        aria-pressed={readerFontMode === "sans"}
+                        className={readerFontMode === "sans" ? "active" : undefined}
+                        onClick={() => setReaderFontMode("sans")}
+                        title="Sans-serif font"
+                        type="button"
                       >
-                        <option value="sans">Sans-serif</option>
-                        <option value="serif">Serif</option>
-                      </select>
-                    </label>
+                        Sans
+                      </button>
+                      <button
+                        aria-pressed={readerFontMode === "serif"}
+                        className={readerFontMode === "serif" ? "active" : undefined}
+                        onClick={() => setReaderFontMode("serif")}
+                        title="Serif font"
+                        type="button"
+                      >
+                        Serif
+                      </button>
+                    </div>
+
+                    <div className="typography-theme-menu">
+                      <Palette size={14} aria-hidden="true" />
+                      <button
+                        aria-expanded={readerMenuOpen === "theme"}
+                        aria-haspopup="listbox"
+                        aria-label="Reader theme"
+                        className="typography-menu-trigger"
+                        onClick={() => setReaderMenuOpen(readerMenuOpen === "theme" ? null : "theme")}
+                        title="Reader theme"
+                        type="button"
+                      >
+                        <span>{READER_THEMES.find((theme) => theme.value === readerTheme)?.label ?? "Default"}</span>
+                        <ChevronDown size={14} aria-hidden="true" />
+                      </button>
+                      {readerMenuOpen === "theme" && (
+                        <div className="typography-menu-list" role="listbox" aria-label="Reader theme">
+                          {READER_THEMES.map((theme) => (
+                            <button
+                              aria-selected={readerTheme === theme.value}
+                              className={readerTheme === theme.value ? "active" : undefined}
+                              key={theme.value}
+                              onClick={() => {
+                                setReaderTheme(theme.value);
+                                setReaderMenuOpen(null);
+                              }}
+                              role="option"
+                              type="button"
+                            >
+                              <span>{theme.label}</span>
+                              {readerTheme === theme.value && <Check size={13} aria-hidden="true" />}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="typography-theme-menu">
+                      <Moon size={14} aria-hidden="true" />
+                      <button
+                        aria-expanded={readerMenuOpen === "appearance"}
+                        aria-haspopup="listbox"
+                        aria-label="Reader appearance"
+                        className="typography-menu-trigger"
+                        onClick={() => setReaderMenuOpen(readerMenuOpen === "appearance" ? null : "appearance")}
+                        title="Reader appearance"
+                        type="button"
+                      >
+                        <span>{readerThemeMode === "dark" ? "Dark" : "Light"}</span>
+                        <ChevronDown size={14} aria-hidden="true" />
+                      </button>
+                      {readerMenuOpen === "appearance" && (
+                        <div className="typography-menu-list" role="listbox" aria-label="Reader appearance">
+                          {[
+                            { value: "light", label: "Light" },
+                            { value: "dark", label: "Dark" }
+                          ].map((option) => (
+                            <button
+                              aria-selected={readerThemeMode === option.value}
+                              className={readerThemeMode === option.value ? "active" : undefined}
+                              key={option.value}
+                              onClick={() => {
+                                setReaderThemeMode(option.value as ReaderThemeMode);
+                                setReaderMenuOpen(null);
+                              }}
+                              role="option"
+                              type="button"
+                            >
+                              <span>{option.label}</span>
+                              {readerThemeMode === option.value && <Check size={13} aria-hidden="true" />}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
