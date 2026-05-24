@@ -812,12 +812,25 @@ const isPdfFile = (file: File) => file.type === "application/pdf" || file.name.t
 
 const isEpubFile = (file: File) => file.type === "application/epub+zip" || file.name.toLowerCase().endsWith(".epub");
 
-const safeFileName = (name: string) =>
-  name
+const safeFileName = (name: string) => {
+  const safeName = name
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
     .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 120) || "document";
+    .replace(/^-|-$/g, "");
+
+  return safeName || "document";
+};
+
+const safeDocumentFileName = (name: string, format: "epub" | "pdf") => {
+  const extension = `.${format}`;
+  const safeName = safeFileName(name);
+  const withoutExtension = safeName.toLowerCase().endsWith(extension)
+    ? safeName.slice(0, -extension.length)
+    : safeName.replace(/\.[^.]*$/, "");
+  const safeBaseName = safeFileName(withoutExtension).slice(0, 120 - extension.length).replace(/[._-]+$/g, "");
+
+  return `${safeBaseName || "document"}${extension}`;
+};
 
 const blobLooksLikeEpub = async (blob: Blob) => {
   const bytes = new Uint8Array(await blob.slice(0, 4).arrayBuffer());
@@ -2990,7 +3003,7 @@ function App() {
     const embeddedCoverUrl = parsed.coverUrl ? await shrinkCoverDataUrl(parsed.coverUrl) : "";
     const coverUrl = embeddedCoverUrl || (format === "epub" ? await getOpenLibraryCoverUrl(parsed.title, parsed.author) : "");
     const id = crypto.randomUUID();
-    const storagePath = `${user.id}/${id}/${safeFileName(file.name)}`;
+    const storagePath = `${user.id}/${id}/${safeDocumentFileName(file.name, format)}`;
 
     const upload = await supabase.storage.from(EPUB_BUCKET).upload(storagePath, file, {
       contentType: file.type || (format === "pdf" ? "application/pdf" : "application/epub+zip"),
