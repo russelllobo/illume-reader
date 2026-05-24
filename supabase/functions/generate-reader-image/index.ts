@@ -3,7 +3,7 @@ import { createClient } from "npm:@supabase/supabase-js@2.106.0";
 
 const READER_IMAGE_BUCKET = "reader-images";
 const FREE_READER_IMAGE_LIFETIME_LIMIT = 25;
-const PRO_READER_IMAGE_ACCOUNT_LIMIT = 100;
+const PRO_READER_IMAGE_MONTHLY_LIMIT = 100;
 type ReaderImageStyle = "cartoon" | "cute";
 
 const corsHeaders = {
@@ -113,14 +113,21 @@ const bytesToBase64 = (bytes: Uint8Array) => {
 
 const imageDataUrl = (base64: string) => `data:image/webp;base64,${base64}`;
 
-const readerImageUsageCount = async (adminClient: any, userId: string) => {
+const currentMonthStart = () => new Date().toISOString().slice(0, 7) + "-01";
+
+const readerImageUsageCount = async (adminClient: any, userId: string, plan: "free" | "pro") => {
   const { data, error } = await adminClient
     .from("reader_image_usage")
-    .select("generated_count")
+    .select("generated_count, monthly_generated_count, monthly_period_start")
     .eq("user_id", userId);
 
   if (error) throw error;
-  return data?.[0]?.generated_count ?? 0;
+  const usage = data?.[0];
+  if (!usage) return 0;
+  if (plan === "pro") {
+    return usage.monthly_period_start === currentMonthStart() ? usage.monthly_generated_count ?? 0 : 0;
+  }
+  return usage.generated_count ?? 0;
 };
 
 const limitResponse = (
@@ -266,7 +273,9 @@ Deno.serve(async (req) => {
       billingProfile?.plan === "pro" && ["active", "trialing"].includes(billingProfile.status)
         ? "pro"
         : "free";
-    const imageLimit = activePlan === "pro" ? PRO_READER_IMAGE_ACCOUNT_LIMIT : FREE_READER_IMAGE_LIFETIME_LIMIT;
+    const imageLimit = activePlan === "pro" ? PRO_READER_IMAGE_MONTHLY_LIMIT : FREE_READER_IMAGE_LIFETIME_LIMIT;
+    const usageResetsMonthly = activePlan === "pro";
+    const usagePeriodStart = currentMonthStart();
 
     const storedImage = await getStoredReaderImage(adminClient, userData.user.id, bookId, imageStyle, startWord, endWord);
     if (storedImage) {
@@ -274,7 +283,7 @@ Deno.serve(async (req) => {
         JSON.stringify({
           ...storedImage,
           cached: true,
-          imageCount: await readerImageUsageCount(adminClient, userData.user.id),
+          imageCount: await readerImageUsageCount(adminClient, userData.user.id, activePlan),
           imageLimit,
           plan: activePlan
         }),
@@ -286,6 +295,8 @@ Deno.serve(async (req) => {
       "reserve_reader_image_generation",
       {
         p_image_limit: imageLimit,
+        p_period_start: usagePeriodStart,
+        p_resets_monthly: usageResetsMonthly,
         p_user_id: userData.user.id
       }
     );
@@ -364,7 +375,11 @@ Deno.serve(async (req) => {
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     } catch (error) {
-      await adminClient.rpc("refund_reader_image_generation", { p_user_id: userData.user.id });
+      await adminClient.rpc("refund_reader_image_generation", {
+        p_period_start: usagePeriodStart,
+        p_resets_monthly: usageResetsMonthly,
+        p_user_id: userData.user.id
+      });
       throw error;
     }
   } catch (error) {

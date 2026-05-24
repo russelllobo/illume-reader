@@ -3,7 +3,6 @@ import {
   BookOpenText,
 
   Loader2,
-  LogIn,
   Mail,
   Pause,
   Play,
@@ -224,6 +223,7 @@ export function LandingPage({
   const [currentWordIndex, setCurrentWordIndex] = useState(0);
   const [wpm, setWpm] = useState(275);
   const [authPane, setAuthPane] = useState<"choice" | "email">("choice");
+  const [isHeaderCondensed, setIsHeaderCondensed] = useState(false);
 
   useLayoutEffect(() => {
     document.documentElement.classList.add("landing-scroll");
@@ -233,6 +233,14 @@ export function LandingPage({
       document.documentElement.classList.remove("landing-scroll");
       document.body.classList.remove("landing-scroll");
     };
+  }, []);
+
+  useEffect(() => {
+    const updateHeader = () => setIsHeaderCondensed(window.scrollY > 24);
+
+    updateHeader();
+    window.addEventListener("scroll", updateHeader, { passive: true });
+    return () => window.removeEventListener("scroll", updateHeader);
   }, []);
 
   useEffect(() => {
@@ -261,14 +269,14 @@ export function LandingPage({
 
   return (
     <div className="illume-theme">
-      <header className="illume-header">
+      <header className={`illume-header${isHeaderCondensed ? " is-condensed" : ""}`}>
         <a href="#" className="illume-brand" aria-label="illume home">
           <img src="/landing/logo.jpeg" alt="" className="illume-brand-mark" />
           <span>illume</span>
         </a>
         <button onClick={() => handleOpenAuth("sign-in")} className="illume-sign-in-button" type="button">
-          <LogIn size={15} />
-          <span>Sign in</span>
+          <BookOpenText size={15} />
+          <span>Read now</span>
         </button>
       </header>
 

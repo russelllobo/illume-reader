@@ -27,7 +27,7 @@ import {
   Users,
   X
 } from "lucide-react";
-import { ChangeEvent, CSSProperties, FormEvent, Fragment, KeyboardEvent, MouseEvent, PointerEvent, ReactNode, RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, CSSProperties, FormEvent, Fragment, KeyboardEvent, MouseEvent, PointerEvent, ReactNode, RefObject, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
 import { parsePdf, pdfjsLib } from "./pdf";
 import { createEdgeTtsPlayer, EdgeTtsPlayer } from "./edgeTts";
@@ -157,7 +157,7 @@ const READER_IMAGE_DB_NAME = "epub-vision-reader-images";
 const READER_IMAGE_STORE_NAME = "images";
 const READER_IMAGE_CHUNK_WORDS = 1000;
 const FREE_READER_IMAGE_LIFETIME_LIMIT = 25;
-const PRO_READER_IMAGE_ACCOUNT_LIMIT = 100;
+const PRO_READER_IMAGE_MONTHLY_LIMIT = 100;
 const READER_IMAGE_STYLES: Array<{ id: ReaderImageStyle; label: string; summary: string }> = [
   { id: "cartoon", label: "Cartoon", summary: "Bold Sunday funnies look with bright 1980s color." },
   { id: "cute", label: "Cute", summary: "Kawaii anime feel with pastel modern colors." }
@@ -622,11 +622,20 @@ const buildPdfReaderImageChunks = (book: ReaderBook): ReaderImageChunk[] => {
   return chunks;
 };
 
-const wordOffsetForParagraph = (book: ReaderBook, targetIndex: number) =>
-  book.paragraphs.slice(0, targetIndex).reduce((total, paragraph) => {
-    if (paragraph.kind === "image") return total;
-    return total + wordsFromText(paragraph.text).length;
-  }, 0);
+const buildParagraphWordMetrics = (book: ReaderBook) => {
+  const offsets: number[] = [];
+  const counts: number[] = [];
+  let total = 0;
+
+  for (const paragraph of book.paragraphs) {
+    offsets.push(total);
+    const count = paragraph.kind === "image" ? 0 : wordsFromText(paragraph.text).length;
+    counts.push(count);
+    total += count;
+  }
+
+  return { counts, offsets, total };
+};
 
 const formatBytes = (bytes: number) => {
   if (bytes < 1024) return `${bytes} B`;
@@ -742,7 +751,7 @@ function BookCover({ book }: { book: BookRow }) {
   );
 }
 
-function PdfPageCanvas({
+const PdfPageCanvas = memo(function PdfPageCanvas({
   active,
   metrics,
   pageNumber,
@@ -940,7 +949,7 @@ function PdfPageCanvas({
       {imageSlot}
     </div>
   );
-}
+});
 
 function PdfDocumentView({
   currentPage,
@@ -1569,6 +1578,7 @@ function App() {
   const pendingScrollIndex = useRef<number | null>(null);
   const edgeTtsPlayerRef = useRef<EdgeTtsPlayer | null>(null);
   const progressSaveTimer = useRef<number | null>(null);
+  const readingScrollFrame = useRef<number | null>(null);
   const coverLookupRef = useRef(new Set<string>());
   const isInitialOpenRef = useRef(false);
   const isInstantScrollRef = useRef(false);
@@ -1628,11 +1638,15 @@ function App() {
   const immersiveReaderImageMode = readerImageMode && !isPdfBook;
   const storageUsed = catalogBooks.reduce((total, item) => total + item.file_size, 0);
   const isPro = billingProfile?.plan === "pro" && ["active", "trialing"].includes(billingProfile.status);
-  const readerImageLimit = isPro ? PRO_READER_IMAGE_ACCOUNT_LIMIT : FREE_READER_IMAGE_LIFETIME_LIMIT;
+  const readerImageLimit = isPro ? PRO_READER_IMAGE_MONTHLY_LIMIT : FREE_READER_IMAGE_LIFETIME_LIMIT;
   const readerImageUsageLabel = `${readerImageCount} / ${readerImageLimit}`;
+  const paragraphWordMetrics = useMemo(
+    () => (book ? buildParagraphWordMetrics(book) : { counts: [], offsets: [], total: 0 }),
+    [book]
+  );
   const currentReaderWordOffset = useMemo(
-    () => (book ? wordOffsetForParagraph(book, currentIndex) : 0),
-    [book, currentIndex]
+    () => paragraphWordMetrics.offsets[currentIndex] ?? 0,
+    [currentIndex, paragraphWordMetrics]
   );
   const readerImageStartOffset = 0;
   const readerImageChunks = useMemo(
@@ -1666,11 +1680,11 @@ function App() {
     if (!book || !readerImageMode || !readerImageChunks.length) return insertions;
     if (book.format === "pdf") return insertions;
 
-    let wordOffset = 0;
     let chunkIndex = 0;
 
     book.paragraphs.forEach((paragraph, paragraphIndex) => {
-      const wordCount = paragraph.kind === "image" ? 0 : wordsFromText(paragraph.text).length;
+      const wordOffset = paragraphWordMetrics.offsets[paragraphIndex] ?? 0;
+      const wordCount = paragraphWordMetrics.counts[paragraphIndex] ?? 0;
       const paragraphStart = wordOffset;
       const paragraphEnd = wordOffset + wordCount;
 
@@ -1689,11 +1703,10 @@ function App() {
         chunkIndex += 1;
       }
 
-      wordOffset = paragraphEnd;
     });
 
     return insertions;
-  }, [book, readerImageChunks, readerImageMode, readerImages, visibleReaderImageIndexes]);
+  }, [book, paragraphWordMetrics, readerImageChunks, readerImageMode, readerImages, visibleReaderImageIndexes]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -1730,6 +1743,11 @@ function App() {
     void loadBillingProfile(user);
     void loadReaderImageUsage();
   }, [isReaderDashboard, user?.id]);
+
+  useEffect(() => {
+    if (!user || isReaderDashboard) return;
+    void loadReaderImageUsage();
+  }, [isPro, isReaderDashboard, user?.id]);
 
   useEffect(() => {
     if (!isReaderDashboard || !user) {
@@ -1799,6 +1817,10 @@ function App() {
   }, [checkoutResult, user?.id]);
 
   useEffect(() => stopAudio, []);
+
+  useEffect(() => () => {
+    if (readingScrollFrame.current !== null) window.cancelAnimationFrame(readingScrollFrame.current);
+  }, []);
 
   useEffect(() => {
     window.localStorage.setItem("reader-font-mode", readerFontMode);
@@ -1964,7 +1986,7 @@ function App() {
         const message =
           plan === "free"
             ? `You have used all ${imageLimit} free lifetime images.`
-            : `You have reached your ${imageLimit}-image Pro limit.`;
+            : `You have reached your ${imageLimit}-image Pro monthly limit.`;
 
         setReaderImageCount(imageCount);
         if (plan === "free") setReaderImageUpgradeOpen(true);
@@ -2118,10 +2140,18 @@ function App() {
   const loadReaderImageUsage = async () => {
     const { data, error } = await supabase
       .from("reader_image_usage")
-      .select("generated_count")
+      .select("generated_count, monthly_generated_count, monthly_period_start")
       .maybeSingle();
 
-    if (!error) setReaderImageCount(data?.generated_count ?? 0);
+    if (error) return;
+
+    if (isPro) {
+      const currentMonthStart = new Date().toISOString().slice(0, 7) + "-01";
+      setReaderImageCount(data?.monthly_period_start === currentMonthStart ? data?.monthly_generated_count ?? 0 : 0);
+      return;
+    }
+
+    setReaderImageCount(data?.generated_count ?? 0);
   };
 
   const loadReaderDashboard = async () => {
@@ -2273,7 +2303,7 @@ function App() {
     moveTo(index);
   };
 
-  const handlePdfWordClick = (pageNumber: number, pageWordIndex: number) => {
+  const handlePdfWordClick = useCallback((pageNumber: number, pageWordIndex: number) => {
     if (!book) return;
     const pageParagraphs = book.paragraphs.filter((paragraph) => paragraph.pageNumber === pageNumber);
     if (pageParagraphs.length === 0) return;
@@ -2294,7 +2324,7 @@ function App() {
       }
       accumulatedWordCount += paragraphWordCount;
     }
-  };
+  }, [book, currentIndex]);
 
   const handleAuth = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -2388,6 +2418,64 @@ function App() {
 
     window.location.assign(data.url);
   };
+
+  const renderProComparison = () => (
+    <div className="pro-comparison-overlay" role="presentation" onClick={() => setReaderImageUpgradeOpen(false)}>
+      <section
+        aria-labelledby="pro-comparison-title"
+        aria-modal="true"
+        className="pro-comparison-page"
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+      >
+        <button className="pro-comparison-close" onClick={() => setReaderImageUpgradeOpen(false)} title="Close" type="button">
+          <X size={18} aria-hidden="true" />
+        </button>
+        <div className="pro-comparison-hero">
+          <img src="/landing/logo.jpeg" alt="" aria-hidden="true" />
+          <div>
+            <span className="pro-comparison-kicker">Illume Pro</span>
+            <h2 id="pro-comparison-title">Keep image mode alive.</h2>
+            <p>Upgrade for 100 AI images every month and a calmer reading workflow as your library grows.</p>
+          </div>
+        </div>
+        <div className="pro-usage-strip" aria-label="Current image usage">
+          <span>{isPro ? `${readerImageCount} of ${PRO_READER_IMAGE_MONTHLY_LIMIT} Pro images used this month` : `${Math.min(readerImageCount, FREE_READER_IMAGE_LIFETIME_LIMIT)} of ${FREE_READER_IMAGE_LIFETIME_LIMIT} free images used`}</span>
+          <div>
+            <span style={{ width: `${Math.min(100, (readerImageCount / readerImageLimit) * 100)}%` }} />
+          </div>
+        </div>
+        <div className="pro-plan-comparison" aria-label="Plan comparison">
+          <div className="pro-plan-column free">
+            <span className="pro-plan-label">Free</span>
+            <strong>25</strong>
+            <small>lifetime AI images</small>
+            <p>Read, listen, upload EPUBs and PDFs, and try image mode in your private library.</p>
+          </div>
+          <div className="pro-plan-column pro">
+            <span className="pro-plan-label">Pro</span>
+            <strong>100</strong>
+            <small>AI images per month</small>
+            <p>Your Pro allowance refreshes monthly, with billing handled securely through Stripe.</p>
+          </div>
+        </div>
+        <div className="pro-feature-lines">
+          <p><Check size={17} aria-hidden="true" /> Synced library, narration, and reading progress</p>
+          <p><Check size={17} aria-hidden="true" /> Private generated images stored with your books</p>
+          <p><Check size={17} aria-hidden="true" /> Manage or cancel from your billing portal</p>
+        </div>
+        <div className="pro-comparison-actions">
+          <button className="pro-checkout-button" disabled={busy} onClick={() => void startCheckout()} type="button">
+            {busy ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Crown size={16} aria-hidden="true" />}
+            <span>Upgrade to Pro</span>
+          </button>
+          <button className="pro-later-button" onClick={() => setReaderImageUpgradeOpen(false)} type="button">
+            Not now
+          </button>
+        </div>
+      </section>
+    </div>
+  );
 
   const importDocumentFile = async (file: File, openAfterImport = true) => {
     if (!user) return;
@@ -2725,24 +2813,34 @@ function App() {
     const surface = readingSurfaceRef.current;
     if (playback === "playing" || playback === "paused") return;
     if (!surface) return;
+    if (readingScrollFrame.current !== null) return;
 
-    const viewportTop = surface.getBoundingClientRect().top + 72;
-    let closestIndex = currentIndex;
-    let closestDistance = Number.POSITIVE_INFINITY;
+    readingScrollFrame.current = window.requestAnimationFrame(() => {
+      readingScrollFrame.current = null;
 
-    for (let index = 0; index < book.paragraphs.length; index++) {
-      const paragraph = book.paragraphs[index];
-      const node = paragraphRefs.current.get(paragraph.id);
-      if (!node) continue;
+      const nextBook = book;
+      const viewportTop = surface.getBoundingClientRect().top + 72;
+      let closestIndex = currentIndex;
+      let closestDistance = Number.POSITIVE_INFINITY;
 
-      const distance = Math.abs(node.getBoundingClientRect().top - viewportTop);
-      if (distance < closestDistance) {
-        closestDistance = distance;
-        closestIndex = index;
+      for (let index = 0; index < nextBook.paragraphs.length; index++) {
+        const paragraph = nextBook.paragraphs[index];
+        const node = paragraphRefs.current.get(paragraph.id);
+        if (!node) continue;
+
+        const bounds = node.getBoundingClientRect();
+        if (bounds.bottom < viewportTop - 320) continue;
+        if (bounds.top > viewportTop + 320) break;
+
+        const distance = Math.abs(bounds.top - viewportTop);
+        if (distance < closestDistance) {
+          closestDistance = distance;
+          closestIndex = index;
+        }
       }
-    }
 
-    if (closestIndex !== currentIndex) setCurrentIndex(closestIndex);
+      if (closestIndex !== currentIndex) setCurrentIndex(closestIndex);
+    });
   };
 
   const setParagraphRef = (id: string) => (node: HTMLElement | null) => {
@@ -2768,8 +2866,10 @@ function App() {
     }
   };
 
-  const renderReaderText = (paragraph: ReaderParagraph) => {
+  const renderReaderText = (paragraph: ReaderParagraph, shouldRenderWords: boolean) => {
     if (paragraph.kind === "image") return null;
+    if (!shouldRenderWords) return paragraph.text;
+
     const ranges = wordRangesFromText(paragraph.text);
     if (ranges.length === 0) {
       return paragraph.text;
@@ -2804,7 +2904,7 @@ function App() {
     );
   };
 
-  const renderGeneratedReaderImage = (chunk: ReaderImageChunk) => {
+  const renderGeneratedReaderImage = useCallback((chunk: ReaderImageChunk) => {
     const image = readerImages[chunk.index];
     const isLimit = Boolean(image?.limitReached);
     const label = chunk.pageNumber ? `Page ${chunk.pageNumber}` : `Words ${chunk.startWord}-${chunk.endWord}`;
@@ -2849,16 +2949,16 @@ function App() {
         </figcaption>
       </figure>
     );
-  };
+  }, [readerImages]);
 
-  const renderPdfPageReaderImage = (pageNumber: number) => {
+  const renderPdfPageReaderImage = useCallback((pageNumber: number) => {
     if (!readerImageMode || !isPdfBook) return null;
 
     const chunk = readerImageChunkByIndex.get(pageNumber - 1);
     if (!chunk || (!visibleReaderImageIndexes.has(chunk.index) && !readerImages[chunk.index])) return null;
 
     return renderGeneratedReaderImage(chunk);
-  };
+  }, [isPdfBook, readerImageChunkByIndex, readerImageMode, readerImages, renderGeneratedReaderImage, visibleReaderImageIndexes]);
 
   const renderReaderImageStage = () => {
     const chunk = activeReaderImageChunk;
@@ -2920,6 +3020,7 @@ function App() {
               paragraph.text.trim().toLowerCase() === paragraph.chapterTitle.trim().toLowerCase();
             const isActive = index === currentIndex;
             const isSpeaking = speechHighlight?.paragraphId === paragraph.id;
+            const shouldRenderWords = isActive || isSpeaking;
 
             return (
               <div className="reader-block" key={paragraph.id}>
@@ -2948,7 +3049,7 @@ function App() {
                     onClick={(e) => handleParagraphClick(e, paragraph, index)}
                     ref={setParagraphRef(paragraph.id)}
                   >
-                    {renderReaderText(paragraph)}
+                    {renderReaderText(paragraph, shouldRenderWords)}
                   </h2>
                 ) : paragraph.kind === "heading" ? (
                   <h3
@@ -2962,7 +3063,7 @@ function App() {
                     onClick={(e) => handleParagraphClick(e, paragraph, index)}
                     ref={setParagraphRef(paragraph.id)}
                   >
-                    {renderReaderText(paragraph)}
+                    {renderReaderText(paragraph, shouldRenderWords)}
                   </h3>
                 ) : (
                   <p
@@ -2978,7 +3079,7 @@ function App() {
                     onClick={(e) => handleParagraphClick(e, paragraph, index)}
                     ref={setParagraphRef(paragraph.id)}
                   >
-                    {renderReaderText(paragraph)}
+                    {renderReaderText(paragraph, shouldRenderWords)}
                   </p>
                 )}
               </div>
@@ -3093,9 +3194,16 @@ function App() {
             <div className="library-brand-mark" aria-label={`illume ${isPro ? "Pro" : "Free"}`}>
               <img src="/landing/logo.jpeg" alt="" aria-hidden="true" />
               <span>illume</span>
-              <span className={`library-plan-badge ${isPro ? "pro" : "free"}`}>
-                <span>{isPro ? "Pro" : "Free"}</span>
-              </span>
+              {isPro ? (
+                <span className="library-plan-badge pro">
+                  <span>Pro</span>
+                </span>
+              ) : (
+                <button className="library-upgrade-button" onClick={() => setReaderImageUpgradeOpen(true)} type="button">
+                  <Crown size={13} aria-hidden="true" />
+                  <span>Upgrade</span>
+                </button>
+              )}
             </div>
           </div>
           <div className="top-actions">
@@ -3158,7 +3266,9 @@ function App() {
                             {isPro ? <Crown size={14} aria-hidden="true" /> : <CreditCard size={14} aria-hidden="true" />}
                             <span>{isPro ? "Pro Plan" : "Free Plan"}</span>
                           </span>
-                          {!isPro && <small className="plan-price-label">25 lifetime AI images included</small>}
+                          <small className="plan-price-label">
+                            {isPro ? "100 AI images included every month" : "25 lifetime AI images included"}
+                          </small>
                         </div>
                       </div>
 
@@ -3196,7 +3306,7 @@ function App() {
                       {/* Billing Action Buttons */}
                       <div className="profile-section billing-actions-section">
                         {!isPro && (
-                          <button className="primary-button upgrade-btn" disabled={busy} onClick={() => { setProfileOpen(false); void startCheckout(); }} type="button">
+                          <button className="primary-button upgrade-btn" disabled={busy} onClick={() => { setProfileOpen(false); setReaderImageUpgradeOpen(true); }} type="button">
                             <Crown size={15} aria-hidden="true" />
                             <span>Upgrade to Pro</span>
                           </button>
@@ -3346,6 +3456,7 @@ function App() {
         </section>
 
         {notice && <div className="notice">{notice}</div>}
+        {readerImageUpgradeOpen && renderProComparison()}
       </main>
     );
   }
@@ -3618,41 +3729,7 @@ function App() {
         </div>
       )}
 
-      {readerImageUpgradeOpen && (
-        <div className="image-limit-modal-overlay" role="presentation" onClick={() => setReaderImageUpgradeOpen(false)}>
-          <section
-            aria-labelledby="image-limit-title"
-            aria-modal="true"
-            className="image-limit-modal"
-            onClick={(event) => event.stopPropagation()}
-            role="dialog"
-          >
-            <button className="image-limit-close" onClick={() => setReaderImageUpgradeOpen(false)} title="Close" type="button">
-              <X size={18} aria-hidden="true" />
-            </button>
-            <img className="image-limit-logo" src="/landing/logo.jpeg" alt="" aria-hidden="true" />
-            <div className="image-limit-copy">
-              <span className="image-limit-kicker">Free limit reached</span>
-              <h2 id="image-limit-title">Keep image mode</h2>
-              <p>
-                {Math.min(readerImageCount, FREE_READER_IMAGE_LIFETIME_LIMIT)} of {FREE_READER_IMAGE_LIFETIME_LIMIT} free images used.
-              </p>
-            </div>
-            <div className="image-limit-meter" aria-hidden="true">
-              <span style={{ width: `${Math.min(100, (readerImageCount / FREE_READER_IMAGE_LIFETIME_LIMIT) * 100)}%` }} />
-            </div>
-            <div className="image-limit-actions">
-              <button className="primary-button" disabled={busy} onClick={() => void startCheckout()} type="button">
-                {busy ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
-                <span>Upgrade</span>
-              </button>
-              <button className="secondary-button" onClick={() => setReaderImageUpgradeOpen(false)} type="button">
-                <span>Not now</span>
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
+      {readerImageUpgradeOpen && renderProComparison()}
 
 
     </main>
