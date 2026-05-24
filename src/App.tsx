@@ -33,7 +33,7 @@ import {
 } from "lucide-react";
 import { ChangeEvent, CSSProperties, FormEvent, Fragment, KeyboardEvent, MouseEvent, PointerEvent, ReactNode, RefObject, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
-import { parsePdf, pdfjsLib } from "./pdf";
+import { parsePdf, pdfjsLib, readPdfPreview, type PdfPreview } from "./pdf";
 import { createEdgeTtsPlayer, EdgeTtsPlayer } from "./edgeTts";
 import { supabase } from "./supabase";
 import { LandingPage } from "./LandingPage";
@@ -178,6 +178,7 @@ const DEFAULT_READER_PREFERENCES: ReaderPreferences = {
 const BOOK_READER_PREFERENCES_KEY = "reader-book-preferences-v1";
 const PENDING_BOOK_DELETE_KEY = "reader-pending-book-delete-v1";
 const DELETE_UNDO_TIMEOUT_MS = 6000;
+const TOAST_TITLE_WORD_LIMIT = 8;
 
 const clampNarrationRate = (value: number) =>
   Math.min(NARRATION_RATE_MAX, Math.max(NARRATION_RATE_MIN, value));
@@ -794,6 +795,12 @@ const formatShortDate = (value: string | null) => {
   }).format(new Date(value));
 };
 
+const toastTitle = (title: string) => {
+  const words = title.trim().split(/\s+/).filter(Boolean);
+  if (words.length <= TOAST_TITLE_WORD_LIMIT) return title;
+  return `${words.slice(0, TOAST_TITLE_WORD_LIMIT).join(" ")}...`;
+};
+
 const bookFormat = (row: Pick<BookRow, "document_type" | "file_name" | "mime_type">): "epub" | "pdf" => {
   if (row.document_type === "pdf" || row.mime_type === "application/pdf" || row.file_name.toLowerCase().endsWith(".pdf")) {
     return "pdf";
@@ -1116,9 +1123,21 @@ function PdfDocumentView({
 
     const load = async () => {
       setError("");
+      setPdf(null);
+      setPageMetrics([]);
       try {
         const bytes = await file.arrayBuffer();
         loadedPdf = await pdfjsLib.getDocument({ data: bytes }).promise;
+        if (cancelled) return;
+        setPdf(loadedPdf);
+
+        const firstPage = await loadedPdf.getPage(1).catch(() => null);
+        if (cancelled) return;
+        if (firstPage) {
+          const firstViewport = firstPage.getViewport({ scale: 1 });
+          setPageMetrics(Array.from({ length: loadedPdf.numPages }, () => ({ height: firstViewport.height, width: firstViewport.width })));
+        }
+
         const metrics = await Promise.all(
           Array.from({ length: loadedPdf.numPages }, async (_, index) => {
             const page = await loadedPdf!.getPage(index + 1);
@@ -1128,7 +1147,6 @@ function PdfDocumentView({
         );
         if (!cancelled) {
           setPageMetrics(metrics);
-          setPdf(loadedPdf);
         }
       } catch (loadError) {
         if (!cancelled) setError(loadError instanceof Error ? loadError.message : "Could not render this PDF.");
@@ -1778,6 +1796,8 @@ function App() {
   const [activeBookId, setActiveBookId] = useState("");
   const [view, setView] = useState<"catalog" | "reader">("catalog");
   const [book, setBook] = useState<ReaderBook | null>(null);
+  const [openingBook, setOpeningBook] = useState<BookRow | null>(null);
+  const [openingPdfPreview, setOpeningPdfPreview] = useState<PdfPreview | null>(null);
   const [activeBookFile, setActiveBookFile] = useState<File | null>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
@@ -1809,6 +1829,7 @@ function App() {
   const [hoveredReaderParagraphId, setHoveredReaderParagraphId] = useState<string | null>(null);
   const parsedBooks = useRef(new Map<string, ReaderBook>());
   const parsedBookFiles = useRef(new Map<string, File>());
+  const bookOpenRunRef = useRef(0);
   const readingSurfaceRef = useRef<HTMLElement | null>(null);
   const paragraphRefs = useRef(new Map<string, HTMLElement>());
   const chapterRefs = useRef(new Map<number, HTMLButtonElement>());
@@ -1821,6 +1842,7 @@ function App() {
   const speedControlRef = useRef<HTMLDivElement | null>(null);
   const progressSaveTimer = useRef<number | null>(null);
   const pendingDeleteRef = useRef<PendingDelete | null>(null);
+  const uploadedBookNoticeTimer = useRef<number | null>(null);
   const readingScrollFrame = useRef<number | null>(null);
   const coverLookupRef = useRef(new Set<string>());
   const isInitialOpenRef = useRef(false);
@@ -1836,8 +1858,17 @@ function App() {
     window.localStorage.setItem("pdf-page-layout", pdfPageLayout);
   }, [pdfPageLayout]);
 
+  useEffect(() => {
+    return () => {
+      if (uploadedBookNoticeTimer.current) {
+        window.clearTimeout(uploadedBookNoticeTimer.current);
+      }
+    };
+  }, []);
+
   const [importingClassicId, setImportingClassicId] = useState<string | null>(null);
   const [pendingBookImports, setPendingBookImports] = useState<PendingBookImport[]>([]);
+  const [uploadedBookNotice, setUploadedBookNotice] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [readerMenuOpen, setReaderMenuOpen] = useState<ReaderMenuId | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -1978,6 +2009,8 @@ function App() {
       setReaderImageCount(0);
       setReaderImageUpgradeOpen(false);
       setBook(null);
+      setOpeningBook(null);
+      setOpeningPdfPreview(null);
       setActiveBookFile(null);
       setView("catalog");
       setActiveBookId("");
@@ -2069,13 +2102,13 @@ function App() {
       return;
     }
 
-    if (view === "reader" && book?.title) {
-      document.title = book.title;
+    if (view === "reader" && (book?.title || openingBook?.title)) {
+      document.title = book?.title ?? openingBook?.title ?? APP_TITLE;
       return;
     }
 
     document.title = APP_TITLE;
-  }, [book?.title, isReaderDashboard, view]);
+  }, [book?.title, isReaderDashboard, openingBook?.title, view]);
 
   useEffect(() => {
     if (isReaderDashboard) return;
@@ -2921,6 +2954,26 @@ function App() {
     </div>
   );
 
+  const showUploadedBookNotice = (title: string) => {
+    if (uploadedBookNoticeTimer.current) {
+      window.clearTimeout(uploadedBookNoticeTimer.current);
+    }
+
+    setUploadedBookNotice(title);
+    uploadedBookNoticeTimer.current = window.setTimeout(() => {
+      setUploadedBookNotice("");
+      uploadedBookNoticeTimer.current = null;
+    }, 4200);
+  };
+
+  const clearUploadedBookNotice = () => {
+    if (uploadedBookNoticeTimer.current) {
+      window.clearTimeout(uploadedBookNoticeTimer.current);
+      uploadedBookNoticeTimer.current = null;
+    }
+    setUploadedBookNotice("");
+  };
+
   const importDocumentFile = async (file: File, openAfterImport = true, pendingImportId?: string) => {
     if (!user) return;
 
@@ -2983,6 +3036,7 @@ function App() {
     if (pendingImportId) {
       setPendingBookImports((items) => items.filter((item) => item.id !== pendingImportId));
     }
+    showUploadedBookNotice(row.title);
     if (openAfterImport) {
       openParsedBook(row, parsed, 0, file);
     }
@@ -2993,6 +3047,7 @@ function App() {
     stopAudio();
     setPlayback("idle");
     setNotice("");
+    clearUploadedBookNotice();
     const pendingImportId = `classic-${classic.id}-${Date.now()}`;
     setPendingBookImports((items) => [
       {
@@ -3034,6 +3089,7 @@ function App() {
     stopAudio();
     setPlayback("idle");
     setNotice("");
+    clearUploadedBookNotice();
     const pendingImportId = `upload-${crypto.randomUUID()}`;
     const displayTitle = file.name.replace(/\.[^.]+$/, "").trim() || file.name;
     setPendingBookImports((items) => [
@@ -3092,6 +3148,8 @@ function App() {
     setNarrationRate(readerPreferences.narrationRate);
     setActiveBookId(row.id);
     setBook(parsed);
+    setOpeningBook(null);
+    setOpeningPdfPreview(null);
     setActiveBookFile(file ?? null);
     setPdfReaderViewMode(parsed.format === "pdf" ? "pdf" : "text");
     const safeIndex = parsed.paragraphs.length ? Math.max(0, Math.min(targetIndex, parsed.paragraphs.length - 1)) : 0;
@@ -3114,28 +3172,72 @@ function App() {
   };
 
   const openBook = async (row: BookRow, options: { updateHistory?: boolean } = {}) => {
+    const { updateHistory = true } = options;
     const cached = parsedBooks.current.get(row.id);
     const cachedFile = parsedBookFiles.current.get(row.id);
     if (cached && (cached.format !== "pdf" || cachedFile)) {
-      openParsedBook(row, cached, undefined, cachedFile, options);
+      bookOpenRunRef.current += 1;
+      setBusy(false);
+      openParsedBook(row, cached, undefined, cachedFile, { updateHistory });
       return;
     }
 
+    const runId = bookOpenRunRef.current + 1;
+    bookOpenRunRef.current = runId;
+    stopAudio();
+    setPlayback("idle");
     setBusy(true);
     setNotice("");
+    setProgressNotice(false);
+    readerImageRunRef.current += 1;
+    readerImageModeRef.current = false;
+    setReaderImageMode(false);
+    setReaderImages({});
+    imageRequestsRef.current.clear();
+    const readerPreferences = readerPreferencesForBook(row.id);
+    setReaderFontMode(readerPreferences.fontMode);
+    setReaderThemeMode(readerPreferences.themeMode);
+    setReaderTheme(readerPreferences.theme);
+    setReaderTextScale(readerPreferences.textScale);
+    setReaderLineHeight(readerPreferences.lineHeight);
+    setReaderLineWidth(readerPreferences.lineWidth);
+    setNarrationRate(readerPreferences.narrationRate);
+    setActiveBookId(row.id);
+    setBook(null);
+    setOpeningBook(row);
+    setOpeningPdfPreview(null);
+    setActiveBookFile(null);
+    setPdfReaderViewMode(bookFormat(row) === "pdf" ? "pdf" : "text");
+    setCurrentPage(Math.max(1, row.current_page ?? 1));
+    setCurrentIndex(Math.max(0, row.current_index ?? 0));
+    setView("reader");
+    if (updateHistory) writeAppHistory({ illumeView: "reader", bookId: row.id });
 
     try {
       let file = await getCachedBookFile(row);
+      if (runId !== bookOpenRunRef.current) return;
 
       if (!file) {
         const { data, error } = await supabase.storage.from(EPUB_BUCKET).download(row.storage_path);
         if (error) throw error;
+        if (runId !== bookOpenRunRef.current) return;
         file = new File([data], row.file_name, { type: row.mime_type || (bookFormat(row) === "pdf" ? "application/pdf" : "application/epub+zip") });
         void cacheBookFile(row, file);
       }
 
       const format = bookFormat(row);
+      if (format === "pdf") {
+        setActiveBookFile(file);
+        void readPdfPreview(file)
+          .then((preview) => {
+            if (runId === bookOpenRunRef.current) setOpeningPdfPreview(preview);
+          })
+          .catch((error) => {
+            console.warn("Could not build PDF opening preview.", error);
+          });
+      }
       const parsed = format === "pdf" ? await parsePdf(file) : await parseEpub(file);
+      if (runId !== bookOpenRunRef.current) return;
       if (format === "epub" && !row.cover_url && parsed.coverUrl) {
         const coverUrl = await shrinkCoverDataUrl(parsed.coverUrl);
         row = { ...row, cover_url: coverUrl };
@@ -3147,11 +3249,18 @@ function App() {
       }
       parsedBooks.current.set(row.id, parsed);
       parsedBookFiles.current.set(row.id, file);
-      openParsedBook(row, parsed, undefined, file, options);
+      openParsedBook(row, parsed, undefined, file, { updateHistory: false });
     } catch (error) {
+      if (runId !== bookOpenRunRef.current) return;
       setNotice(error instanceof Error ? error.message : "Could not open this book.");
+      setOpeningBook(null);
+      setBook(null);
+      setActiveBookFile(null);
+      setActiveBookId("");
+      setView("catalog");
+      if (updateHistory) writeAppHistory({ illumeView: "catalog" }, "replace");
     } finally {
-      setBusy(false);
+      if (runId === bookOpenRunRef.current) setBusy(false);
     }
   };
 
@@ -3243,6 +3352,7 @@ function App() {
 
     if (activeBookId === row.id) {
       setBook(null);
+      setOpeningBook(null);
       setActiveBookFile(null);
       setActiveBookId("");
       setView("catalog");
@@ -3425,10 +3535,14 @@ function App() {
 
   const openCatalog = (options: { updateHistory?: boolean } = {}) => {
     const { updateHistory = true } = options;
+    bookOpenRunRef.current += 1;
     stopAudio();
     setPlayback("idle");
+    setBusy(false);
     setProgressNotice(false);
     if (activeBookId && book) void saveReadingProgress(activeBookId, currentIndex, currentPage);
+    setOpeningBook(null);
+    setOpeningPdfPreview(null);
     setView("catalog");
     if (updateHistory) writeAppHistory({ illumeView: "catalog" });
   };
@@ -3811,6 +3925,150 @@ function App() {
     }
   };
 
+  const renderOpeningHeader = (row: BookRow) => (
+    <header className="topbar">
+      <button className="top-icon" type="button" title="Back to library" onClick={() => openCatalog()}>
+        <ChevronLeft size={22} aria-hidden="true" />
+      </button>
+      <div className="top-title">{openingPdfPreview?.title || row.title}</div>
+      <div className="reader-loading-spinner" role="status" aria-label="Opening book">
+        <Loader2 className="spin" size={18} aria-hidden="true" />
+      </div>
+    </header>
+  );
+
+  const renderOpeningPdfSkeleton = (row: BookRow) => {
+    const previewMetrics = openingPdfPreview?.pageMetrics ?? [];
+    const previewMetric = previewMetrics[0] ?? { height: 792, width: 612 };
+    const pageCount = openingPdfPreview?.pageCount ?? Math.max(row.current_page ?? 1, 8);
+    const pageStyle = {
+      "--pdf-page-aspect-ratio": `${previewMetric.width} / ${previewMetric.height}`,
+      "--pdf-page-height": `${previewMetric.height}px`,
+      "--pdf-page-width": `${previewMetric.width}px`
+    } as CSSProperties;
+    const pages = Array.from({ length: pageCount }, (_, index) => index + 1);
+    const pageSkeleton = (pageNumber: number) => (
+      <div className="pdf-page-row pdf-page-loading-row" data-page-number={pageNumber} key={pageNumber} style={pageStyle}>
+        <div className={pageNumber === currentPage ? "pdf-page active pdf-page-loading" : "pdf-page pdf-page-loading"} style={pageStyle}>
+          <div className="pdf-page-loading-sheet">
+            {Array.from({ length: 10 }).map((_, index) => (
+              <span className="reader-loading-line" key={index} style={{ width: `${index % 4 === 3 ? 54 : 78 + (index % 3) * 7}%` }} />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+
+    const renderedPages = pdfPageLayout === "double"
+      ? Array.from({ length: Math.ceil(pageCount / 2) }, (_, rowIndex) => {
+          const firstPage = rowIndex * 2 + 1;
+          const secondPage = firstPage + 1;
+          return (
+            <div className="pdf-page-spread" key={firstPage}>
+              {pageSkeleton(firstPage)}
+              {secondPage <= pageCount ? pageSkeleton(secondPage) : null}
+            </div>
+          );
+        })
+      : pages.map(pageSkeleton);
+
+    return (
+      <main
+        aria-busy="true"
+        className="app-shell reader-themed-shell reader-loading-shell"
+        data-reader-mode={readerThemeMode}
+        data-reader-theme={readerTheme}
+      >
+        {renderOpeningHeader(row)}
+        <section className="reader-frame reader-loading-frame pdf-reader-frame">
+          <aside className="chapter-sidebar reader-loading-sidebar" aria-hidden="true">
+            <div className="chapter-heading">Table of contents</div>
+            <nav className="chapter-list" aria-label="Table of contents">
+              {openingPdfPreview?.chapters.length ? (
+                openingPdfPreview.chapters.map((chapter, index) => (
+                  <div className="chapter-item-container" key={`${chapter}-${index}`}>
+                    <span className={index === 0 ? "chapter-item active reader-loading-toc-item" : "chapter-item reader-loading-toc-item"}>{chapter}</span>
+                  </div>
+                ))
+              ) : (
+                Array.from({ length: 8 }).map((_, index) => (
+                  <div className="reader-loading-line" key={index} style={{ width: `${82 - index * 5}%` }} />
+                ))
+              )}
+            </nav>
+          </aside>
+
+          <div className={`main-spread reader-only reader-loading-main pdf-reader-main pdf-reader-pdf pdf-layout-${pdfPageLayout}`}>
+            <section className="pdf-surface pdf-loading-surface" aria-label="Preparing PDF pages" role="status">
+              {renderedPages}
+            </section>
+          </div>
+        </section>
+        <div className="progress-wrap reader-loading-progress" aria-hidden="true">
+          <span />
+        </div>
+        <footer className="control-rail reader-loading-controls" aria-hidden="true">
+          <div className="control-rail-left" />
+          <div className="transport">
+            <span className="reader-loading-control" />
+            <span className="reader-loading-play" />
+            <span className="reader-loading-control" />
+          </div>
+          <div className="control-rail-right" />
+        </footer>
+      </main>
+    );
+  };
+
+  const renderOpeningBookSkeleton = (row: BookRow) => bookFormat(row) === "pdf" ? renderOpeningPdfSkeleton(row) : (
+    <main
+      aria-busy="true"
+      className="app-shell reader-themed-shell reader-loading-shell"
+      data-reader-mode={readerThemeMode}
+      data-reader-theme={readerTheme}
+    >
+      {renderOpeningHeader(row)}
+      <section className="reader-frame reader-loading-frame">
+        <aside className="chapter-sidebar reader-loading-sidebar" aria-hidden="true">
+          <div className="reader-loading-line reader-loading-heading" />
+          {Array.from({ length: 7 }).map((_, index) => (
+            <div className="reader-loading-line" key={index} style={{ width: `${82 - index * 5}%` }} />
+          ))}
+        </aside>
+
+        <div className="main-spread reader-only reader-loading-main">
+          <section className="reading-surface reader-loading-surface" role="status" aria-label="Preparing reader">
+            <div className="reader-loading-book">
+              <BookCover book={row} />
+              <div className="reader-loading-meta">
+                <div className="reader-loading-line reader-loading-title" />
+                <div className="reader-loading-line reader-loading-author" />
+              </div>
+            </div>
+            <div className="reader-loading-copy" aria-hidden="true">
+              {Array.from({ length: 9 }).map((_, index) => (
+                <div className="reader-loading-line" key={index} style={{ width: `${index % 3 === 2 ? 68 : 92 - (index % 2) * 10}%` }} />
+              ))}
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <div className="progress-wrap reader-loading-progress" aria-hidden="true">
+        <span />
+      </div>
+      <footer className="control-rail reader-loading-controls" aria-hidden="true">
+        <div className="control-rail-left" />
+        <div className="transport">
+          <span className="reader-loading-control" />
+          <span className="reader-loading-play" />
+          <span className="reader-loading-control" />
+        </div>
+        <div className="control-rail-right" />
+      </footer>
+    </main>
+  );
+
   if (authLoading) {
     return (
       <main className="auth-shell">
@@ -3914,28 +4172,21 @@ function App() {
                           )}
                         </div>
                         <div className="profile-user-details">
-                          <span className="profile-name">
-                            {user?.user_metadata?.full_name || user?.user_metadata?.name || "Reader User"}
-                          </span>
+                          <div className="profile-name-row">
+                            <span className="profile-name">
+                              {user?.user_metadata?.full_name || user?.user_metadata?.name || "Reader User"}
+                            </span>
+                            <span className={`profile-plan-badge ${isPro ? "pro" : "free"}`}>
+                              {isPro ? <Crown size={12} aria-hidden="true" /> : <CreditCard size={12} aria-hidden="true" />}
+                              <span>{isPro ? "Pro Plan" : "Free Plan"}</span>
+                            </span>
+                          </div>
                           <span className="profile-email">{user?.email}</span>
                         </div>
                       </div>
                     </div>
                     
                     <div className="profile-popover-body">
-                      {/* Plan Status */}
-                      <div className="profile-section">
-                        <div className="profile-plan-badge-wrapper">
-                          <span className={`profile-plan-badge ${isPro ? "pro" : "free"}`}>
-                            {isPro ? <Crown size={14} aria-hidden="true" /> : <CreditCard size={14} aria-hidden="true" />}
-                            <span>{isPro ? "Pro Plan" : "Free Plan"}</span>
-                          </span>
-                          <small className="plan-price-label">
-                            {isPro ? "100 AI images included every month" : "25 lifetime AI images included"}
-                          </small>
-                        </div>
-                      </div>
-
                       {/* Storage and Usage stats */}
                       <div className="profile-section">
                         <span className="profile-section-label">Usage &amp; Quotas</span>
@@ -3956,7 +4207,7 @@ function App() {
                         <div className="profile-usage-item">
                           <div className="profile-usage-header">
                             <span>AI Images</span>
-                            <span>{readerImageUsageLabel}</span>
+                            <span>{readerImageUsageLabel}{isPro ? "" : " lifetime"}</span>
                           </div>
                           <div className="profile-progress-bar">
                             <div 
@@ -3999,10 +4250,22 @@ function App() {
 
         {pendingDelete && (
           <div className="undo-delete-toast" role="status" aria-live="polite">
-            <span>{pendingDelete.row.title} deleted</span>
+            <span>
+              <span className="toast-book-title">{toastTitle(pendingDelete.row.title)}</span>
+              <span className="toast-action">deleted</span>
+            </span>
             <button type="button" onClick={restorePendingDelete}>
               Undo
             </button>
+          </div>
+        )}
+
+        {uploadedBookNotice && (
+          <div className="undo-delete-toast upload-complete-toast" role="status" aria-live="polite">
+            <span>
+              <span className="toast-book-title">{toastTitle(uploadedBookNotice)}</span>
+              <span className="toast-action">uploaded</span>
+            </span>
           </div>
         )}
 
@@ -4022,22 +4285,24 @@ function App() {
                 {pendingBookImports.map((pendingImport) => (
                   <div className="catalog-book catalog-book-pending" key={pendingImport.id} aria-busy="true">
                     <div className="catalog-book-open" role="status" aria-label={`${pendingImport.title} is being added`}>
-                      <BookCover
-                        book={{
-                          cover_url: pendingImport.coverUrl,
-                          document_type: "epub",
-                          file_name: pendingImport.fileName,
-                          id: pendingImport.id,
-                          mime_type: "application/epub+zip",
-                          title: pendingImport.title
-                        }}
-                      />
+                      <span className="catalog-pending-cover">
+                        <BookCover
+                          book={{
+                            cover_url: pendingImport.coverUrl,
+                            document_type: "epub",
+                            file_name: pendingImport.fileName,
+                            id: pendingImport.id,
+                            mime_type: "application/epub+zip",
+                            title: pendingImport.title
+                          }}
+                        />
+                        <span className="catalog-import-progress" aria-hidden="true">
+                          <Loader2 className="spin" size={22} />
+                        </span>
+                      </span>
                       <span className="catalog-book-copy">
                         <strong>{pendingImport.title}</strong>
                         <small>{pendingImport.author || pendingImport.fileName}</small>
-                      </span>
-                      <span className="catalog-import-progress" aria-hidden="true">
-                        <Loader2 className="spin" size={20} />
                       </span>
                     </div>
                   </div>
@@ -4049,7 +4314,6 @@ function App() {
                   >
                     <button
                       className="catalog-book-open"
-                      disabled={busy}
                       onClick={() => void openBook(catalogBook)}
                       type="button"
                     >
@@ -4159,7 +4423,10 @@ function App() {
     );
   }
 
-  if (!book) return null;
+  if (!book) {
+    if (openingBook) return renderOpeningBookSkeleton(openingBook);
+    return null;
+  }
 
   return (
     <main

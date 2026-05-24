@@ -478,6 +478,140 @@ button:disabled {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.reader-loading-shell {
+  overflow: hidden;
+}
+
+.reader-loading-spinner {
+  justify-self: center;
+  width: 34px;
+  height: 34px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--reader-theme-border);
+  border-radius: 8px;
+  background: var(--reader-theme-panel);
+  color: var(--reader-theme-muted);
+}
+
+.reader-loading-frame,
+.reader-loading-main,
+.reader-loading-surface {
+  min-height: 0;
+}
+
+.reader-loading-sidebar {
+  padding-top: 28px;
+}
+
+.reader-loading-main {
+  overflow: hidden;
+}
+
+.reader-loading-surface {
+  width: min(840px, 100%);
+  margin: 0 auto;
+  padding: clamp(24px, 4vw, 52px) clamp(18px, 5vw, 64px);
+  display: flex;
+  flex-direction: column;
+  gap: 34px;
+  overflow: hidden;
+}
+
+.reader-loading-book {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 22px;
+  align-items: center;
+}
+
+.reader-loading-book .catalog-cover-art {
+  width: 92px;
+  box-shadow: 0 12px 26px rgba(20, 20, 20, 0.12);
+}
+
+.reader-loading-meta,
+.reader-loading-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.reader-loading-copy {
+  gap: 16px;
+}
+
+.reader-loading-line,
+.reader-loading-control,
+.reader-loading-play {
+  position: relative;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--reader-theme-accent-soft);
+}
+
+.reader-loading-line::after,
+.reader-loading-control::after,
+.reader-loading-play::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  animation: reader-loading-shimmer 1.25s ease-in-out infinite;
+}
+
+.reader-loading-line {
+  width: 100%;
+  height: 13px;
+}
+
+.reader-loading-heading {
+  width: 58%;
+  height: 11px;
+  margin-bottom: 16px;
+}
+
+.reader-loading-title {
+  width: min(360px, 84%);
+  height: 28px;
+}
+
+.reader-loading-author {
+  width: min(220px, 52%);
+}
+
+.reader-loading-progress span {
+  width: 18%;
+}
+
+.reader-loading-controls {
+  pointer-events: none;
+}
+
+.reader-loading-toc-item {
+  display: -webkit-box;
+}
+
+.reader-loading-control {
+  width: 42px;
+  height: 42px;
+  display: block;
+}
+
+.reader-loading-play {
+  width: 56px;
+  height: 56px;
+  display: block;
+}
+
+@keyframes reader-loading-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
 .main-spread.reader-only.image-mode {
   grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
   gap: clamp(14px, 2vw, 24px);
@@ -787,6 +921,11 @@ button:disabled {
   pointer-events: none;
 }
 
+.catalog-pending-cover {
+  position: relative;
+  display: block;
+}
+
 .catalog-book-open {
   min-width: 0;
   width: 100%;
@@ -833,6 +972,7 @@ button:disabled {
 }
 
 .catalog-book-pending .catalog-cover-art {
+  opacity: 0.42;
   box-shadow: 0 12px 28px rgba(20, 20, 20, 0.12);
 }
 
@@ -846,11 +986,11 @@ button:disabled {
 
 .catalog-import-progress {
   position: absolute;
-  top: 10px;
-  right: 10px;
+  top: 50%;
+  left: 50%;
   z-index: 4;
-  width: 38px;
-  height: 38px;
+  width: 46px;
+  height: 46px;
   display: inline-grid;
   place-items: center;
   border-radius: 999px;
@@ -858,6 +998,7 @@ button:disabled {
   background: rgba(17, 17, 17, 0.84);
   color: #fff;
   box-shadow: 0 10px 22px rgba(0, 0, 0, 0.22);
+  transform: translate(-50%, -50%);
 }
 
 .catalog-book-pending .catalog-book-copy small {
@@ -1686,6 +1827,36 @@ button:disabled {
   font-weight: 800;
 }
 
+.pdf-loading-surface {
+  align-items: center;
+}
+
+.pdf-page-loading-row {
+  pointer-events: none;
+}
+
+.pdf-page-loading {
+  background: transparent;
+}
+
+.pdf-page-loading-sheet {
+  width: 100%;
+  height: 100%;
+  padding: clamp(24px, 6%, 46px) clamp(20px, 7%, 54px);
+  display: flex;
+  flex-direction: column;
+  gap: clamp(9px, 1.6%, 14px);
+  border-radius: 3px;
+  background: var(--reader-theme-paper, #fff);
+  box-shadow: 0 18px 46px rgba(20, 20, 20, 0.14);
+}
+
+.pdf-page-loading-sheet .reader-loading-line {
+  height: clamp(7px, 1.2vw, 11px);
+  max-height: 11px;
+  background: rgba(135, 135, 135, 0.16);
+}
+
 .pdf-text-layer {
   position: absolute;
   inset: var(--pdf-page-padding);
@@ -2091,9 +2262,28 @@ button:disabled {
 
 .undo-delete-toast span {
   min-width: 0;
+}
+
+.undo-delete-toast > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.toast-book-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.toast-action {
+  flex: 0 0 auto;
+}
+
+.upload-complete-toast {
+  padding-right: 14px;
 }
 
 .undo-delete-toast button {
@@ -4319,7 +4509,7 @@ button:disabled {
 }
 
 .profile-popover-header {
-  padding: 16px 16px 14px;
+  padding: 14px 16px 12px;
   border-bottom: 1px solid #eeeeee;
 }
 
@@ -4354,11 +4544,20 @@ button:disabled {
 .profile-user-details {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 3px;
   min-width: 0;
+  flex: 1;
+}
+
+.profile-name-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .profile-name {
+  min-width: 0;
   font-family: var(--font-sans);
   font-size: 0.84rem;
   font-weight: 600;
@@ -4386,7 +4585,11 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px 16px;
+  padding: 11px 16px;
+  border-top: 0;
+}
+
+.profile-section + .profile-section {
   border-top: 1px solid #eeeeee;
 }
 
@@ -4399,20 +4602,15 @@ button:disabled {
   letter-spacing: 0.5px;
 }
 
-.profile-plan-badge-wrapper {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
 .profile-plan-badge {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 4px 8px;
+  padding: 3px 7px;
   border-radius: 5px;
   font-family: var(--font-sans);
-  font-size: 0.72rem;
+  font-size: 0.66rem;
   font-weight: 600;
   width: fit-content;
 }
@@ -4426,13 +4624,6 @@ button:disabled {
   background: #f8fafc;
   color: #0f172a;
   border: 1px solid #e2e8f0;
-}
-
-.plan-price-label {
-  font-family: var(--font-sans);
-  font-size: 0.68rem;
-  color: #64748b;
-  line-height: 1.4;
 }
 
 .profile-usage-item {

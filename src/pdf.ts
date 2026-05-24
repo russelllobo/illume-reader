@@ -18,6 +18,16 @@ type PdfTocEntry = {
   title: string;
 };
 
+export type PdfPreview = {
+  author: string;
+  chapterPageNumbers: number[];
+  chapterPageOffsets: number[];
+  chapters: string[];
+  pageCount: number;
+  pageMetrics: Array<{ height: number; width: number }>;
+  title: string;
+};
+
 const normaliseSpace = (text: string) => text.replace(/\s+/g, " ").trim();
 
 const fileTitle = (file: File) => file.name.replace(/\.pdf$/i, "").replace(/[-_]+/g, " ").trim() || file.name;
@@ -201,6 +211,39 @@ export const parsePdf = async (file: File): Promise<ReaderBook> => {
     paragraphs,
     chapters
   };
+};
+
+export const readPdfPreview = async (file: File): Promise<PdfPreview> => {
+  const bytes = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+
+  try {
+    const metadata = await pdf.getMetadata().catch(() => null);
+    const info = (metadata?.info ?? {}) as PdfInfo;
+    const title = normaliseSpace(info.Title ?? "") || fileTitle(file);
+    const author = normaliseSpace(info.Author ?? "");
+    const pageCount = pdf.numPages;
+    const firstPage = await pdf.getPage(1).catch(() => null);
+    const firstViewport = firstPage?.getViewport({ scale: 1 });
+    const pageMetrics = firstViewport
+      ? Array.from({ length: pageCount }, () => ({ height: firstViewport.height, width: firstViewport.width }))
+      : [];
+    const tocEntries = await collectTocEntries(pdf);
+
+    return {
+      author,
+      chapterPageNumbers: tocEntries.map((entry) => entry.pageNumber),
+      chapterPageOffsets: tocEntries.map((entry) => entry.pageOffsetRatio),
+      chapters: tocEntries.map((entry) =>
+        `${entry.level > 0 ? `${"  ".repeat(Math.min(entry.level, 3))}` : ""}${entry.title}`
+      ),
+      pageCount,
+      pageMetrics,
+      title
+    };
+  } finally {
+    await pdf.destroy();
+  }
 };
 
 export { pdfjsLib };
