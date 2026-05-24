@@ -25,8 +25,12 @@ type BookRow = {
 type ReaderImageRow = {
   book_id: string;
   created_at: string;
+  end_word: number;
   id: string;
+  prompt: string | null;
+  start_word: number;
   storage_path: string;
+  style: string | null;
   user_id: string;
 };
 
@@ -85,6 +89,24 @@ const listKnownStorageObjects = async (adminClient: any, bucket: string, paths: 
   return objects;
 };
 
+const createSignedUrlMap = async (adminClient: any, bucket: string, paths: string[]) => {
+  const uniquePaths = [...new Set(paths.filter(Boolean))];
+  const signedUrlMap = new Map<string, string>();
+
+  for (let index = 0; index < uniquePaths.length; index += 100) {
+    const batch = uniquePaths.slice(index, index + 100);
+    const { data, error } = await adminClient.storage.from(bucket).createSignedUrls(batch, 60 * 60);
+    if (error) throw error;
+
+    (data ?? []).forEach((item: { path?: string; signedUrl?: string }, itemIndex: number) => {
+      const path = item.path ?? batch[itemIndex];
+      if (path && item.signedUrl) signedUrlMap.set(path, item.signedUrl);
+    });
+  }
+
+  return signedUrlMap;
+};
+
 const listAllUsers = async (adminClient: any) => {
   const users: Array<{ id: string; email?: string; created_at?: string }> = [];
   const perPage = 1000;
@@ -130,7 +152,9 @@ Deno.serve(async (req) => {
     ] = await Promise.all([
       listAllUsers(adminClient),
       adminClient.from("books").select("created_at, document_type, file_name, file_size, id, storage_path, title, user_id"),
-      adminClient.from("reader_images").select("book_id, created_at, id, storage_path, user_id")
+      adminClient
+        .from("reader_images")
+        .select("book_id, created_at, end_word, id, prompt, start_word, storage_path, style, user_id")
     ]);
 
     if (booksError) throw booksError;
@@ -153,6 +177,12 @@ Deno.serve(async (req) => {
     const bookStorageFallback = bookRows.reduce((total, book) => total + Number(book.file_size ?? 0), 0);
     const bookStorageBytes = bookObjects.reduce((total, object) => total + objectSize(object), 0) || bookStorageFallback;
     const imageStorageBytes = imageObjects.reduce((total, object) => total + objectSize(object), 0);
+    const imageSignedUrls = await createSignedUrlMap(
+      adminClient,
+      READER_IMAGE_BUCKET,
+      imageRows.map((image) => image.storage_path)
+    ).catch(() => new Map<string, string>());
+    const bookTitlesById = new Map(bookRows.map((book) => [book.id, book.title]));
 
     const byUser = users.map((user) => {
       const userBooks = bookRows.filter((book) => book.user_id === user.id);
@@ -180,6 +210,19 @@ Deno.serve(async (req) => {
         email: user.email ?? "No email",
         id: user.id,
         imageStorageBytes: userImageObjectBytes,
+        images: userImages
+          .sort((left, right) => right.created_at.localeCompare(left.created_at))
+          .map((image) => ({
+            bookId: image.book_id,
+            bookTitle: bookTitlesById.get(image.book_id) ?? "Unknown book",
+            createdAt: image.created_at,
+            endWord: image.end_word,
+            id: image.id,
+            prompt: image.prompt,
+            signedUrl: imageSignedUrls.get(image.storage_path) ?? null,
+            startWord: image.start_word,
+            style: image.style ?? "cartoon"
+          })),
         imagesGenerated: userImages.length
       };
     });

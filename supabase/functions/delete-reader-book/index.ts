@@ -30,6 +30,53 @@ const removeStorageObjects = async (adminClient: any, bucket: string, paths: str
   return uniquePaths.length;
 };
 
+const currentMonthStart = () => new Date().toISOString().slice(0, 7) + "-01";
+
+const readerImageRowCount = async (adminClient: any, userId: string, periodStart?: string) => {
+  let query = adminClient
+    .from("reader_images")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", userId);
+
+  if (periodStart) query = query.gte("created_at", periodStart);
+
+  const { count, error } = await query;
+  if (error) throw error;
+  return count ?? 0;
+};
+
+const preserveReaderImageUsage = async (adminClient: any, userId: string) => {
+  const periodStart = currentMonthStart();
+  const [{ data: usage, error: usageError }, totalRows, monthlyRows] = await Promise.all([
+    adminClient
+      .from("reader_image_usage")
+      .select("generated_count, monthly_generated_count, monthly_period_start")
+      .eq("user_id", userId)
+      .maybeSingle(),
+    readerImageRowCount(adminClient, userId),
+    readerImageRowCount(adminClient, userId, periodStart)
+  ]);
+
+  if (usageError) throw usageError;
+
+  const generatedCount = Math.max(usage?.generated_count ?? 0, totalRows);
+  const monthlyGeneratedCount =
+    usage?.monthly_period_start === periodStart
+      ? Math.max(usage?.monthly_generated_count ?? 0, monthlyRows)
+      : monthlyRows;
+
+  const { error } = await adminClient
+    .from("reader_image_usage")
+    .upsert({
+      generated_count: generatedCount,
+      monthly_generated_count: monthlyGeneratedCount,
+      monthly_period_start: periodStart,
+      user_id: userId
+    });
+
+  if (error) throw error;
+};
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") {
@@ -76,6 +123,8 @@ Deno.serve(async (req) => {
       .eq("user_id", userData.user.id);
 
     if (readerImagesError) throw readerImagesError;
+
+    await preserveReaderImageUsage(adminClient, userData.user.id);
 
     const removedEpubs = await removeStorageObjects(adminClient, EPUB_BUCKET, [book.storage_path]);
     let removedReaderImages = 0;

@@ -115,19 +115,53 @@ const imageDataUrl = (base64: string) => `data:image/webp;base64,${base64}`;
 
 const currentMonthStart = () => new Date().toISOString().slice(0, 7) + "-01";
 
-const readerImageUsageCount = async (adminClient: any, userId: string, plan: "free" | "pro") => {
+const readerImageRowCount = async (adminClient: any, userId: string, periodStart?: string) => {
+  let query = adminClient
+    .from("reader_images")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", userId);
+
+  if (periodStart) query = query.gte("created_at", periodStart);
+
+  const { count, error } = await query;
+  if (error) throw error;
+  return count ?? 0;
+};
+
+const readerImageUsageSnapshot = async (adminClient: any, userId: string, plan: "free" | "pro") => {
+  const periodStart = currentMonthStart();
   const { data, error } = await adminClient
     .from("reader_image_usage")
     .select("generated_count, monthly_generated_count, monthly_period_start")
-    .eq("user_id", userId);
+    .eq("user_id", userId)
+    .maybeSingle();
 
   if (error) throw error;
-  const usage = data?.[0];
-  if (!usage) return 0;
+  const [totalRows, monthlyRows] = await Promise.all([
+    readerImageRowCount(adminClient, userId),
+    plan === "pro" ? readerImageRowCount(adminClient, userId, periodStart) : Promise.resolve(0)
+  ]);
+  const generatedCount = Math.max(data?.generated_count ?? 0, totalRows);
+  const monthlyGeneratedCount =
+    data?.monthly_period_start === periodStart
+      ? Math.max(data?.monthly_generated_count ?? 0, monthlyRows)
+      : monthlyRows;
+
+  const { error: syncError } = await adminClient
+    .from("reader_image_usage")
+    .upsert({
+      generated_count: generatedCount,
+      monthly_generated_count: monthlyGeneratedCount,
+      monthly_period_start: periodStart,
+      user_id: userId
+    });
+
+  if (syncError) throw syncError;
+
   if (plan === "pro") {
-    return usage.monthly_period_start === currentMonthStart() ? usage.monthly_generated_count ?? 0 : 0;
+    return monthlyGeneratedCount;
   }
-  return usage.generated_count ?? 0;
+  return generatedCount;
 };
 
 const limitResponse = (
@@ -276,6 +310,7 @@ Deno.serve(async (req) => {
     const imageLimit = activePlan === "pro" ? PRO_READER_IMAGE_MONTHLY_LIMIT : FREE_READER_IMAGE_LIFETIME_LIMIT;
     const usageResetsMonthly = activePlan === "pro";
     const usagePeriodStart = currentMonthStart();
+    await readerImageUsageSnapshot(adminClient, userData.user.id, activePlan);
 
     const storedImage = await getStoredReaderImage(adminClient, userData.user.id, bookId, imageStyle, startWord, endWord);
     if (storedImage) {
@@ -283,7 +318,7 @@ Deno.serve(async (req) => {
         JSON.stringify({
           ...storedImage,
           cached: true,
-          imageCount: await readerImageUsageCount(adminClient, userData.user.id, activePlan),
+          imageCount: await readerImageUsageSnapshot(adminClient, userData.user.id, activePlan),
           imageLimit,
           plan: activePlan
         }),
@@ -363,10 +398,12 @@ Deno.serve(async (req) => {
 
       if (insertError) throw insertError;
 
+      const finalImageCount = await readerImageUsageSnapshot(adminClient, userData.user.id, activePlan);
+
       return new Response(
         JSON.stringify({
           cached: false,
-          imageCount,
+          imageCount: finalImageCount,
           imageLimit,
           imageUrl: imageDataUrl(base64Image),
           plan: activePlan,

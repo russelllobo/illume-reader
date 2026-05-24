@@ -77,16 +77,25 @@ def caption_windows(
     min_duration: float,
     max_duration: float,
     gap: float,
+    no_gaps: bool = False,
 ) -> list[dict[str, float | str]]:
     windows: list[dict[str, float | str]] = []
     for index, item in enumerate(words):
         start = float(item["start"])
-        end = min(max(float(item["end"]), start + min_duration), start + max_duration)
-        if index + 1 < len(words):
-            next_start = float(words[index + 1]["start"])
-            end = min(end, next_start - gap)
-        if end <= start:
-            end = start + max(0.01, min(gap, min_duration))
+        if no_gaps:
+            if index + 1 < len(words):
+                end = float(words[index + 1]["start"])
+            else:
+                end = max(float(item["end"]), start + min_duration)
+            if end <= start:
+                end = start + min_duration
+        else:
+            end = min(max(float(item["end"]), start + min_duration), start + max_duration)
+            if index + 1 < len(words):
+                next_start = float(words[index + 1]["start"])
+                end = min(end, next_start - gap)
+            if end <= start:
+                end = start + max(0.01, min(gap, min_duration))
         windows.append({"word": str(item["word"]), "start": start, "end": end})
     return windows
 
@@ -97,9 +106,10 @@ def write_word_srt(
     min_duration: float,
     max_duration: float,
     gap: float,
+    no_gaps: bool = False,
 ) -> None:
     lines: list[str] = []
-    for index, item in enumerate(caption_windows(words, min_duration, max_duration, gap), start=1):
+    for index, item in enumerate(caption_windows(words, min_duration, max_duration, gap, no_gaps), start=1):
         start = float(item["start"])
         end = float(item["end"])
         lines.extend(
@@ -121,6 +131,7 @@ def write_tiktok_ass(
     gap: float,
     play_res_x: int,
     play_res_y: int,
+    no_gaps: bool = False,
 ) -> None:
     font_size = max(54, round(play_res_y * 0.052))
     margin_v = max(220, round(play_res_y * 0.16))
@@ -139,7 +150,7 @@ Style: TikTok,Arial,{font_size},&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,-1,0
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     events: list[str] = []
-    for item in caption_windows(words, min_duration, max_duration, gap):
+    for item in caption_windows(words, min_duration, max_duration, gap, no_gaps):
         start = float(item["start"])
         end = float(item["end"])
         text = ass_escape(str(item["word"]).upper())
@@ -186,6 +197,8 @@ def main() -> int:
     parser.add_argument("--min-word-duration", type=float, default=0.12)
     parser.add_argument("--max-word-duration", type=float, default=0.85)
     parser.add_argument("--gap", type=float, default=0.03, help="Seconds between word captions to prevent overlap")
+    parser.add_argument("--no-gaps", action="store_true", default=True, help="Ensure subtitles last until the next word is spoken (no gaps) (default: True)")
+    parser.add_argument("--allow-gaps", action="store_false", dest="no_gaps", help="Allow gaps between subtitles based on max duration and silence")
     parser.add_argument("--play-res-x", type=int, default=1080)
     parser.add_argument("--play-res-y", type=int, default=1920)
     parser.add_argument("--burn", action="store_true", help="Also write a video with the ASS captions burned in")
@@ -242,7 +255,14 @@ def main() -> int:
 
     srt_path = output_dir / f"{source.stem}_word_by_word.srt"
     ass_path = output_dir / f"{source.stem}_tiktok.ass"
-    write_word_srt(words, srt_path, args.min_word_duration, args.max_word_duration, args.gap)
+    write_word_srt(
+        words,
+        srt_path,
+        args.min_word_duration,
+        args.max_word_duration,
+        args.gap,
+        args.no_gaps,
+    )
     write_tiktok_ass(
         words,
         ass_path,
@@ -251,6 +271,7 @@ def main() -> int:
         args.gap,
         args.play_res_x,
         args.play_res_y,
+        args.no_gaps,
     )
 
     print(f"Wrote {stable_json}")

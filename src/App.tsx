@@ -1,11 +1,11 @@
 import type { Session, User } from "@supabase/supabase-js";
 import {
   AlignJustify,
-  BarChart3,
   BookOpen,
   CaseSensitive,
   ChevronDown,
   ChevronLeft,
+  ChevronRight,
   CreditCard,
   Crown,
   Database,
@@ -15,7 +15,10 @@ import {
   Loader2,
   LogOut,
   Moon,
+  MoreVertical,
   Palette,
+  PanelLeft,
+  Pencil,
   Pause,
   Play,
   RefreshCw,
@@ -245,6 +248,17 @@ type ReaderDashboardBook = {
   id: string;
   title: string;
 };
+type ReaderDashboardImage = {
+  bookId: string;
+  bookTitle: string;
+  createdAt: string;
+  endWord: number;
+  id: string;
+  prompt: string | null;
+  signedUrl: string | null;
+  startWord: number;
+  style: string;
+};
 type ReaderDashboardUser = {
   bookStorageBytes: number;
   books: ReaderDashboardBook[];
@@ -252,6 +266,7 @@ type ReaderDashboardUser = {
   email: string;
   id: string;
   imageStorageBytes: number;
+  images: ReaderDashboardImage[];
   imagesGenerated: number;
 };
 type ReaderDashboardData = {
@@ -275,12 +290,25 @@ const BOOK_CACHE_NAME = "epub-vision-reader-books-v1";
 const READER_IMAGE_DB_NAME = "epub-vision-reader-images";
 const READER_IMAGE_STORE_NAME = "images";
 const READER_IMAGE_CHUNK_WORDS = 1000;
+const READER_IMAGE_SETTLE_DELAY_MS = 900;
 const FREE_READER_IMAGE_LIFETIME_LIMIT = 25;
 const PRO_READER_IMAGE_MONTHLY_LIMIT = 100;
 const APP_TITLE = "Illume Reader | Make reading more immersive";
-const READER_IMAGE_STYLES: Array<{ id: ReaderImageStyle; label: string; summary: string }> = [
-  { id: "cartoon", label: "Cartoon", summary: "Bold Sunday funnies look with bright 1980s color." },
-  { id: "cute", label: "Cute", summary: "Kawaii anime feel with pastel modern colors." }
+const READER_IMAGE_STYLES: Array<{ id: ReaderImageStyle; label: string; summary: string; previewAlt: string; previewSrc: string }> = [
+  {
+    id: "cartoon",
+    label: "Cartoon",
+    summary: "Bold Sunday funnies look with bright 1980s color.",
+    previewAlt: "Cartoon image style example",
+    previewSrc: "/cartoon.jpg"
+  },
+  {
+    id: "cute",
+    label: "Cute",
+    summary: "Kawaii anime feel with pastel modern colors.",
+    previewAlt: "Cute image style example",
+    previewSrc: "/cute.jpg"
+  }
 ];
 const USER_STORAGE_QUOTA_BYTES = Number(
   import.meta.env.VITE_USER_STORAGE_QUOTA_BYTES ?? 104_857_600
@@ -1320,23 +1348,27 @@ function ReaderDashboard({
   busy,
   data,
   error,
+  onNavigate,
   onRefresh,
   onSignInWithGoogle,
   onSignOut,
+  selectedUserId,
   session
 }: {
   busy: boolean;
   data: ReaderDashboardData | null;
   error: string;
+  onNavigate: (path: string) => void;
   onRefresh: () => void;
   onSignInWithGoogle: () => void;
   onSignOut: () => void;
+  selectedUserId: string | null;
   session: Session | null;
 }) {
-  const [showDetails, setShowDetails] = useState(false);
   const email = session?.user.email ?? "";
   const isOwner = email.toLowerCase() === "r.lobo2003@gmail.com";
   const storageTotal = data?.storage.totalBytes ?? 0;
+  const selectedUser = selectedUserId ? data?.users.find((item) => item.id === selectedUserId) ?? null : null;
 
   if (!session) {
     return (
@@ -1370,6 +1402,127 @@ function ReaderDashboard({
             <span>Sign out</span>
           </button>
         </section>
+      </main>
+    );
+  }
+
+  if (selectedUserId) {
+    return (
+      <main className="dashboard-shell">
+        <header className="dashboard-topbar">
+          <div>
+            <span className="dashboard-kicker">Reader project</span>
+            <h1>User detail</h1>
+          </div>
+          <div className="dashboard-actions">
+            <button className="dashboard-secondary-button" onClick={() => onNavigate("/dashboard")} type="button">
+              <ChevronLeft size={17} aria-hidden="true" />
+              <span>Users</span>
+            </button>
+            <button className="dashboard-secondary-button" disabled={busy} onClick={onRefresh} type="button">
+              {busy ? <Loader2 className="spin" size={17} aria-hidden="true" /> : <RefreshCw size={17} aria-hidden="true" />}
+              <span>Refresh</span>
+            </button>
+            <button className="dashboard-secondary-button" onClick={onSignOut} type="button">
+              <LogOut size={17} aria-hidden="true" />
+              <span>Sign out</span>
+            </button>
+          </div>
+        </header>
+
+        {error && <div className="dashboard-error">{error}</div>}
+
+        {!data && !error && (
+          <div className="dashboard-loading">
+            <Loader2 className="spin" size={22} aria-hidden="true" />
+            <span>Loading dashboard</span>
+          </div>
+        )}
+
+        {data && !selectedUser && (
+          <section className="dashboard-user-section">
+            <div className="dashboard-section-heading">
+              <div>
+                <h2>User not found</h2>
+                <p>This user is not included in the latest dashboard data.</p>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {selectedUser && (
+          <>
+            <section className="dashboard-user-profile">
+              <div className="dashboard-user-main">
+                <div className="dashboard-avatar">{selectedUser.email[0]?.toUpperCase() ?? "U"}</div>
+                <div>
+                  <h2>{selectedUser.email}</h2>
+                  <p>Joined {formatShortDate(selectedUser.createdAt)}</p>
+                </div>
+              </div>
+              <div className="dashboard-user-stats">
+                <span>{selectedUser.books.length} books</span>
+                <span>{selectedUser.imagesGenerated} images</span>
+                <span>{formatBytes(selectedUser.bookStorageBytes + selectedUser.imageStorageBytes)}</span>
+              </div>
+            </section>
+
+            <section className="dashboard-detail-grid">
+              <div className="dashboard-user-section">
+                <div className="dashboard-section-heading">
+                  <div>
+                    <h2>Books</h2>
+                    <p>{formatBytes(selectedUser.bookStorageBytes)} stored</p>
+                  </div>
+                </div>
+                {selectedUser.books.length ? (
+                  <div className="dashboard-book-list">
+                    {selectedUser.books.map((book) => (
+                      <div className="dashboard-book-row" key={book.id}>
+                        <FileText size={15} aria-hidden="true" />
+                        <span>{book.title || book.fileName}</span>
+                        <small>{book.documentType.toUpperCase()} · {formatBytes(book.fileSize)}</small>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="dashboard-empty-detail">No uploaded books yet.</p>
+                )}
+              </div>
+
+              <div className="dashboard-user-section">
+                <div className="dashboard-section-heading">
+                  <div>
+                    <h2>Images</h2>
+                    <p>{formatBytes(selectedUser.imageStorageBytes)} stored</p>
+                  </div>
+                </div>
+                {selectedUser.images.length ? (
+                  <div className="dashboard-image-grid">
+                    {selectedUser.images.map((image) => (
+                      <article className="dashboard-image-card" key={image.id}>
+                        {image.signedUrl ? (
+                          <img alt={`Generated image for ${image.bookTitle}`} src={image.signedUrl} />
+                        ) : (
+                          <div className="dashboard-image-missing">
+                            <ImageIcon size={22} aria-hidden="true" />
+                          </div>
+                        )}
+                        <div>
+                          <strong>{image.bookTitle}</strong>
+                          <span>{image.style} · words {image.startWord}-{image.endWord}</span>
+                          <small>{formatShortDate(image.createdAt)}</small>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="dashboard-empty-detail">No generated images yet.</p>
+                )}
+              </div>
+            </section>
+          </>
+        )}
       </main>
     );
   }
@@ -1426,20 +1579,11 @@ function ReaderDashboard({
             <h2>Users</h2>
             <p>{data ? `Updated ${formatShortDate(data.generatedAt)}` : "Loading project data"}</p>
           </div>
-          <button
-            aria-pressed={showDetails}
-            className={showDetails ? "dashboard-toggle active" : "dashboard-toggle"}
-            onClick={() => setShowDetails((value) => !value)}
-            type="button"
-          >
-            <BarChart3 size={16} aria-hidden="true" />
-            <span>{showDetails ? "Hide details" : "Show books & images"}</span>
-          </button>
         </div>
 
         <div className="dashboard-user-list">
           {(data?.users ?? []).map((item) => (
-            <article className="dashboard-user-row" key={item.id}>
+            <button className="dashboard-user-row dashboard-user-button" key={item.id} onClick={() => onNavigate(`/dashboard/users/${item.id}`)} type="button">
               <div className="dashboard-user-main">
                 <div className="dashboard-avatar">{item.email[0]?.toUpperCase() ?? "U"}</div>
                 <div>
@@ -1452,28 +1596,8 @@ function ReaderDashboard({
                 <span>{item.imagesGenerated} images</span>
                 <span>{formatBytes(item.bookStorageBytes + item.imageStorageBytes)}</span>
               </div>
-              {showDetails && (
-                <div className="dashboard-user-details">
-                  <div className="dashboard-detail-summary">
-                    <span>Books: {formatBytes(item.bookStorageBytes)}</span>
-                    <span>Images: {formatBytes(item.imageStorageBytes)}</span>
-                  </div>
-                  {item.books.length ? (
-                    <div className="dashboard-book-list">
-                      {item.books.map((book) => (
-                        <div className="dashboard-book-row" key={book.id}>
-                          <FileText size={15} aria-hidden="true" />
-                          <span>{book.title || book.fileName}</span>
-                          <small>{book.documentType.toUpperCase()} · {formatBytes(book.fileSize)}</small>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="dashboard-empty-detail">No uploaded books yet.</p>
-                  )}
-                </div>
-              )}
-            </article>
+              <ChevronRight className="dashboard-row-arrow" size={18} aria-hidden="true" />
+            </button>
           ))}
           {!data && !error && (
             <div className="dashboard-loading">
@@ -1835,10 +1959,12 @@ function App() {
   const [speechHighlight, setSpeechHighlight] = useState<SpeechHighlight | null>(null);
   const [readerImageMode, setReaderImageMode] = useState(false);
   const [readerImages, setReaderImages] = useState<Record<number, ReaderImageState>>({});
+  const [displayedReaderImageChunkIndex, setDisplayedReaderImageChunkIndex] = useState<number | null>(null);
   const [readerImageCount, setReaderImageCount] = useState(0);
   const [readerImageStyle, setReaderImageStyle] = useState<ReaderImageStyle>("cartoon");
   const [readerImageStyleOpen, setReaderImageStyleOpen] = useState(false);
   const [readerImageUpgradeOpen, setReaderImageUpgradeOpen] = useState(false);
+  const [chapterDrawerOpen, setChapterDrawerOpen] = useState(() => window.matchMedia("(min-width: 981px)").matches);
   const [hoveredReaderParagraphId, setHoveredReaderParagraphId] = useState<string | null>(null);
   const parsedBooks = useRef(new Map<string, ReaderBook>());
   const parsedBookFiles = useRef(new Map<string, File>());
@@ -1847,15 +1973,18 @@ function App() {
   const paragraphRefs = useRef(new Map<string, HTMLElement>());
   const chapterRefs = useRef(new Map<number, HTMLButtonElement>());
   const imageRequestsRef = useRef(new Set<number>());
+  const readerImageSettleTimerRef = useRef<number | null>(null);
   const readerImageModeRef = useRef(false);
   const readerImageRunRef = useRef(0);
   const pendingScrollIndex = useRef<number | null>(null);
   const edgeTtsPlayerRef = useRef<EdgeTtsPlayer | null>(null);
   const suppressNextPlaybackStartRef = useRef(false);
   const speedControlRef = useRef<HTMLDivElement | null>(null);
+  const imageStyleMenuRef = useRef<HTMLDivElement | null>(null);
   const progressSaveTimer = useRef<number | null>(null);
   const pendingDeleteRef = useRef<PendingDelete | null>(null);
   const uploadedBookNoticeTimer = useRef<number | null>(null);
+  const catalogActionMenuRef = useRef<HTMLDivElement | null>(null);
   const readingScrollFrame = useRef<number | null>(null);
   const coverLookupRef = useRef(new Set<string>());
   const isInitialOpenRef = useRef(false);
@@ -1885,15 +2014,23 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [readerMenuOpen, setReaderMenuOpen] = useState<ReaderMenuId | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [catalogActionBookId, setCatalogActionBookId] = useState("");
+  const [renameTarget, setRenameTarget] = useState<BookRow | null>(null);
+  const [renameTitle, setRenameTitle] = useState("");
+  const [renameError, setRenameError] = useState("");
+  const [isRenamingBook, setIsRenamingBook] = useState(false);
   const [dashboardData, setDashboardData] = useState<ReaderDashboardData | null>(null);
   const [dashboardError, setDashboardError] = useState("");
   const [dashboardLoading, setDashboardLoading] = useState(false);
+  const [dashboardPath, setDashboardPath] = useState(() => window.location.pathname);
 
   const user = session?.user ?? null;
   const isReaderDashboard =
     window.location.hostname === "russell.systems" ||
     window.location.hostname === "www.russell.systems" ||
     window.location.pathname.startsWith("/dashboard");
+  const dashboardUserMatch = dashboardPath.match(/^\/dashboard\/users\/([^/]+)\/?$/);
+  const selectedDashboardUserId = isReaderDashboard ? decodeURIComponent(dashboardUserMatch?.[1] ?? "") || null : null;
   const current = book?.paragraphs[currentIndex];
   const isPdfBook = book?.format === "pdf";
   const pdfPageCount = book?.pageCount ?? 0;
@@ -1925,7 +2062,6 @@ function App() {
 
     return index;
   }, [book?.chapterPageNumbers, book?.chapterPageOffsets, currentPage, isPdfBook, pdfVisibleOffsetRatio]);
-  const immersiveReaderImageMode = readerImageMode && !isPdfBook;
   const storageUsed = catalogBooks.reduce((total, item) => total + item.file_size, 0);
   const isBookImporting = pendingBookImports.length > 0;
   const isPro = billingProfile?.plan === "pro" && ["active", "trialing"].includes(billingProfile.status);
@@ -1960,12 +2096,12 @@ function App() {
   }, [activeReaderImageChunkIndex, readerImageMode]);
   const activeReaderImageChunk =
     activeReaderImageChunkIndex >= 0 ? readerImageChunkByIndex.get(activeReaderImageChunkIndex) ?? null : null;
+  const displayedReaderImageChunk =
+    displayedReaderImageChunkIndex !== null ? readerImageChunkByIndex.get(displayedReaderImageChunkIndex) ?? null : null;
   const isReaderImageLoading =
     readerImageMode &&
     activeReaderImageChunkIndex >= 0 &&
-    [readerImages[activeReaderImageChunkIndex], readerImages[activeReaderImageChunkIndex + 1]].some(
-      (image) => image?.status === "loading"
-    );
+    readerImages[activeReaderImageChunkIndex]?.status === "loading";
   const readerImageInsertions = useMemo(() => {
     const insertions = new Map<number, ReaderImageChunk[]>();
     if (!book || !readerImageMode || !readerImageChunks.length) return insertions;
@@ -1999,6 +2135,11 @@ function App() {
     return insertions;
   }, [book, paragraphWordMetrics, readerImageChunks, readerImageMode, readerImages, visibleReaderImageIndexes]);
 
+  const navigateDashboard = useCallback((path: string) => {
+    window.history.pushState({}, "", path);
+    setDashboardPath(window.location.pathname);
+  }, []);
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
@@ -2012,6 +2153,14 @@ function App() {
 
     return () => data.subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!isReaderDashboard) return;
+
+    const handlePopState = () => setDashboardPath(window.location.pathname);
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [isReaderDashboard]);
 
   useEffect(() => {
     if (isReaderDashboard) return;
@@ -2041,6 +2190,11 @@ function App() {
     if (!user || isReaderDashboard) return;
     void loadReaderImageUsage();
   }, [isPro, isReaderDashboard, user?.id]);
+
+  useEffect(() => {
+    if (!profileOpen || !user || isReaderDashboard) return;
+    void loadReaderImageUsage();
+  }, [isReaderDashboard, profileOpen, user?.id]);
 
   useEffect(() => {
     if (!isReaderDashboard || !user) {
@@ -2150,6 +2304,23 @@ function App() {
     if (readingScrollFrame.current !== null) window.cancelAnimationFrame(readingScrollFrame.current);
   }, []);
 
+  useEffect(() => () => {
+    if (readerImageSettleTimerRef.current !== null) {
+      window.clearTimeout(readerImageSettleTimerRef.current);
+    }
+  }, []);
+
+  useEffect(() => {
+    const desktopQuery = window.matchMedia("(min-width: 981px)");
+    const syncChapterSidebar = (event: MediaQueryListEvent | MediaQueryList) => {
+      setChapterDrawerOpen(event.matches);
+    };
+
+    syncChapterSidebar(desktopQuery);
+    desktopQuery.addEventListener("change", syncChapterSidebar);
+    return () => desktopQuery.removeEventListener("change", syncChapterSidebar);
+  }, []);
+
   useEffect(() => {
     window.localStorage.setItem("reader-font-mode", readerFontMode);
   }, [readerFontMode]);
@@ -2224,6 +2395,48 @@ function App() {
       window.removeEventListener("keydown", closeOnEscape);
     };
   }, [speedPopoverOpen]);
+
+  useEffect(() => {
+    if (!readerImageStyleOpen) return;
+
+    const closeOnOutsidePointer = (event: globalThis.PointerEvent) => {
+      if (event.target instanceof Node && imageStyleMenuRef.current?.contains(event.target)) return;
+      setReaderImageStyleOpen(false);
+    };
+
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setReaderImageStyleOpen(false);
+    };
+
+    window.addEventListener("pointerdown", closeOnOutsidePointer);
+    window.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      window.removeEventListener("pointerdown", closeOnOutsidePointer);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [readerImageStyleOpen]);
+
+  useEffect(() => {
+    if (!catalogActionBookId) return;
+
+    const closeOnOutsidePointer = (event: globalThis.PointerEvent) => {
+      if (event.target instanceof Node && catalogActionMenuRef.current?.contains(event.target)) return;
+      setCatalogActionBookId("");
+    };
+
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setCatalogActionBookId("");
+    };
+
+    window.addEventListener("pointerdown", closeOnOutsidePointer);
+    window.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      window.removeEventListener("pointerdown", closeOnOutsidePointer);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [catalogActionBookId]);
 
   useEffect(() => {
     const savedStyle = window.localStorage.getItem("reader-image-style");
@@ -2306,9 +2519,36 @@ function App() {
   }, [activeBookId, book, currentIndex, currentPage, view]);
 
   useEffect(() => {
+    if (readerImageSettleTimerRef.current !== null) {
+      window.clearTimeout(readerImageSettleTimerRef.current);
+      readerImageSettleTimerRef.current = null;
+    }
+
     if (!readerImageMode || activeReaderImageChunkIndex < 0) return;
-    void ensureReaderImages(activeReaderImageChunkIndex);
+
+    const chunkIndex = activeReaderImageChunkIndex;
+    const runId = readerImageRunRef.current;
+    readerImageSettleTimerRef.current = window.setTimeout(() => {
+      readerImageSettleTimerRef.current = null;
+      if (!readerImageModeRef.current || runId !== readerImageRunRef.current) return;
+      void ensureReaderImage(chunkIndex, runId);
+    }, READER_IMAGE_SETTLE_DELAY_MS);
+
+    return () => {
+      if (readerImageSettleTimerRef.current !== null) {
+        window.clearTimeout(readerImageSettleTimerRef.current);
+        readerImageSettleTimerRef.current = null;
+      }
+    };
   }, [activeReaderImageChunkIndex, readerImageMode, readerImageStyle]);
+
+  useEffect(() => {
+    if (!readerImageMode || activeReaderImageChunkIndex < 0) return;
+    const activeImage = readerImages[activeReaderImageChunkIndex];
+    if (activeImage?.status === "ready" || activeImage?.status === "error") {
+      setDisplayedReaderImageChunkIndex(activeReaderImageChunkIndex);
+    }
+  }, [activeReaderImageChunkIndex, readerImageMode, readerImages]);
 
   useEffect(() => {
     if (!activeBookId || !book || view !== "reader") return;
@@ -2350,6 +2590,7 @@ function App() {
       const cachedImage = await getCachedReaderImage(activeBookId, chunk, style);
       if (!readerImageModeRef.current || runId !== readerImageRunRef.current) return;
       if (cachedImage?.src) {
+        void loadReaderImageUsage();
         setReaderImages((items) => ({
           ...items,
           [chunk.index]: {
@@ -2412,6 +2653,7 @@ function App() {
 
       const prompt = typeof data.prompt === "string" ? data.prompt : undefined;
       if (typeof data.imageCount === "number") setReaderImageCount(data.imageCount);
+      else void loadReaderImageUsage();
       void cacheReaderImage({
         bookId: activeBookId,
         createdAt: new Date().toISOString(),
@@ -2427,6 +2669,8 @@ function App() {
         ...items,
         [chunk.index]: {
           prompt,
+          imageCount: typeof data.imageCount === "number" ? data.imageCount : undefined,
+          imageLimit: typeof data.imageLimit === "number" ? data.imageLimit : undefined,
           src: data.imageUrl,
           status: "ready",
           style
@@ -2447,28 +2691,27 @@ function App() {
     }
   };
 
-  const ensureReaderImages = async (chunkIndex: number) => {
-    const runId = readerImageRunRef.current;
-    const targets = [chunkIndex, chunkIndex + 1]
-      .map((index) => readerImageChunkByIndex.get(index))
-      .filter((chunk): chunk is ReaderImageChunk => Boolean(chunk));
+  const ensureReaderImage = async (chunkIndex: number, runId = readerImageRunRef.current) => {
+    const chunk = readerImageChunkByIndex.get(chunkIndex);
+    if (!chunk) return;
 
-    await Promise.all(
-      targets.map((chunk) => {
-        const existing = readerImages[chunk.index];
-        if (existing?.style === readerImageStyle && (existing?.status === "ready" || existing?.status === "loading")) return Promise.resolve();
-        return generateReaderImage(chunk, runId);
-      })
-    );
+    const existing = readerImages[chunk.index];
+    if (existing?.style === readerImageStyle && (existing?.status === "ready" || existing?.status === "loading")) return;
+    await generateReaderImage(chunk, runId);
   };
 
   const stopReaderImageMode = () => {
     readerImageRunRef.current += 1;
     readerImageModeRef.current = false;
+    if (readerImageSettleTimerRef.current !== null) {
+      window.clearTimeout(readerImageSettleTimerRef.current);
+      readerImageSettleTimerRef.current = null;
+    }
     imageRequestsRef.current.clear();
     setReaderImageMode(false);
     setReaderImageStyleOpen(false);
     setReaderImages({});
+    setDisplayedReaderImageChunkIndex(null);
   };
 
   const selectReaderImageStyle = (style: ReaderImageStyle) => {
@@ -2481,15 +2724,16 @@ function App() {
     setReaderImageStyleOpen(false);
     if (!readerImageMode || !book || activeReaderImageChunkIndex < 0) return;
 
-    const targetChunks = readerImageChunks
-      .filter((chunk) => chunk.index === activeReaderImageChunkIndex || chunk.index === activeReaderImageChunkIndex + 1)
-      .filter((chunk): chunk is ReaderImageChunk => Boolean(chunk));
     const runId = readerImageRunRef.current + 1;
     readerImageRunRef.current = runId;
     readerImageModeRef.current = true;
+    if (readerImageSettleTimerRef.current !== null) {
+      window.clearTimeout(readerImageSettleTimerRef.current);
+      readerImageSettleTimerRef.current = null;
+    }
     imageRequestsRef.current.clear();
     setReaderImages({});
-    void Promise.all(targetChunks.map((chunk) => generateReaderImage(chunk, runId, style)));
+    setDisplayedReaderImageChunkIndex(null);
   };
 
   const toggleReaderImageMode = () => {
@@ -2499,18 +2743,15 @@ function App() {
     }
 
     if (!book || activeReaderImageChunkIndex < 0) return;
-    const targetChunks = readerImageChunks
-      .filter((chunk) => chunk.index === activeReaderImageChunkIndex || chunk.index === activeReaderImageChunkIndex + 1)
-      .filter((chunk): chunk is ReaderImageChunk => Boolean(chunk));
-    if (!targetChunks.length) return;
+    if (!readerImageChunkByIndex.has(activeReaderImageChunkIndex)) return;
 
     const runId = readerImageRunRef.current + 1;
     readerImageRunRef.current = runId;
     readerImageModeRef.current = true;
     imageRequestsRef.current.clear();
     setReaderImages({});
+    setDisplayedReaderImageChunkIndex(null);
     setReaderImageMode(true);
-    void Promise.all(targetChunks.map((chunk) => generateReaderImage(chunk, runId)));
   };
 
   const loadLibrary = async (_user: User) => {
@@ -2585,20 +2826,35 @@ function App() {
   };
 
   const loadReaderImageUsage = async () => {
-    const { data, error } = await supabase
+    const currentMonthStart = new Date().toISOString().slice(0, 7) + "-01";
+    const usageRequest = supabase
       .from("reader_image_usage")
       .select("generated_count, monthly_generated_count, monthly_period_start")
       .maybeSingle();
+    let imageRowsRequest = supabase
+      .from("reader_images")
+      .select("id", { count: "exact", head: true });
 
-    if (error) return;
+    if (isPro) imageRowsRequest = imageRowsRequest.gte("created_at", currentMonthStart);
 
-    if (isPro) {
-      const currentMonthStart = new Date().toISOString().slice(0, 7) + "-01";
-      setReaderImageCount(data?.monthly_period_start === currentMonthStart ? data?.monthly_generated_count ?? 0 : 0);
+    const [{ data, error }, { count, error: imageRowsError }] = await Promise.all([
+      usageRequest,
+      imageRowsRequest
+    ]);
+    const savedImageCount = imageRowsError ? 0 : count ?? 0;
+
+    if (error) {
+      setReaderImageCount(savedImageCount);
       return;
     }
 
-    setReaderImageCount(data?.generated_count ?? 0);
+    if (isPro) {
+      const usageCount = data?.monthly_period_start === currentMonthStart ? data?.monthly_generated_count ?? 0 : 0;
+      setReaderImageCount(Math.max(usageCount, savedImageCount));
+      return;
+    }
+
+    setReaderImageCount(Math.max(data?.generated_count ?? 0, savedImageCount));
   };
 
   const loadReaderDashboard = async () => {
@@ -2644,6 +2900,77 @@ function App() {
       ))
     );
     void supabase.from("books").update({ last_opened_at: openedAt }).eq("id", bookId);
+  };
+
+  const openRenameDialog = (row: BookRow) => {
+    setCatalogActionBookId("");
+    setRenameTarget(row);
+    setRenameTitle(row.title);
+    setRenameError("");
+    setNotice("");
+  };
+
+  const closeRenameDialog = () => {
+    if (isRenamingBook) return;
+    setRenameTarget(null);
+    setRenameTitle("");
+    setRenameError("");
+  };
+
+  const applyRenamedBook = (renamedRow: BookRow) => {
+    setCatalogBooks((items) =>
+      sortBooksByRecentActivity(items.map((item) => (item.id === renamedRow.id ? renamedRow : item)))
+    );
+    setOpeningBook((current) => (current?.id === renamedRow.id ? renamedRow : current));
+
+    const parsed = parsedBooks.current.get(renamedRow.id);
+    if (parsed) {
+      parsedBooks.current.set(renamedRow.id, { ...parsed, title: renamedRow.title });
+    }
+
+    if (activeBookId === renamedRow.id) {
+      setBook((current) => (current ? { ...current, title: renamedRow.title } : current));
+    }
+  };
+
+  const renameBook = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!renameTarget || !user) return;
+
+    const nextTitle = renameTitle.trim().replace(/\s+/g, " ");
+    if (!nextTitle) {
+      setRenameError("Add a title for this document.");
+      return;
+    }
+
+    if (nextTitle === renameTarget.title) {
+      closeRenameDialog();
+      return;
+    }
+
+    setIsRenamingBook(true);
+    setRenameError("");
+    setNotice("");
+
+    const updatedAt = new Date().toISOString();
+    const { data, error } = await supabase
+      .from("books")
+      .update({ title: nextTitle, updated_at: updatedAt })
+      .eq("id", renameTarget.id)
+      .eq("user_id", user.id)
+      .select("*")
+      .single();
+
+    if (error) {
+      setRenameError(error.message);
+      setIsRenamingBook(false);
+      return;
+    }
+
+    applyRenamedBook(data as BookRow);
+    setRenameTarget(null);
+    setRenameTitle("");
+    setIsRenamingBook(false);
   };
 
   const stopAudio = () => {
@@ -2922,14 +3249,16 @@ function App() {
           <X size={18} aria-hidden="true" />
         </button>
         <div className="pro-comparison-hero">
-          <img src="/landing/logo.jpeg" alt="" aria-hidden="true" />
-          <div>
-            <span className="pro-comparison-kicker">Illume Pro</span>
-            <h2 id="pro-comparison-title">Keep image mode alive.</h2>
-            <p>Upgrade for 100 AI images every month and a calmer reading workflow as your library grows.</p>
-          </div>
+          <h2 className="pro-comparison-brand library-brand-mark" id="pro-comparison-title">
+            <img src="/landing/logo.jpeg" alt="" aria-hidden="true" />
+            <span>illume</span>
+            <span className="library-plan-badge pro">
+              <span>Pro</span>
+            </span>
+          </h2>
+          <p>Keep image mode alive with a monthly allowance built for deeper reading.</p>
         </div>
-        <div className="pro-usage-strip" aria-label="Current image usage">
+        <div className={`pro-usage-strip ${isPro ? "pro" : "free"}`} aria-label="Current image usage">
           <span>{isPro ? `${readerImageCount} of ${PRO_READER_IMAGE_MONTHLY_LIMIT} Pro images used this month` : `${Math.min(readerImageCount, FREE_READER_IMAGE_LIFETIME_LIMIT)} of ${FREE_READER_IMAGE_LIFETIME_LIMIT} free images used`}</span>
           <div>
             <span style={{ width: `${Math.min(100, (readerImageCount / readerImageLimit) * 100)}%` }} />
@@ -2937,22 +3266,23 @@ function App() {
         </div>
         <div className="pro-plan-comparison" aria-label="Plan comparison">
           <div className="pro-plan-column free">
-            <span className="pro-plan-label">Free</span>
-            <strong>25</strong>
-            <small>lifetime AI images</small>
-            <p>Read, listen, upload EPUBs and PDFs, and try image mode in your private library.</p>
+            <span className="pro-plan-label">illume Free</span>
+            <div className="pro-plan-price">
+              <strong>25</strong>
+              <small>images</small>
+            </div>
+            <p>Included with your free account.</p>
           </div>
           <div className="pro-plan-column pro">
-            <span className="pro-plan-label">Pro</span>
-            <strong>100</strong>
-            <small>AI images per month</small>
-            <p>Your Pro allowance refreshes monthly, with billing handled securely through Stripe.</p>
+            <div className="pro-plan-heading">
+              <span className="pro-plan-label">illume Pro</span>
+            </div>
+            <div className="pro-plan-price">
+              <strong>100</strong>
+              <small>images / month</small>
+            </div>
+            <p>Your Pro allowance refreshes monthly.</p>
           </div>
-        </div>
-        <div className="pro-feature-lines">
-          <p><Check size={17} aria-hidden="true" /> Synced library, narration, and reading progress</p>
-          <p><Check size={17} aria-hidden="true" /> Private generated images stored with your books</p>
-          <p><Check size={17} aria-hidden="true" /> Manage or cancel from your billing portal</p>
         </div>
         <div className="pro-comparison-actions">
           <button className="pro-checkout-button" disabled={busy} onClick={() => void startCheckout()} type="button">
@@ -3487,6 +3817,7 @@ function App() {
 
   const moveToChapter = (chapterIndex: number) => {
     if (!book) return;
+    setChapterDrawerOpen(false);
     if (book.format === "pdf") {
       const pageNumber = book.chapterPageNumbers?.[chapterIndex];
       const offsetRatio = book.chapterPageOffsets?.[chapterIndex] ?? 0;
@@ -3734,8 +4065,14 @@ function App() {
   }, [isPdfBook, readerImageChunkByIndex, readerImageMode, readerImages, renderGeneratedReaderImage, visibleReaderImageIndexes]);
 
   const renderReaderImageStage = () => {
-    const chunk = activeReaderImageChunk;
+    const activeImage = activeReaderImageChunkIndex >= 0 ? readerImages[activeReaderImageChunkIndex] : undefined;
+    const chunk =
+      activeImage?.status === "ready" || activeImage?.status === "error"
+        ? activeReaderImageChunk
+        : displayedReaderImageChunk;
     const image = chunk ? readerImages[chunk.index] : undefined;
+    if (!chunk || !image || (image.status !== "ready" && image.status !== "error")) return null;
+
     const isLimit = Boolean(image?.limitReached);
 
     return (
@@ -3756,9 +4093,9 @@ function App() {
               {image?.status === "error" ? (
                 <Crown size={34} aria-hidden="true" />
               ) : (
-                <Loader2 className="spin" size={34} aria-hidden="true" />
+                <ImageIcon size={34} aria-hidden="true" />
               )}
-              <span>{image?.status === "error" ? image.error ?? "Image failed" : "Building the scene"}</span>
+              <span>{image?.status === "error" ? image.error ?? "Image failed" : "Image unavailable"}</span>
               {isLimit && image?.plan === "free" && (
                 <button className="reader-image-upgrade-inline" onClick={() => setReaderImageUpgradeOpen(true)} type="button">
                   Upgrade to Pro
@@ -3804,7 +4141,7 @@ function App() {
 
             return (
               <div className="reader-block" key={paragraph.id}>
-                {!readerImageMode && readerImageInsertions.get(index)?.map((chunk) => renderGeneratedReaderImage(chunk))}
+                {readerImageMode && readerImageInsertions.get(index)?.map((chunk) => renderGeneratedReaderImage(chunk))}
                 {showChapterHeading && !isChapterHeading && (
                   <h2 className="reader-chapter-title">{paragraph.chapterTitle}</h2>
                 )}
@@ -4096,9 +4433,11 @@ function App() {
         busy={busy || dashboardLoading}
         data={dashboardData}
         error={dashboardError}
+        onNavigate={navigateDashboard}
         onRefresh={() => void loadReaderDashboard()}
         onSignInWithGoogle={() => void signInWithGoogle()}
         onSignOut={() => void signOut()}
+        selectedUserId={selectedDashboardUserId}
         session={session}
       />
     );
@@ -4151,7 +4490,13 @@ function App() {
             <div className="profile-button-wrapper" style={{ position: "relative", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
               <button 
                 className="profile-avatar-btn" 
-                onClick={() => setProfileOpen(!profileOpen)} 
+                onClick={(event) => {
+                  if (event.detail === 0) setProfileOpen((isOpen) => !isOpen);
+                }}
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  setProfileOpen((isOpen) => !isOpen);
+                }}
                 title="Account Settings" 
                 type="button"
               >
@@ -4338,15 +4683,51 @@ function App() {
                         </small>
                       </span>
                     </button>
-                    <button
-                      className="catalog-delete"
-                      disabled={busy}
-                      onClick={() => void deleteBook(catalogBook)}
-                      title="Delete book"
-                      type="button"
+                    <div
+                      className="catalog-actions"
+                      ref={catalogActionBookId === catalogBook.id ? catalogActionMenuRef : null}
                     >
-                      <Trash2 size={16} aria-hidden="true" />
-                    </button>
+                      <button
+                        aria-expanded={catalogActionBookId === catalogBook.id}
+                        aria-haspopup="menu"
+                        className="catalog-actions-trigger"
+                        disabled={busy}
+                        onClick={(event) => {
+                          if (event.detail === 0) {
+                            setCatalogActionBookId((openId) => (openId === catalogBook.id ? "" : catalogBook.id));
+                          }
+                        }}
+                        onPointerDown={(event) => {
+                          if (busy) return;
+                          event.preventDefault();
+                          setCatalogActionBookId((openId) => (openId === catalogBook.id ? "" : catalogBook.id));
+                        }}
+                        title="Book actions"
+                        type="button"
+                      >
+                        <MoreVertical size={17} aria-hidden="true" />
+                      </button>
+                      {catalogActionBookId === catalogBook.id && (
+                        <div className="catalog-actions-menu" role="menu" aria-label={`Actions for ${catalogBook.title}`}>
+                          <button onClick={() => openRenameDialog(catalogBook)} role="menuitem" type="button">
+                            <Pencil size={14} aria-hidden="true" />
+                            <span>Rename</span>
+                          </button>
+                          <button
+                            className="danger"
+                            onClick={() => {
+                              setCatalogActionBookId("");
+                              void deleteBook(catalogBook);
+                            }}
+                            role="menuitem"
+                            type="button"
+                          >
+                            <Trash2 size={14} aria-hidden="true" />
+                            <span>Delete</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 ))}
                 </>
@@ -4431,6 +4812,46 @@ function App() {
         </section>
 
         {notice && <div className="notice">{notice}</div>}
+        {renameTarget && (
+          <div className="catalog-rename-modal-overlay" role="presentation" onClick={closeRenameDialog}>
+            <form
+              aria-labelledby="rename-book-title"
+              aria-modal="true"
+              className="catalog-rename-modal"
+              onClick={(event) => event.stopPropagation()}
+              onSubmit={renameBook}
+              role="dialog"
+            >
+              <button className="catalog-rename-close" disabled={isRenamingBook} onClick={closeRenameDialog} title="Close" type="button">
+                <X size={14} aria-hidden="true" />
+              </button>
+              <div className="catalog-rename-copy">
+                <span>Rename</span>
+                <h2 id="rename-book-title">Document title</h2>
+              </div>
+              <label className="catalog-rename-field">
+                <span>Title</span>
+                <input
+                  autoFocus
+                  disabled={isRenamingBook}
+                  onChange={(event) => {
+                    setRenameTitle(event.target.value);
+                    setRenameError("");
+                  }}
+                  value={renameTitle}
+                />
+              </label>
+              {renameError && <p className="catalog-rename-error">{renameError}</p>}
+              <div className="catalog-rename-actions">
+                <button disabled={isRenamingBook} onClick={closeRenameDialog} type="button">Cancel</button>
+                <button disabled={isRenamingBook} type="submit">
+                  {isRenamingBook ? <Loader2 className="spin" size={14} aria-hidden="true" /> : <Check size={14} aria-hidden="true" />}
+                  <span>Save</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
         {readerImageUpgradeOpen && renderProComparison()}
       </main>
     );
@@ -4443,14 +4864,35 @@ function App() {
 
   return (
     <main
-      className={["app-shell reader-themed-shell", immersiveReaderImageMode ? "image-reader-shell" : ""].filter(Boolean).join(" ")}
+      className="app-shell reader-themed-shell"
       data-reader-mode={readerThemeMode}
       data-reader-theme={readerTheme}
     >
-      <header className={immersiveReaderImageMode ? "topbar image-topbar" : "topbar"} style={{ position: "relative" }}>
-        <button className="top-icon" type="button" title="Back to library" onClick={() => openCatalog()}>
-          <ChevronLeft size={22} aria-hidden="true" />
-        </button>
+      <header className="topbar" style={{ position: "relative" }}>
+        <div className="reader-top-actions">
+          <button className="top-icon" type="button" title="Back to library" onClick={() => openCatalog()}>
+            <ChevronLeft size={22} aria-hidden="true" />
+          </button>
+          <button
+            aria-controls="reader-chapter-sidebar"
+            aria-expanded={chapterDrawerOpen}
+            className="top-icon toc-toggle-button"
+            onClick={(event) => event.preventDefault()}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              setChapterDrawerOpen((isOpen) => !isOpen);
+            }}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              setChapterDrawerOpen((isOpen) => !isOpen);
+            }}
+            title={isPdfBook ? "Table of contents" : "Chapters"}
+            type="button"
+          >
+            <PanelLeft size={18} aria-hidden="true" />
+          </button>
+        </div>
         <div className="top-title">{book.title}</div>
         <div className="settings-button-wrapper" style={{ position: "relative", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
           <button
@@ -4653,8 +5095,23 @@ function App() {
         </div>
       )}
 
-      <section className={[immersiveReaderImageMode ? "reader-frame image-mode-frame" : "reader-frame", isPdfBook ? "pdf-reader-frame" : ""].filter(Boolean).join(" ")}>
-        <aside className="chapter-sidebar">
+      <section className={["reader-frame", chapterDrawerOpen ? "chapter-sidebar-open" : "chapter-sidebar-collapsed", isPdfBook ? "pdf-reader-frame" : ""].filter(Boolean).join(" ")}>
+        <button
+          aria-hidden={!chapterDrawerOpen}
+          aria-label="Close table of contents"
+          className={["chapter-drawer-scrim", chapterDrawerOpen ? "open" : ""].filter(Boolean).join(" ")}
+          onClick={(event) => event.preventDefault()}
+          onPointerDown={(event) => {
+            event.preventDefault();
+            setChapterDrawerOpen(false);
+          }}
+          tabIndex={chapterDrawerOpen ? 0 : -1}
+          type="button"
+        />
+        <aside
+          className={["chapter-sidebar", chapterDrawerOpen ? "open" : ""].filter(Boolean).join(" ")}
+          id="reader-chapter-sidebar"
+        >
           <div className="chapter-heading">{isPdfBook ? "Table of contents" : "Chapters"}</div>
           <nav className="chapter-list" aria-label={isPdfBook ? "Table of contents" : "Chapters"}>
             {book.chapters.length ? (
@@ -4692,10 +5149,9 @@ function App() {
         </aside>
 
         <div className={[
-          immersiveReaderImageMode ? "main-spread reader-only image-mode" : "main-spread reader-only",
+          readerImageMode ? "main-spread reader-only image-mode" : "main-spread reader-only",
           isPdfBook ? `pdf-reader-main pdf-reader-${pdfReaderViewMode} pdf-layout-${pdfPageLayout}` : ""
         ].filter(Boolean).join(" ")}>
-          {immersiveReaderImageMode && renderReaderImageStage()}
           {isPdfBook ? (
             <PdfDocumentView
               currentPage={currentPage}
@@ -4771,7 +5227,13 @@ function App() {
               aria-expanded={speedPopoverOpen}
               aria-haspopup="dialog"
               className="narration-speed-trigger"
-              onClick={() => setSpeedPopoverOpen((open) => !open)}
+              onClick={(event) => {
+                if (event.detail === 0) setSpeedPopoverOpen((open) => !open);
+              }}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                setSpeedPopoverOpen((open) => !open);
+              }}
               title="Narration speed"
               type="button"
             >
@@ -4830,57 +5292,60 @@ function App() {
               <span>Image mode</span>
             </button>
             {readerImageMode && (
-              <button
-                className="secondary-button image-style-button"
-                onClick={() => setReaderImageStyleOpen(true)}
-                title="Choose image style"
-                type="button"
-              >
-                <Palette size={16} aria-hidden="true" />
-                <span>Styles</span>
-              </button>
+              <div className="image-style-menu-anchor" ref={imageStyleMenuRef}>
+                <button
+                  aria-controls="image-style-menu"
+                  aria-expanded={readerImageStyleOpen}
+                  className="secondary-button image-style-button"
+                  onClick={(event) => {
+                    if (event.detail === 0) setReaderImageStyleOpen((isOpen) => !isOpen);
+                  }}
+                  onPointerDown={(event) => {
+                    event.preventDefault();
+                    setReaderImageStyleOpen((isOpen) => !isOpen);
+                  }}
+                  title="Choose image style"
+                  type="button"
+                >
+                  <Palette size={16} aria-hidden="true" />
+                  <span>Styles</span>
+                  <ChevronDown size={14} aria-hidden="true" />
+                </button>
+                {readerImageStyleOpen && (
+                  <section
+                    aria-label="Image style"
+                    className="image-style-menu"
+                    id="image-style-menu"
+                  >
+                    <div className="image-style-menu-heading">
+                      <strong>Styles</strong>
+                    </div>
+                    <div className="image-style-options">
+                      {READER_IMAGE_STYLES.map((style) => (
+                        <button
+                          aria-pressed={readerImageStyle === style.id}
+                          className={readerImageStyle === style.id ? "image-style-option active" : "image-style-option"}
+                          key={style.id}
+                          onClick={() => selectReaderImageStyle(style.id)}
+                          type="button"
+                        >
+                          <img className="image-style-preview" src={style.previewSrc} alt={style.previewAlt} />
+                          <span className="image-style-option-copy">
+                            <strong>{style.label}</strong>
+                            <small>{style.summary}</small>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                )}
+              </div>
             )}
           </div>
         </div>
       </footer>
 
       {notice && <div className="notice">{notice}</div>}
-
-      {readerImageStyleOpen && (
-        <div className="image-style-modal-overlay" role="presentation" onClick={() => setReaderImageStyleOpen(false)}>
-          <section
-            aria-labelledby="image-style-title"
-            aria-modal="true"
-            className="image-style-modal"
-            onClick={(event) => event.stopPropagation()}
-            role="dialog"
-          >
-            <button className="image-style-close" onClick={() => setReaderImageStyleOpen(false)} title="Close" type="button">
-              <X size={18} aria-hidden="true" />
-            </button>
-            <div className="image-style-copy">
-              <span className="image-style-kicker">Image mode</span>
-              <h2 id="image-style-title">Styles</h2>
-            </div>
-            <div className="image-style-options">
-              {READER_IMAGE_STYLES.map((style) => (
-                <button
-                  className={readerImageStyle === style.id ? "image-style-option active" : "image-style-option"}
-                  key={style.id}
-                  onClick={() => selectReaderImageStyle(style.id)}
-                  type="button"
-                >
-                  <span>
-                    <strong>{style.label}</strong>
-                    <small>{style.summary}</small>
-                  </span>
-                  {readerImageStyle === style.id && <Check size={17} aria-hidden="true" />}
-                </button>
-              ))}
-            </div>
-          </section>
-        </div>
-      )}
 
       {readerImageUpgradeOpen && renderProComparison()}
 
