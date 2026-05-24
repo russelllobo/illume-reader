@@ -48,6 +48,15 @@ type SpeechHighlight = {
   paragraphId: string;
   start: number;
 };
+type ReturnPoint = {
+  index: number;
+  offsetRatio: number;
+  page: number;
+};
+type AppHistoryState = {
+  bookId?: string;
+  illumeView: "catalog" | "reader";
+};
 type WordRange = {
   end: number;
   start: number;
@@ -93,6 +102,17 @@ type CachedReaderImage = {
   startWord: number;
   style: ReaderImageStyle;
 };
+
+const NARRATION_RATE_MIN = 0.7;
+const NARRATION_RATE_MAX = 2;
+const NARRATION_RATE_PRESETS = [1, 1.25, 1.5, 2];
+
+const clampNarrationRate = (value: number) =>
+  Math.min(NARRATION_RATE_MAX, Math.max(NARRATION_RATE_MIN, value));
+
+const formatNarrationRate = (value: number) =>
+  Number.isInteger(value) ? `${value.toFixed(0)}x` : `${value.toFixed(2).replace(/0$/, "")}x`;
+
 type BookRow = {
   author: string;
   chapter_count: number;
@@ -161,6 +181,7 @@ const READER_IMAGE_STORE_NAME = "images";
 const READER_IMAGE_CHUNK_WORDS = 1000;
 const FREE_READER_IMAGE_LIFETIME_LIMIT = 25;
 const PRO_READER_IMAGE_MONTHLY_LIMIT = 100;
+const APP_TITLE = "Illume Reader | Make reading more immersive";
 const READER_IMAGE_STYLES: Array<{ id: ReaderImageStyle; label: string; summary: string }> = [
   { id: "cartoon", label: "Cartoon", summary: "Bold Sunday funnies look with bright 1980s color." },
   { id: "cute", label: "Cute", summary: "Kawaii anime feel with pastel modern colors." }
@@ -1370,7 +1391,7 @@ const initialReaderLineWidth = () => {
 
 const initialNarrationRate = () => {
   const value = Number(window.localStorage.getItem("reader-narration-rate"));
-  return Number.isFinite(value) ? Math.min(1.5, Math.max(0.7, value)) : 1;
+  return Number.isFinite(value) ? clampNarrationRate(value) : 1;
 };
 
 const getOpenLibraryCoverUrl = async (title: string, author: string) => {
@@ -1587,6 +1608,7 @@ function App() {
   const [readerLineHeight, setReaderLineHeight] = useState(initialReaderLineHeight);
   const [readerLineWidth, setReaderLineWidth] = useState(initialReaderLineWidth);
   const [narrationRate, setNarrationRate] = useState(initialNarrationRate);
+  const [speedPopoverOpen, setSpeedPopoverOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [checkoutResult, setCheckoutResult] = useState<"success" | "canceled" | "">("");
@@ -1608,12 +1630,15 @@ function App() {
   const readerImageRunRef = useRef(0);
   const pendingScrollIndex = useRef<number | null>(null);
   const edgeTtsPlayerRef = useRef<EdgeTtsPlayer | null>(null);
+  const suppressNextPlaybackStartRef = useRef(false);
+  const speedControlRef = useRef<HTMLDivElement | null>(null);
   const progressSaveTimer = useRef<number | null>(null);
   const readingScrollFrame = useRef<number | null>(null);
   const coverLookupRef = useRef(new Set<string>());
   const isInitialOpenRef = useRef(false);
   const isInstantScrollRef = useRef(false);
   const [progressNotice, setProgressNotice] = useState(false);
+  const [returnPoint, setReturnPoint] = useState<ReturnPoint | null>(null);
   const [pdfPageLayout, setPdfPageLayout] = useState<"single" | "double">(() => {
     const saved = window.localStorage.getItem("pdf-page-layout");
     return saved === "double" ? "double" : "single";
@@ -1824,13 +1849,13 @@ function App() {
     if (checkout === "success") {
       setCheckoutResult("success");
       setNotice("Thanks. Your Pro subscription is being confirmed.");
-      window.history.replaceState({}, "", window.location.pathname);
+      window.history.replaceState({ illumeView: "catalog" } satisfies AppHistoryState, "", window.location.pathname);
     }
 
     if (checkout === "canceled") {
       setCheckoutResult("canceled");
       setNotice("Checkout was canceled.");
-      window.history.replaceState({}, "", window.location.pathname);
+      window.history.replaceState({ illumeView: "catalog" } satisfies AppHistoryState, "", window.location.pathname);
     }
   }, []);
 
@@ -1846,6 +1871,37 @@ function App() {
 
     return () => window.clearInterval(interval);
   }, [checkoutResult, user?.id]);
+
+  useEffect(() => {
+    if (isReaderDashboard) {
+      document.title = "Reader Dashboard | illume";
+      return;
+    }
+
+    if (view === "reader" && book?.title) {
+      document.title = book.title;
+      return;
+    }
+
+    document.title = APP_TITLE;
+  }, [book?.title, isReaderDashboard, view]);
+
+  useEffect(() => {
+    if (isReaderDashboard) return;
+
+    const state = window.history.state as AppHistoryState | null;
+    if (state?.illumeView) return;
+
+    window.history.replaceState(
+      { illumeView: "catalog" } satisfies AppHistoryState,
+      "",
+      `${window.location.pathname}${window.location.search}${window.location.hash}`
+    );
+  }, [isReaderDashboard]);
+
+  useEffect(() => {
+    setReturnPoint(null);
+  }, [activeBookId, view]);
 
   useEffect(() => stopAudio, []);
 
@@ -1876,6 +1932,27 @@ function App() {
   }, [narrationRate]);
 
   useEffect(() => {
+    if (!speedPopoverOpen) return;
+
+    const closeOnOutsidePointer = (event: globalThis.PointerEvent) => {
+      if (event.target instanceof Node && speedControlRef.current?.contains(event.target)) return;
+      setSpeedPopoverOpen(false);
+    };
+
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setSpeedPopoverOpen(false);
+    };
+
+    window.addEventListener("pointerdown", closeOnOutsidePointer);
+    window.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      window.removeEventListener("pointerdown", closeOnOutsidePointer);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [speedPopoverOpen]);
+
+  useEffect(() => {
     const savedStyle = window.localStorage.getItem("reader-image-style");
     if (savedStyle === "cartoon" || savedStyle === "cute") setReaderImageStyle(savedStyle);
   }, []);
@@ -1886,6 +1963,11 @@ function App() {
 
   useEffect(() => {
     if (playback !== "playing" || !current) return;
+
+    if (suppressNextPlaybackStartRef.current) {
+      suppressNextPlaybackStartRef.current = false;
+      return;
+    }
 
     stopAudio();
     if (current.kind === "image") {
@@ -2259,7 +2341,11 @@ function App() {
   const handleNarrationRateChange = (event: ChangeEvent<HTMLInputElement>) => {
     const value = Number(event.currentTarget.value);
     if (!Number.isFinite(value)) return;
-    setNarrationRate(Math.min(1.5, Math.max(0.7, value)));
+    setNarrationRate(clampNarrationRate(value));
+  };
+
+  const chooseNarrationRate = (value: number) => {
+    setNarrationRate(clampNarrationRate(value));
   };
 
   const advance = () => {
@@ -2328,6 +2414,7 @@ function App() {
 
     const paragraphIndex = book?.paragraphs.findIndex((p) => p.id === paragraph.id) ?? -1;
     if (paragraphIndex >= 0 && paragraphIndex !== currentIndex) {
+      suppressNextPlaybackStartRef.current = true;
       setCurrentIndex(paragraphIndex);
     }
 
@@ -2666,7 +2753,23 @@ function App() {
     }
   };
 
-  const openParsedBook = (row: BookRow, parsed: ReaderBook, targetIndex = row.current_index, file?: File) => {
+  const writeAppHistory = (state: AppHistoryState, mode: "push" | "replace" = "push") => {
+    const nextUrl = `${window.location.pathname}${window.location.hash}`;
+    if (mode === "replace") {
+      window.history.replaceState(state, "", nextUrl);
+      return;
+    }
+    window.history.pushState(state, "", nextUrl);
+  };
+
+  const openParsedBook = (
+    row: BookRow,
+    parsed: ReaderBook,
+    targetIndex = row.current_index,
+    file?: File,
+    options: { updateHistory?: boolean } = {}
+  ) => {
+    const { updateHistory = true } = options;
     stopAudio();
     setPlayback("idle");
     setNotice("");
@@ -2694,13 +2797,14 @@ function App() {
       setProgressNotice(true);
     }
     setView("reader");
+    if (updateHistory) writeAppHistory({ illumeView: "reader", bookId: row.id });
   };
 
-  const openBook = async (row: BookRow) => {
+  const openBook = async (row: BookRow, options: { updateHistory?: boolean } = {}) => {
     const cached = parsedBooks.current.get(row.id);
     const cachedFile = parsedBookFiles.current.get(row.id);
     if (cached && (cached.format !== "pdf" || cachedFile)) {
-      openParsedBook(row, cached, undefined, cachedFile);
+      openParsedBook(row, cached, undefined, cachedFile, options);
       return;
     }
 
@@ -2730,7 +2834,7 @@ function App() {
       }
       parsedBooks.current.set(row.id, parsed);
       parsedBookFiles.current.set(row.id, file);
-      openParsedBook(row, parsed, undefined, file);
+      openParsedBook(row, parsed, undefined, file, options);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not open this book.");
     } finally {
@@ -2841,19 +2945,70 @@ function App() {
     setCurrentIndex(target);
   };
 
+  const rememberReturnPoint = () => {
+    if (!book) return;
+    setReturnPoint({
+      index: currentIndex,
+      offsetRatio: pdfVisibleOffsetRatio,
+      page: currentPage
+    });
+  };
+
+  const goBackToReturnPoint = () => {
+    if (!book || !returnPoint) return;
+    const point = returnPoint;
+    setReturnPoint(null);
+
+    if (book.format === "pdf" && pdfReaderViewMode === "pdf") {
+      moveToPdfPage(point.page, { offsetRatio: point.offsetRatio });
+      return;
+    }
+
+    moveTo(point.index, { instant: true });
+  };
+
+  const moveToAndNarrate = (index: number) => {
+    if (!book) return;
+    const target = Math.max(0, Math.min(index, book.paragraphs.length - 1));
+
+    setProgressNotice(false);
+    stopAudio();
+    setPlayback("playing");
+    pendingScrollIndex.current = target;
+
+    const targetPage = book.paragraphs[target]?.pageNumber;
+    if (targetPage) setCurrentPage(targetPage);
+
+    if (target === currentIndex) {
+      const targetParagraph = book.paragraphs[target];
+      if (targetParagraph) speakEdge(targetParagraph);
+      return;
+    }
+
+    setCurrentIndex(target);
+  };
+
   const moveToChapter = (chapterIndex: number) => {
     if (!book) return;
     if (book.format === "pdf") {
       const pageNumber = book.chapterPageNumbers?.[chapterIndex];
       const offsetRatio = book.chapterPageOffsets?.[chapterIndex] ?? 0;
-      if (pageNumber) moveToPdfPage(pageNumber, { offsetRatio });
+      if (pageNumber) {
+        if (pageNumber !== currentPage || Math.abs(offsetRatio - pdfVisibleOffsetRatio) > 0.015) {
+          rememberReturnPoint();
+        }
+        moveToPdfPage(pageNumber, { offsetRatio });
+      }
       return;
     }
 
     const firstParagraph = book.paragraphs.findIndex(
       (paragraph) => paragraph.chapterIndex === chapterIndex
     );
-    if (firstParagraph >= 0) moveTo(firstParagraph, { instant: true });
+    if (firstParagraph >= 0) {
+      if (firstParagraph !== currentIndex) rememberReturnPoint();
+      moveTo(firstParagraph, { instant: true });
+    }
   };
 
   const moveToPdfPage = (page: number, options: { offsetRatio?: number; scroll?: boolean } = {}) => {
@@ -2877,13 +3032,53 @@ function App() {
     }
   };
 
-  const openCatalog = () => {
+  const moveToPdfPageAndNarrate = (page: number) => {
+    if (!book?.pageCount) return;
+    const safePage = Math.max(1, Math.min(page, book.pageCount));
+    const firstParagraph = book.paragraphs.findIndex((paragraph) => paragraph.pageNumber === safePage);
+
+    moveToPdfPage(safePage);
+    if (firstParagraph < 0) return;
+
+    stopAudio();
+    setPlayback("playing");
+
+    if (firstParagraph === currentIndex) {
+      const targetParagraph = book.paragraphs[firstParagraph];
+      if (targetParagraph) speakEdge(targetParagraph);
+    }
+  };
+
+  const openCatalog = (options: { updateHistory?: boolean } = {}) => {
+    const { updateHistory = true } = options;
     stopAudio();
     setPlayback("idle");
     setProgressNotice(false);
     if (activeBookId && book) void saveReadingProgress(activeBookId, currentIndex, currentPage);
     setView("catalog");
+    if (updateHistory) writeAppHistory({ illumeView: "catalog" });
   };
+
+  useEffect(() => {
+    if (isReaderDashboard) return;
+
+    const handlePopState = (event: PopStateEvent) => {
+      const state = event.state as AppHistoryState | null;
+
+      if (state?.illumeView === "reader" && state.bookId) {
+        const row = catalogBooks.find((catalogBook) => catalogBook.id === state.bookId);
+        if (row) {
+          void openBook(row, { updateHistory: false });
+          return;
+        }
+      }
+
+      openCatalog({ updateHistory: false });
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [catalogBooks, isReaderDashboard, openBook, openCatalog]);
 
   const handleReadingScroll = () => {
     if (!book) return;
@@ -3186,15 +3381,20 @@ function App() {
     );
   };
 
-  const scrubToPointer = (event: PointerEvent<HTMLDivElement>) => {
+  const scrubToPointer = (event: PointerEvent<HTMLDivElement>, options: { remember?: boolean } = {}) => {
     if (!book) return;
+    const { remember = false } = options;
     const bounds = event.currentTarget.getBoundingClientRect();
     const ratio = Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width));
     if (isPdfPageOnlyMode && book.pageCount) {
-      moveToPdfPage(Math.max(1, Math.round(ratio * (book.pageCount - 1)) + 1));
+      const targetPage = Math.max(1, Math.round(ratio * (book.pageCount - 1)) + 1);
+      if (remember && targetPage !== currentPage) rememberReturnPoint();
+      moveToPdfPage(targetPage);
       return;
     }
-    moveTo(Math.round(ratio * (book.paragraphs.length - 1)));
+    const targetIndex = Math.round(ratio * (book.paragraphs.length - 1));
+    if (remember && targetIndex !== currentIndex) rememberReturnPoint();
+    moveTo(targetIndex, { instant: true });
   };
 
   const handleProgressKey = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -3556,7 +3756,7 @@ function App() {
   return (
     <main className={immersiveReaderImageMode ? "app-shell image-reader-shell" : "app-shell"}>
       <header className={immersiveReaderImageMode ? "topbar image-topbar" : "topbar"} style={{ position: "relative" }}>
-        <button className="top-icon" type="button" title="Back to library" onClick={openCatalog}>
+        <button className="top-icon" type="button" title="Back to library" onClick={() => openCatalog()}>
           <ChevronLeft size={22} aria-hidden="true" />
         </button>
         <div className="top-title">{book.title}</div>
@@ -3659,6 +3859,15 @@ function App() {
         </div>
       </header>
 
+      {returnPoint && (
+        <div className="reader-back-anchor">
+          <button className="reader-back-button" onClick={goBackToReturnPoint} type="button">
+            <ChevronLeft size={15} aria-hidden="true" />
+            <span>Back</span>
+          </button>
+        </div>
+      )}
+
       <section className={[immersiveReaderImageMode ? "reader-frame image-mode-frame" : "reader-frame", isPdfBook ? "pdf-reader-frame" : ""].filter(Boolean).join(" ")}>
         <aside className="chapter-sidebar">
           <div className="chapter-heading">{isPdfBook ? "Table of contents" : "Chapters"}</div>
@@ -3732,7 +3941,7 @@ function App() {
         onKeyDown={handleProgressKey}
         onPointerDown={(event) => {
           event.currentTarget.setPointerCapture(event.pointerId);
-          scrubToPointer(event);
+          scrubToPointer(event, { remember: true });
         }}
         onPointerMove={(event) => {
           if (event.buttons === 1) scrubToPointer(event);
@@ -3745,26 +3954,12 @@ function App() {
       </div>
 
       <footer className="control-rail">
-        <div className="control-rail-left">
-          <label className="narration-speed-control">
-            <span>Narration</span>
-            <input
-              aria-label="Narration speed"
-              max="1.5"
-              min="0.7"
-              onChange={handleNarrationRateChange}
-              step="0.05"
-              type="range"
-              value={narrationRate}
-            />
-            <strong>{narrationRate.toFixed(2)}x</strong>
-          </label>
-        </div>
+        <div className="control-rail-left" aria-hidden="true" />
         <div className="transport">
           <button
             className="rail-icon"
             type="button"
-            onClick={() => isPdfPageOnlyMode ? moveToPdfPage(currentPage - 1) : moveTo(currentIndex - 1)}
+            onClick={() => isPdfPageOnlyMode ? moveToPdfPageAndNarrate(currentPage - 1) : moveToAndNarrate(currentIndex - 1)}
             disabled={isPdfPageOnlyMode ? currentPage <= 1 : currentIndex <= 0}
             title={isPdfPageOnlyMode ? "Previous page" : "Previous paragraph"}
           >
@@ -3780,48 +3975,87 @@ function App() {
           <button
             className="rail-icon"
             type="button"
-            onClick={() => isPdfPageOnlyMode ? moveToPdfPage(currentPage + 1) : moveTo(currentIndex + 1)}
+            onClick={() => isPdfPageOnlyMode ? moveToPdfPageAndNarrate(currentPage + 1) : moveToAndNarrate(currentIndex + 1)}
             disabled={isPdfPageOnlyMode ? currentPage >= pdfPageCount : currentIndex >= book.paragraphs.length - 1}
             title={isPdfPageOnlyMode ? "Next page" : "Next paragraph"}
           >
             <RotateCw size={21} aria-hidden="true" />
           </button>
-        </div>
-        <div className="image-mode-control">
-          <button
-            className={readerImageMode ? "secondary-button active" : "secondary-button"}
-            disabled={!readerImageMode && activeReaderImageChunkIndex < 0}
-            onClick={toggleReaderImageMode}
-            title={
-              isPdfBook && !pdfHasText
-                ? "Text extraction is required for PDF image mode"
-                : isPdfBook && activeReaderImageChunkIndex < 0
-                  ? "No page text is available for image mode here"
-                :
-              readerImageMode
-                ? "Stop generating reading images"
-                : "Show reader images"
-            }
-            type="button"
-          >
-            {isReaderImageLoading ? (
-              <Loader2 className="spin" size={16} aria-hidden="true" />
-            ) : (
-              <ImageIcon size={16} aria-hidden="true" />
-            )}
-            <span>Image mode</span>
-          </button>
-          {readerImageMode && (
+          <div className="narration-speed-control" ref={speedControlRef}>
             <button
-              className="secondary-button image-style-button"
-              onClick={() => setReaderImageStyleOpen(true)}
-              title="Choose image style"
+              aria-expanded={speedPopoverOpen}
+              aria-haspopup="dialog"
+              className="narration-speed-trigger"
+              onClick={() => setSpeedPopoverOpen((open) => !open)}
+              title="Narration speed"
               type="button"
             >
-              <Palette size={16} aria-hidden="true" />
-              <span>Styles</span>
+              {formatNarrationRate(narrationRate)}
             </button>
-          )}
+            {speedPopoverOpen && (
+              <div className="narration-speed-popover" role="dialog" aria-label="Narration speed">
+                <div className="narration-speed-presets" aria-label="Preset speeds">
+                  {NARRATION_RATE_PRESETS.map((preset) => (
+                    <button
+                      className={Math.abs(narrationRate - preset) < 0.01 ? "active" : ""}
+                      key={preset}
+                      onClick={() => chooseNarrationRate(preset)}
+                      type="button"
+                    >
+                      {formatNarrationRate(preset)}
+                    </button>
+                  ))}
+                </div>
+                <input
+                  aria-label="Narration speed"
+                  max={NARRATION_RATE_MAX}
+                  min={NARRATION_RATE_MIN}
+                  onChange={handleNarrationRateChange}
+                  step="0.05"
+                  type="range"
+                  value={narrationRate}
+                />
+                <strong>{formatNarrationRate(narrationRate)}</strong>
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="control-rail-right">
+          <div className="image-mode-control">
+            <button
+              className={readerImageMode ? "secondary-button active" : "secondary-button"}
+              disabled={!readerImageMode && activeReaderImageChunkIndex < 0}
+              onClick={toggleReaderImageMode}
+              title={
+                isPdfBook && !pdfHasText
+                  ? "Text extraction is required for PDF image mode"
+                  : isPdfBook && activeReaderImageChunkIndex < 0
+                    ? "No page text is available for image mode here"
+                  : readerImageMode
+                    ? "Stop generating reading images"
+                    : "Show reader images"
+              }
+              type="button"
+            >
+              {isReaderImageLoading ? (
+                <Loader2 className="spin" size={16} aria-hidden="true" />
+              ) : (
+                <ImageIcon size={16} aria-hidden="true" />
+              )}
+              <span>Image mode</span>
+            </button>
+            {readerImageMode && (
+              <button
+                className="secondary-button image-style-button"
+                onClick={() => setReaderImageStyleOpen(true)}
+                title="Choose image style"
+                type="button"
+              >
+                <Palette size={16} aria-hidden="true" />
+                <span>Styles</span>
+              </button>
+            )}
+          </div>
         </div>
       </footer>
 

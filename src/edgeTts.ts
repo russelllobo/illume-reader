@@ -30,7 +30,7 @@ const EDGE_TTS_VOICE = "en-US-AvaMultilingualNeural";
 const STREAMING_MIME = "audio/mpeg";
 
 const clampSpeechRate = (rate: number | undefined) =>
-  Math.min(1.5, Math.max(0.7, Number.isFinite(rate) ? rate ?? 1 : 1));
+  Math.min(2, Math.max(0.7, Number.isFinite(rate) ? rate ?? 1 : 1));
 
 const edgeRateFromMultiplier = (rate: number | undefined) => {
   const percent = Math.round((clampSpeechRate(rate) - 1) * 100);

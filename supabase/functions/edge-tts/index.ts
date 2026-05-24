@@ -29,7 +29,7 @@ const cleanVoice = (value: unknown) => {
 
 const cleanRate = (value: unknown) => {
   const multiplier = typeof value === "number" ? value : Number(value);
-  const safeMultiplier = Number.isFinite(multiplier) ? Math.min(1.5, Math.max(0.7, multiplier)) : 1;
+  const safeMultiplier = Number.isFinite(multiplier) ? Math.min(2, Math.max(0.7, multiplier)) : 1;
   const percent = Math.round((safeMultiplier - 1) * 100);
   return `${percent >= 0 ? "+" : ""}${percent}%`;
 };
