@@ -36,7 +36,7 @@ import {
 } from "lucide-react";
 import { ChangeEvent, CSSProperties, DragEvent, FormEvent, Fragment, KeyboardEvent, MouseEvent, PointerEvent, ReactNode, RefObject, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
-import { parsePdf, pdfjsLib, readPdfPreview, type PdfPreview } from "./pdf";
+import { pdfPreviewToBook, pdfjsLib, readPdfPreview, type PdfPreview, type StoredPdfPage } from "./pdf";
 import { createEdgeTtsPlayer, EdgeTtsPlayer } from "./edgeTts";
 import { supabase } from "./supabase";
 import { LandingPage } from "./LandingPage";
@@ -108,6 +108,8 @@ type WordRange = {
   start: number;
 };
 type PdfTextLayerWord = {
+  charEnd: number;
+  charStart: number;
   fontSize: number;
   height: number;
   left: number;
@@ -216,7 +218,14 @@ type BookRow = {
   id: string;
   last_opened_at: string | null;
   mime_type: string;
+  page_count?: number | null;
   paragraph_count: number;
+  pdf_page_metrics?: PdfPreview["pageMetrics"] | null;
+  pdf_toc?: Array<{ pageNumber?: number; pageOffsetRatio?: number; title?: string }> | null;
+  processed_at?: string | null;
+  processing_error?: string | null;
+  processing_started_at?: string | null;
+  processing_status?: "ready" | "queued" | "processing" | "processed" | "failed";
   storage_path: string;
   title: string;
   updated_at: string;
@@ -724,6 +733,8 @@ const wordRangesFromText = (text: string): WordRange[] =>
 
 const wordsFromText = (text: string) => Array.from(text.matchAll(/\S+/g)).map((match) => match[0]);
 
+const pdfPageSpeechId = (pageNumber: number) => `pdf-page-${pageNumber}`;
+
 const bookWords = (book: ReaderBook) =>
   book.paragraphs.flatMap((paragraph) => (paragraph.kind === "image" ? [] : wordsFromText(paragraph.text)));
 
@@ -854,6 +865,35 @@ const bookFormat = (row: Pick<BookRow, "document_type" | "file_name" | "mime_typ
 const documentMimeType = (format: "epub" | "pdf") =>
   format === "pdf" ? "application/pdf" : "application/epub+zip";
 
+const pdfPreviewFromRow = (row: BookRow): PdfPreview | null => {
+  if (bookFormat(row) !== "pdf" || !row.page_count) return null;
+
+  const toc = Array.isArray(row.pdf_toc) ? row.pdf_toc : [];
+  return {
+    author: row.author ?? "",
+    chapterPageNumbers: toc.map((entry) => Number(entry.pageNumber ?? 1)).filter((page) => Number.isFinite(page) && page > 0),
+    chapterPageOffsets: toc.map((entry) => Math.max(0, Math.min(1, Number(entry.pageOffsetRatio ?? 0) || 0))),
+    chapters: toc.map((entry) => String(entry.title ?? "").trim()).filter(Boolean),
+    pageCount: row.page_count,
+    pageMetrics: Array.isArray(row.pdf_page_metrics) ? row.pdf_page_metrics : [],
+    title: row.title
+  };
+};
+
+const bookProcessingLabel = (book: BookRow) => {
+  if (bookFormat(book) !== "pdf") return "";
+  switch (book.processing_status) {
+    case "queued":
+      return " · text queued";
+    case "processing":
+      return " · processing text";
+    case "failed":
+      return " · text failed";
+    default:
+      return "";
+  }
+};
+
 const isPdfFile = (file: File) => file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
 
 const isEpubFile = (file: File) => file.type === "application/epub+zip" || file.name.toLowerCase().endsWith(".epub");
@@ -957,7 +997,7 @@ const PdfPageCanvas = memo(function PdfPageCanvas({
   rootRef: RefObject<HTMLElement | null>;
   sideImage?: ReactNode;
   speechHighlight: SpeechHighlight | null;
-  onWordClick?: (pageNumber: number, pageWordIndex: number) => void;
+  onWordClick?: (pageNumber: number, pageWordIndex: number, word?: PdfTextLayerWord, pageText?: string) => void;
 }) {
   const pageRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -967,6 +1007,13 @@ const PdfPageCanvas = memo(function PdfPageCanvas({
 
   const activePageWordIndex = useMemo(() => {
     if (!speechHighlight || speechHighlight.end <= speechHighlight.start) return null;
+
+    if (speechHighlight.paragraphId === pdfPageSpeechId(pageNumber)) {
+      const activeWord = textLayerWords.find(
+        (word) => word.charStart === speechHighlight.start && word.charEnd === speechHighlight.end
+      );
+      return activeWord?.pageWordIndex ?? null;
+    }
 
     const activeParagraph = paragraphs.find((paragraph) => paragraph.id === speechHighlight.paragraphId);
     if (!activeParagraph || activeParagraph.pageNumber !== pageNumber) return null;
@@ -983,7 +1030,7 @@ const PdfPageCanvas = memo(function PdfPageCanvas({
     );
 
     return wordIndexInParagraph >= 0 ? wordsBeforeParagraph + wordIndexInParagraph : null;
-  }, [pageNumber, paragraphs, speechHighlight]);
+  }, [pageNumber, paragraphs, speechHighlight, textLayerWords]);
 
   useEffect(() => {
     const node = pageRef.current;
@@ -1059,6 +1106,8 @@ const PdfPageCanvas = memo(function PdfPageCanvas({
           const start = match.index ?? 0;
           const width = Math.max(2, itemWidth * (match[0].length / itemTextLength));
           words.push({
+            charEnd: 0,
+            charStart: 0,
             fontSize,
             height: fontSize * 1.18,
             left: transform[4] + itemWidth * (start / itemTextLength),
@@ -1069,6 +1118,13 @@ const PdfPageCanvas = memo(function PdfPageCanvas({
           });
           pageWordIndex += 1;
         }
+      }
+
+      let charOffset = 0;
+      for (let wordIndex = 0; wordIndex < words.length; wordIndex += 1) {
+        words[wordIndex].charStart = charOffset;
+        words[wordIndex].charEnd = charOffset + words[wordIndex].text.length;
+        charOffset = words[wordIndex].charEnd + 1;
       }
 
       setTextLayerWords(words);
@@ -1111,7 +1167,10 @@ const PdfPageCanvas = memo(function PdfPageCanvas({
               const target = e.target as HTMLElement;
               const wordIndexStr = target.getAttribute("data-page-word-index");
               if (wordIndexStr !== null && onWordClick) {
-                onWordClick(pageNumber, parseInt(wordIndexStr, 10));
+                const pageWordIndex = parseInt(wordIndexStr, 10);
+                const pageText = textLayerWords.map((word) => word.text).join(" ");
+                const word = textLayerWords.find((item) => item.pageWordIndex === pageWordIndex);
+                onWordClick(pageNumber, pageWordIndex, word, pageText);
               }
             }}
           >
@@ -1167,7 +1226,7 @@ function PdfDocumentView({
   speechHighlight: SpeechHighlight | null;
   pdfPageLayout: "single" | "double";
   pdfPageScale: number;
-  onWordClick?: (pageNumber: number, pageWordIndex: number) => void;
+  onWordClick?: (pageNumber: number, pageWordIndex: number, word?: PdfTextLayerWord, pageText?: string) => void;
 }) {
   const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [error, setError] = useState("");
@@ -1201,17 +1260,6 @@ function PdfDocumentView({
         if (firstPage) {
           const firstViewport = firstPage.getViewport({ scale: 1 });
           setPageMetrics(Array.from({ length: loadedPdf.numPages }, () => ({ height: firstViewport.height, width: firstViewport.width })));
-        }
-
-        const metrics = await Promise.all(
-          Array.from({ length: loadedPdf.numPages }, async (_, index) => {
-            const page = await loadedPdf!.getPage(index + 1);
-            const viewport = page.getViewport({ scale: 1 });
-            return { height: viewport.height, width: viewport.width };
-          })
-        );
-        if (!cancelled) {
-          setPageMetrics(metrics);
         }
       } catch (loadError) {
         if (!cancelled) setError(loadError instanceof Error ? loadError.message : "Could not render this PDF.");
@@ -2849,6 +2897,19 @@ function App() {
   }, [activeReaderImageChunkIndex, readerImageMode, readerImages]);
 
   useEffect(() => {
+    if (!readerImageMode || activeReaderImageChunkIndex < 0) return;
+
+    const activeImage = readerImages[activeReaderImageChunkIndex];
+    if (activeImage?.status !== "ready" || activeImage.style !== readerImageStyle) return;
+
+    const nextChunkIndex = activeReaderImageChunkIndex + 1;
+    if (!readerImageChunkByIndex.has(nextChunkIndex)) return;
+
+    const runId = readerImageRunRef.current;
+    void ensureReaderImage(nextChunkIndex, runId);
+  }, [activeReaderImageChunkIndex, readerImageChunkByIndex, readerImageMode, readerImageStyle, readerImages]);
+
+  useEffect(() => {
     if (!activeBookId || !book || view !== "reader") return;
 
     const flushProgress = () => {
@@ -3401,6 +3462,54 @@ function App() {
     });
   };
 
+  const speakPdfPageFromWord = (pageNumber: number, pageText: string, wordCharStart: number) => {
+    const trimmedText = pageText.trim();
+    if (!trimmedText) return;
+
+    const safeStart = Math.max(0, Math.min(wordCharStart, trimmedText.length - 1));
+    const slicedText = trimmedText.slice(safeStart);
+    const slicedRanges = wordRangesFromText(slicedText);
+    const speechParagraphId = pdfPageSpeechId(pageNumber);
+
+    edgeTtsPlayerRef.current?.stop();
+    edgeTtsPlayerRef.current = null;
+
+    if (slicedRanges[0]) {
+      setSpeechHighlight({
+        paragraphId: speechParagraphId,
+        start: safeStart + slicedRanges[0].start,
+        end: safeStart + slicedRanges[0].end
+      });
+    }
+
+    setCurrentPage(pageNumber);
+    setPlayback("playing");
+
+    edgeTtsPlayerRef.current = createEdgeTtsPlayer({
+      onBoundary: (range) => {
+        setSpeechHighlight({
+          paragraphId: speechParagraphId,
+          start: safeStart + range.start,
+          end: safeStart + range.end
+        });
+      },
+      onEnded: () => {
+        edgeTtsPlayerRef.current = null;
+        setSpeechHighlight(null);
+        setPlayback("idle");
+      },
+      onError: (error) => {
+        edgeTtsPlayerRef.current = null;
+        setSpeechHighlight(null);
+        setNotice(error.message || "Edge voice could not play this PDF page.");
+        setPlayback("idle");
+      },
+      text: slicedText,
+      rate: narrationRate,
+      wordRanges: slicedRanges
+    });
+  };
+
   const handleParagraphClick = (e: MouseEvent<HTMLElement>, paragraph: ReaderParagraph, index: number) => {
     const target = e.target as HTMLElement;
     const wordSpan = target.closest(".reader-word");
@@ -3415,7 +3524,12 @@ function App() {
     moveTo(index);
   };
 
-  const handlePdfWordClick = useCallback((pageNumber: number, pageWordIndex: number) => {
+  const handlePdfWordClick = useCallback((pageNumber: number, pageWordIndex: number, word?: PdfTextLayerWord, pageText?: string) => {
+    if (word && pageText) {
+      speakPdfPageFromWord(pageNumber, pageText, word.charStart);
+      return;
+    }
+
     if (!book) return;
     const pageParagraphs = book.paragraphs.filter((paragraph) => paragraph.pageNumber === pageNumber);
     if (pageParagraphs.length === 0) return;
@@ -3436,7 +3550,7 @@ function App() {
       }
       accumulatedWordCount += paragraphWordCount;
     }
-  }, [book, currentIndex]);
+  }, [book, narrationRate]);
 
   const handleAuth = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -3612,6 +3726,39 @@ function App() {
     setUploadedBookNotice("");
   };
 
+  const loadStoredPdfPages = async (bookId: string): Promise<StoredPdfPage[]> => {
+    const { data, error } = await supabase
+      .from("book_pages")
+      .select("page_number, text")
+      .eq("book_id", bookId)
+      .order("page_number", { ascending: true });
+
+    if (error) {
+      console.warn("Could not load processed PDF pages.", error);
+      return [];
+    }
+
+    return (data ?? []) as StoredPdfPage[];
+  };
+
+  const queuePdfProcessing = (bookId: string) => {
+    setCatalogBooks((items) =>
+      items.map((item) => item.id === bookId ? { ...item, processing_status: "queued" } : item)
+    );
+
+    void supabase.functions.invoke("process-reader-document", {
+      method: "POST",
+      body: { bookId }
+    }).then(({ error }) => {
+      if (error) {
+        console.error("Could not queue PDF processing:", error);
+        setCatalogBooks((items) =>
+          items.map((item) => item.id === bookId ? { ...item, processing_status: "failed", processing_error: error.message } : item)
+        );
+      }
+    });
+  };
+
   const importDocumentFile = async (file: File, openAfterImport = true, pendingImportId?: string) => {
     if (!user) return;
 
@@ -3625,7 +3772,8 @@ function App() {
 
     const format = isPdfFile(file) ? "pdf" : "epub";
     const mimeType = documentMimeType(format);
-    const parsed = format === "pdf" ? await parsePdf(file) : await parseEpub(file);
+    const pdfPreview = format === "pdf" ? await readPdfPreview(file) : null;
+    const parsed = pdfPreview ? pdfPreviewToBook(file, pdfPreview) : await parseEpub(file);
     const embeddedCoverUrl = parsed.coverUrl ? await shrinkCoverDataUrl(parsed.coverUrl) : "";
     const coverUrl = embeddedCoverUrl || (format === "epub" ? await getOpenLibraryCoverUrl(parsed.title, parsed.author) : "");
     const id = crypto.randomUUID();
@@ -3654,8 +3802,18 @@ function App() {
       file_name: file.name,
       file_size: file.size,
       mime_type: mimeType,
+      page_count: parsed.pageCount ?? null,
       paragraph_count: parsed.paragraphs.length,
       chapter_count: parsed.chapters.length,
+      pdf_page_metrics: pdfPreview?.pageMetrics ?? [],
+      pdf_toc: pdfPreview
+        ? pdfPreview.chapters.map((title, index) => ({
+            pageNumber: pdfPreview.chapterPageNumbers[index] ?? 1,
+            pageOffsetRatio: pdfPreview.chapterPageOffsets[index] ?? 0,
+            title
+          }))
+        : [],
+      processing_status: format === "pdf" ? "queued" : "ready",
       current_index: 0,
       current_page: 1,
       last_opened_at: new Date().toISOString()
@@ -3672,6 +3830,7 @@ function App() {
     parsedBookFiles.current.set(row.id, file);
     void cacheBookFile(row, file);
     setCatalogBooks((items) => sortBooksByRecentActivity([row, ...items]));
+    if (format === "pdf") queuePdfProcessing(row.id);
     if (pendingImportId) {
       setPendingBookImports((items) => items.filter((item) => item.id !== pendingImportId));
     }
@@ -3863,7 +4022,12 @@ function App() {
     const { updateHistory = true } = options;
     const cached = parsedBooks.current.get(row.id);
     const cachedFile = parsedBookFiles.current.get(row.id);
-    if (cached && (cached.format !== "pdf" || cachedFile)) {
+    const cachedPdfNeedsProcessedText =
+      cached?.format === "pdf" &&
+      row.processing_status === "processed" &&
+      row.paragraph_count > 0 &&
+      cached.paragraphs.length === 0;
+    if (cached && !cachedPdfNeedsProcessedText && (cached.format !== "pdf" || cachedFile)) {
       bookOpenRunRef.current += 1;
       setBusy(false);
       openParsedBook(row, cached, undefined, cachedFile, { updateHistory });
@@ -3914,18 +4078,41 @@ function App() {
       }
 
       const format = bookFormat(row);
+      const pdfPagesPromise = format === "pdf" ? loadStoredPdfPages(row.id) : Promise.resolve([]);
+      const preview = format === "pdf" ? pdfPreviewFromRow(row) ?? await readPdfPreview(file) : null;
+      const pages = await pdfPagesPromise;
+      const parsed = preview ? pdfPreviewToBook(file, preview, pages) : await parseEpub(file);
+      if (runId !== bookOpenRunRef.current) return;
       if (format === "pdf") {
         setActiveBookFile(file);
-        void readPdfPreview(file)
-          .then((preview) => {
-            if (runId === bookOpenRunRef.current) setOpeningPdfPreview(preview);
-          })
-          .catch((error) => {
-            console.warn("Could not build PDF opening preview.", error);
-          });
+        setOpeningPdfPreview({
+          author: parsed.author,
+          chapterPageNumbers: parsed.chapterPageNumbers ?? [],
+          chapterPageOffsets: parsed.chapterPageOffsets ?? [],
+          chapters: parsed.chapters,
+          pageCount: parsed.pageCount ?? 0,
+          pageMetrics: [],
+          title: parsed.title
+        });
+        if (!pdfPreviewFromRow(row)) {
+          const pdfToc = (preview?.chapters ?? []).map((title, index) => ({
+            pageNumber: preview?.chapterPageNumbers[index] ?? 1,
+            pageOffsetRatio: preview?.chapterPageOffsets[index] ?? 0,
+            title
+          }));
+          void supabase
+            .from("books")
+            .update({
+              page_count: parsed.pageCount ?? null,
+              pdf_page_metrics: preview?.pageMetrics ?? [],
+              pdf_toc: pdfToc
+            })
+            .eq("id", row.id);
+        }
+        if (row.processing_status === "queued" || row.processing_status === "failed") {
+          queuePdfProcessing(row.id);
+        }
       }
-      const parsed = format === "pdf" ? await parsePdf(file) : await parseEpub(file);
-      if (runId !== bookOpenRunRef.current) return;
       if (format === "epub" && !row.cover_url && parsed.coverUrl) {
         const coverUrl = await shrinkCoverDataUrl(parsed.coverUrl);
         row = { ...row, cover_url: coverUrl };
@@ -4919,7 +5106,7 @@ function App() {
                       <span className="catalog-book-copy">
                         <strong>{catalogBook.title}</strong>
                         <small>
-                          {catalogBook.author || catalogBook.file_name} · {formatBytes(catalogBook.file_size)}
+                          {catalogBook.author || catalogBook.file_name} · {formatBytes(catalogBook.file_size)}{bookProcessingLabel(catalogBook)}
                         </small>
                       </span>
                     </button>

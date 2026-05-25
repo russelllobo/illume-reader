@@ -28,6 +28,11 @@ export type PdfPreview = {
   title: string;
 };
 
+export type StoredPdfPage = {
+  page_number: number;
+  text: string;
+};
+
 const normaliseSpace = (text: string) => text.replace(/\s+/g, " ").trim();
 
 const fileTitle = (file: File) => file.name.replace(/\.pdf$/i, "").replace(/[-_]+/g, " ").trim() || file.name;
@@ -244,6 +249,54 @@ export const readPdfPreview = async (file: File): Promise<PdfPreview> => {
   } finally {
     await pdf.destroy();
   }
+};
+
+export const pdfPreviewToBook = (
+  file: File | string,
+  preview: PdfPreview,
+  pages: StoredPdfPage[] = []
+): ReaderBook => {
+  const tocEntries = preview.chapters.map((title, index) => ({
+    level: 0,
+    pageNumber: preview.chapterPageNumbers[index] ?? 1,
+    pageOffsetRatio: preview.chapterPageOffsets[index] ?? 0,
+    title: title.trim()
+  }));
+  const paragraphs: ReaderParagraph[] = [];
+  const fileName = typeof file === "string" ? file : file.name;
+
+  [...pages]
+    .sort((a, b) => a.page_number - b.page_number)
+    .forEach((page) => {
+      const pageNumber = page.page_number;
+      const chapterIndex = chapterIndexForPage(tocEntries, pageNumber);
+      const chapterTitle = tocEntries[chapterIndex]?.title || preview.title;
+      const pageParagraphs = splitPageText(page.text);
+
+      pageParagraphs.forEach((text, paragraphIndex) => {
+        paragraphs.push({
+          id: `pdf-${pageNumber}-${paragraphIndex}`,
+          chapterIndex,
+          chapterTitle,
+          kind: "paragraph",
+          pageNumber,
+          text
+        });
+      });
+    });
+
+  return {
+    title: preview.title,
+    author: preview.author,
+    coverUrl: "",
+    fileName,
+    format: "pdf",
+    pageCount: preview.pageCount,
+    chapterPageNumbers: preview.chapterPageNumbers,
+    chapterPageOffsets: preview.chapterPageOffsets,
+    paragraphs,
+    chapters: preview.chapters
+  };
 };
 
 export { pdfjsLib };

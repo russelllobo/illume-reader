@@ -4,9 +4,7 @@ create table if not exists public.reader_image_usage (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-
 alter table public.reader_image_usage enable row level security;
-
 insert into public.reader_image_usage (user_id, generated_count)
 select user_id, count(*)::integer
 from public.reader_images
@@ -15,21 +13,17 @@ on conflict (user_id) do update
 set
   generated_count = greatest(public.reader_image_usage.generated_count, excluded.generated_count),
   updated_at = now();
-
 drop policy if exists "Users can view their own reader image usage" on public.reader_image_usage;
 create policy "Users can view their own reader image usage"
   on public.reader_image_usage
   for select
   to authenticated
   using ((select auth.uid()) = user_id);
-
 drop trigger if exists reader_image_usage_set_updated_at on public.reader_image_usage;
 create trigger reader_image_usage_set_updated_at
   before update on public.reader_image_usage
   for each row execute function public.set_updated_at();
-
 grant select on public.reader_image_usage to authenticated;
-
 create or replace function public.reserve_reader_image_generation(
   p_user_id uuid,
   p_image_limit integer
@@ -71,7 +65,6 @@ begin
   return query select generated_count, p_image_limit, true;
 end;
 $$;
-
 create or replace function public.refund_reader_image_generation(p_user_id uuid)
 returns integer
 language plpgsql
@@ -88,7 +81,6 @@ begin
   return coalesce(v_generated_count, 0);
 end;
 $$;
-
 revoke all on function public.reserve_reader_image_generation(uuid, integer) from public, anon, authenticated;
 revoke all on function public.refund_reader_image_generation(uuid) from public, anon, authenticated;
 grant execute on function public.reserve_reader_image_generation(uuid, integer) to service_role;

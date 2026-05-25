@@ -10,7 +10,6 @@ create table if not exists public.billing_profiles (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-
 create or replace function public.set_updated_at()
 returns trigger
 language plpgsql
@@ -21,16 +20,13 @@ begin
   return new;
 end;
 $$;
-
 alter table public.billing_profiles enable row level security;
-
 drop policy if exists "Users can view their own billing profile" on public.billing_profiles;
 create policy "Users can view their own billing profile"
   on public.billing_profiles
   for select
   to authenticated
   using (auth.uid() = user_id);
-
 drop trigger if exists billing_profiles_set_updated_at on public.billing_profiles;
 create trigger billing_profiles_set_updated_at
   before update on public.billing_profiles
