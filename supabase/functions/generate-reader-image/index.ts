@@ -43,58 +43,53 @@ const imagePathFor = (
 const promptForStyle = (
   style: ReaderImageStyle,
   bookTitle: string,
-  text: string,
-  startWord: number,
-  endWord: number
+  text: string
 ) => {
-  const referenceWords = Number.isFinite(startWord) && Number.isFinite(endWord) ? `Reference words: ${startWord}-${endWord}.` : "";
   const promptLines =
     style === "cute"
       ? [
-          "Create a clever visual explanation of this paragraph as if it were an illustrated idea from a bestselling self-development book or illustration in a fiction book that shows the plot.",
+          "Create a clever visual picture for this paragraph as if it were an illustration from a bestselling book.",
           `Book: ${bookTitle || "Uploaded document"}.`,
           `Paragraph: ${text}`,
           "",
-          "First, silently pick:",
-          "A concise main idea.",
+          "First, silently identify:",
+          "The type of book: non-fiction, biography , fiction etc",
+          "Pick:",
+          "A concise main idea/story",
           "Identify:",
           "1) The emotional or practical shift.",
-          "2) One simple visual metaphor that captures it.",
-          "Then create the image using that metaphor.",
+          "Then create the image using shift.",
           "",
           "The image should have:",
           "- MINIMAL text",
-          "- prioritise instant intuitiveness",
-          "- 1 simple idea in kawaii anime style and pastel modern colors that explains the concept instantly. Avoid displaying too much information.",
+          "- 1 simple idea in kawaii anime style with soft rounded shapes, pastel modern colors, and a charming storybook feel that explains the concept instantly. Avoid displaying too much information.",
           "- A clear before/after or problem/solution contrast only if suitable",
-          "- Expressive cute kittens and other cute animals or facial expressions where useful.",
-          "- Pastel girly inviting colors.",
+          "- Expressive cute animals, gentle characters, or adorable facial expressions where useful.",
+          "- Bright pastel, inviting colors.",
           "",
-          "Style: Playful premium editorial illustration, bold shapes, warm lighting, crisp details, slightly exaggerated expressions. Fun but not childish. Clear but not boring. Make the lesson land visually without needing the viewer to read a long explanation.",
-          referenceWords
+          "Style: Playful premium kawaii editorial illustration, soft shapes, warm lighting, crisp details, slightly exaggerated expressions, modern cute-book visual style. Fun but not childish. Clear but not boring. Make the idea/story land visually, enhancing the text."
         ]
       : [
-          "Create a clever visual explanation of this nonfiction paragraph as if it were an illustrated idea from a bestselling self-development book.",
+          "Create a clever visual picture for this paragraph as if it were an illustration from a bestselling book.",
           `Book: ${bookTitle || "Uploaded document"}.`,
           `Paragraph: ${text}`,
           "",
-          "First, silently pick:",
-          "A concise main idea.",
+          "First, silently identify:",
+          "The type of book: non-fiction, biography , fiction etc",
+          "Pick:",
+          "A concise main idea/story",
           "Identify:",
           "1) The emotional or practical shift.",
-          "2) One simple visual metaphor that captures it.",
-          "Then create the image using that metaphor.",
+          "Then create the image using shift.",
           "",
           "The image should have:",
           "- MINIMAL text",
-          "- prioritise instant intuitiveness",
           "- 1 simple idea in bold Sunday funnies style with thick outlines, halftone textures, and bright 1980s colors that explains the concept instantly. Avoid displaying too much information.",
           "- A clear before/after or problem/solution contrast only if suitable",
           "- Expressive human body language or facial expressions where useful.",
           "- Bright, inviting colors.",
           "",
-          "Style: Playful premium editorial illustration, bold shapes, warm lighting, crisp details, slightly exaggerated expressions, modern nonfiction-book visual style. Fun but not childish. Clear but not boring. Make the lesson land visually without needing the viewer to read a long explanation.",
-          referenceWords
+          "Style: Playful premium editorial illustration, bold shapes, warm lighting, crisp details, slightly exaggerated expressions, modern nonfiction-book visual style. Fun but not childish. Clear but not boring. Make the lesson land visually without needing the viewer to read a long explanation."
         ];
 
   return promptLines.filter((line) => line !== "").join("\n");
@@ -306,7 +301,7 @@ Deno.serve(async (req) => {
     const payload = await req.json();
     const bookId = cleanId(payload.bookId);
     const bookTitle = cleanText(payload.bookTitle, 180);
-    const imageStyle = cleanImageStyle(payload.imageStyle);
+    const imageStyle = cleanImageStyle(payload.imageStyle ?? payload.style);
     const text = cleanText(payload.text, 7_500);
     const startWord = Number(payload.startWord);
     const endWord = Number(payload.endWord);
@@ -377,7 +372,7 @@ Deno.serve(async (req) => {
     }
 
     try {
-      const prompt = promptForStyle(imageStyle, bookTitle, text, startWord, endWord);
+      const prompt = promptForStyle(imageStyle, bookTitle, text);
 
       const response = await fetch("https://api.openai.com/v1/images/generations", {
         method: "POST",
