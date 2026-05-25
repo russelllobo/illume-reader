@@ -851,6 +851,9 @@ const bookFormat = (row: Pick<BookRow, "document_type" | "file_name" | "mime_typ
   return "epub";
 };
 
+const documentMimeType = (format: "epub" | "pdf") =>
+  format === "pdf" ? "application/pdf" : "application/epub+zip";
+
 const isPdfFile = (file: File) => file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
 
 const isEpubFile = (file: File) => file.type === "application/epub+zip" || file.name.toLowerCase().endsWith(".epub");
@@ -1189,7 +1192,7 @@ function PdfDocumentView({
       setPageMetrics([]);
       try {
         const bytes = await file.arrayBuffer();
-        loadedPdf = await pdfjsLib.getDocument({ data: bytes }).promise;
+        loadedPdf = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
         if (cancelled) return;
         setPdf(loadedPdf);
 
@@ -2169,9 +2172,10 @@ const getCachedBookFile = async (row: BookRow) => {
       return null;
     }
 
-    return new File([blob], row.file_name, { type: row.mime_type || blob.type || "application/epub+zip" });
+    const format = bookFormat(row);
+    return new File([blob], row.file_name, { type: documentMimeType(format) });
   } catch (error) {
-    console.warn("Could not read EPUB from browser cache.", error);
+    console.warn("Could not read document from browser cache.", error);
     return null;
   }
 };
@@ -2185,12 +2189,12 @@ const cacheBookFile = async (row: BookRow, file: Blob) => {
       bookCacheRequest(row.id),
       new Response(file, {
         headers: {
-          "Content-Type": row.mime_type || file.type || "application/epub+zip"
+          "Content-Type": documentMimeType(bookFormat(row))
         }
       })
     );
   } catch (error) {
-    console.warn("Could not store EPUB in browser cache.", error);
+    console.warn("Could not store document in browser cache.", error);
   }
 };
 
@@ -2201,7 +2205,7 @@ const deleteCachedBookFile = async (bookId: string) => {
     const cache = await caches.open(BOOK_CACHE_NAME);
     await cache.delete(bookCacheRequest(bookId));
   } catch (error) {
-    console.warn("Could not remove EPUB from browser cache.", error);
+    console.warn("Could not remove document from browser cache.", error);
   }
 };
 
@@ -3620,6 +3624,7 @@ function App() {
     }
 
     const format = isPdfFile(file) ? "pdf" : "epub";
+    const mimeType = documentMimeType(format);
     const parsed = format === "pdf" ? await parsePdf(file) : await parseEpub(file);
     const embeddedCoverUrl = parsed.coverUrl ? await shrinkCoverDataUrl(parsed.coverUrl) : "";
     const coverUrl = embeddedCoverUrl || (format === "epub" ? await getOpenLibraryCoverUrl(parsed.title, parsed.author) : "");
@@ -3627,7 +3632,7 @@ function App() {
     const storagePath = `${user.id}/${id}/${safeDocumentFileName(file.name, format)}`;
 
     const upload = await supabase.storage.from(EPUB_BUCKET).upload(storagePath, file, {
-      contentType: file.type || (format === "pdf" ? "application/pdf" : "application/epub+zip"),
+      contentType: mimeType,
       upsert: false
     });
 
@@ -3648,7 +3653,7 @@ function App() {
       storage_path: storagePath,
       file_name: file.name,
       file_size: file.size,
-      mime_type: file.type || (format === "pdf" ? "application/pdf" : "application/epub+zip"),
+      mime_type: mimeType,
       paragraph_count: parsed.paragraphs.length,
       chapter_count: parsed.chapters.length,
       current_index: 0,
@@ -3904,7 +3909,7 @@ function App() {
         const { data, error } = await supabase.storage.from(EPUB_BUCKET).download(row.storage_path);
         if (error) throw error;
         if (runId !== bookOpenRunRef.current) return;
-        file = new File([data], row.file_name, { type: row.mime_type || (bookFormat(row) === "pdf" ? "application/pdf" : "application/epub+zip") });
+        file = new File([data], row.file_name, { type: documentMimeType(bookFormat(row)) });
         void cacheBookFile(row, file);
       }
 
