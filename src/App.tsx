@@ -15,7 +15,7 @@ import {
   Loader2,
   LogOut,
   Moon,
-  MoreVertical,
+  MoreHorizontal,
   Palette,
   PanelLeft,
   Pencil,
@@ -160,6 +160,7 @@ const READER_LINE_HEIGHT_MIN = 1.1;
 const READER_LINE_HEIGHT_MAX = 2;
 const READER_LINE_WIDTH_MIN = 30;
 const READER_LINE_WIDTH_MAX = 60;
+const CHAPTER_SIDEBAR_DESKTOP_QUERY = "(min-width: 981px)";
 const PDF_PAGE_SCALE_MIN = 0.75;
 const PDF_PAGE_SCALE_MAX = 1.5;
 const READER_THEMES: Array<{ label: string; value: ReaderTheme }> = [
@@ -250,6 +251,140 @@ const sortBooksByRecentActivity = (books: BookRow[]) =>
     if (activityDifference !== 0) return activityDifference;
     return a.title.localeCompare(b.title);
   });
+
+type MeaningfulStart = {
+  index: number;
+  offsetRatio: number;
+  page: number;
+  usedSmartStart: boolean;
+};
+
+const START_TITLE_PATTERNS = [
+  /\bintroduction\b/i,
+  /\bprologue\b/i,
+  /\bchapter\s*(?:1|one|i)\b/i,
+  /^i$/i,
+  /^(?:1|one|i)[\s.:;-]+/i
+];
+
+const FRONT_MATTER_TITLE_PATTERNS = [
+  /\bcover\b/i,
+  /\btitle\s+page\b/i,
+  /\bcopyright\b/i,
+  /\bcontents\b/i,
+  /\btable\s+of\s+contents\b/i,
+  /\bdedication\b/i,
+  /\bepigraph\b/i,
+  /\backnowledg/i,
+  /\babout\s+the\s+(?:author|book)\b/i,
+  /\balso\s+by\b/i
+];
+
+const normaliseStartTitle = (title: string) =>
+  title.replace(/\s+/g, " ").trim();
+
+const titleMatches = (title: string, patterns: RegExp[]) => {
+  const normalised = normaliseStartTitle(title);
+  return Boolean(normalised) && patterns.some((pattern) => pattern.test(normalised));
+};
+
+const isPreferredStartTitle = (title: string, bookTitle: string) => {
+  const normalised = normaliseStartTitle(title);
+  if (!normalised) return false;
+  if (normaliseStartTitle(bookTitle).toLowerCase() === normalised.toLowerCase()) return true;
+  return titleMatches(normalised, START_TITLE_PATTERNS);
+};
+
+const isFrontMatterTitle = (title: string, bookTitle: string) => {
+  const normalised = normaliseStartTitle(title);
+  if (!normalised) return true;
+  if (normaliseStartTitle(bookTitle).toLowerCase() === normalised.toLowerCase()) return true;
+  return titleMatches(normalised, FRONT_MATTER_TITLE_PATTERNS);
+};
+
+const firstParagraphForChapter = (book: ReaderBook, chapterIndex: number) =>
+  book.paragraphs.findIndex((paragraph) => paragraph.chapterIndex === chapterIndex);
+
+const resolveMeaningfulStart = (book: ReaderBook, row: BookRow, requestedIndex: number): MeaningfulStart => {
+  const savedPage = Math.max(1, row.current_page ?? 1);
+  const hasSavedProgress = (row.current_index ?? 0) > 0 || savedPage > 1 || requestedIndex > 0;
+  const fallbackIndex = book.paragraphs.length ? Math.max(0, Math.min(requestedIndex, book.paragraphs.length - 1)) : 0;
+  const fallbackPage = Math.max(1, Math.min(savedPage, book.pageCount ?? savedPage));
+
+  if (hasSavedProgress) {
+    return {
+      index: fallbackIndex,
+      offsetRatio: 0,
+      page: fallbackPage,
+      usedSmartStart: false
+    };
+  }
+
+  const preferredChapterIndex = book.chapters.findIndex((chapter) =>
+    isPreferredStartTitle(chapter, book.title)
+  );
+
+  if (preferredChapterIndex >= 0) {
+    const page = book.chapterPageNumbers?.[preferredChapterIndex] ?? 1;
+    const index = firstParagraphForChapter(book, preferredChapterIndex);
+    return {
+      index: index >= 0 ? index : fallbackIndex,
+      offsetRatio: book.chapterPageOffsets?.[preferredChapterIndex] ?? 0,
+      page: Math.max(1, Math.min(page, book.pageCount ?? page)),
+      usedSmartStart: true
+    };
+  }
+
+  const preferredHeadingIndex = book.paragraphs.findIndex((paragraph) =>
+    paragraph.kind === "heading" && isPreferredStartTitle(paragraph.text, book.title)
+  );
+
+  if (preferredHeadingIndex >= 0) {
+    const page = book.paragraphs[preferredHeadingIndex]?.pageNumber ?? 1;
+    return {
+      index: preferredHeadingIndex,
+      offsetRatio: 0,
+      page: Math.max(1, Math.min(page, book.pageCount ?? page)),
+      usedSmartStart: true
+    };
+  }
+
+  const firstContentChapterIndex = book.chapters.findIndex((chapter) =>
+    !isFrontMatterTitle(chapter, book.title)
+  );
+
+  if (firstContentChapterIndex >= 0) {
+    const page = book.chapterPageNumbers?.[firstContentChapterIndex] ?? 1;
+    const index = firstParagraphForChapter(book, firstContentChapterIndex);
+    return {
+      index: index >= 0 ? index : fallbackIndex,
+      offsetRatio: book.chapterPageOffsets?.[firstContentChapterIndex] ?? 0,
+      page: Math.max(1, Math.min(page, book.pageCount ?? page)),
+      usedSmartStart: true
+    };
+  }
+
+  const firstContentParagraphIndex = book.paragraphs.findIndex((paragraph) =>
+    !isFrontMatterTitle(paragraph.chapterTitle, book.title)
+  );
+
+  if (firstContentParagraphIndex >= 0) {
+    const page = book.paragraphs[firstContentParagraphIndex]?.pageNumber ?? 1;
+    return {
+      index: firstContentParagraphIndex,
+      offsetRatio: 0,
+      page: Math.max(1, Math.min(page, book.pageCount ?? page)),
+      usedSmartStart: true
+    };
+  }
+
+  return {
+    index: fallbackIndex,
+    offsetRatio: 0,
+    page: fallbackPage,
+    usedSmartStart: false
+  };
+};
 
 type BillingProfile = {
   cancel_at_period_end: boolean;
@@ -2314,7 +2449,7 @@ function App() {
   const [readerImageStyle, setReaderImageStyle] = useState<ReaderImageStyle>("cartoon");
   const [readerImageStyleOpen, setReaderImageStyleOpen] = useState(false);
   const [readerImageUpgradeOpen, setReaderImageUpgradeOpen] = useState(false);
-  const [chapterDrawerOpen, setChapterDrawerOpen] = useState(() => window.matchMedia("(min-width: 981px)").matches);
+  const [chapterDrawerOpen, setChapterDrawerOpen] = useState(() => window.matchMedia(CHAPTER_SIDEBAR_DESKTOP_QUERY).matches);
   const parsedBooks = useRef(new Map<string, ReaderBook>());
   const parsedBookFiles = useRef(new Map<string, File>());
   const bookOpenRunRef = useRef(0);
@@ -2384,6 +2519,11 @@ function App() {
   const [renameTitle, setRenameTitle] = useState("");
   const [renameError, setRenameError] = useState("");
   const [isRenamingBook, setIsRenamingBook] = useState(false);
+  const [readerRenameTarget, setReaderRenameTarget] = useState<BookRow | null>(null);
+  const [readerRenameTitle, setReaderRenameTitle] = useState("");
+  const [readerRenameError, setReaderRenameError] = useState("");
+  const [isReaderRenamingBook, setIsReaderRenamingBook] = useState(false);
+  const readerRenameInputRef = useRef<HTMLInputElement | null>(null);
   const [dashboardData, setDashboardData] = useState<ReaderDashboardData | null>(null);
   const [dashboardError, setDashboardError] = useState("");
   const [dashboardLoading, setDashboardLoading] = useState(false);
@@ -2394,7 +2534,9 @@ function App() {
   const dashboardUserMatch = dashboardPath.match(/^\/dashboard\/users\/([^/]+)\/?$/);
   const selectedDashboardUserId = isReaderDashboard ? decodeURIComponent(dashboardUserMatch?.[1] ?? "") || null : null;
   const current = book?.paragraphs[currentIndex];
+  const activeReaderRow = activeBookId ? catalogBooks.find((item) => item.id === activeBookId) ?? null : null;
   const isPdfBook = book?.format === "pdf";
+  const hasChapterSidebarEntries = Boolean(book?.chapters.length);
   const pdfPageCount = book?.pageCount ?? 0;
   const pdfHasText = Boolean(isPdfBook && book.paragraphs.length);
   const isPdfPageOnlyMode = isPdfBook && pdfReaderViewMode === "pdf";
@@ -2673,15 +2815,15 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const desktopQuery = window.matchMedia("(min-width: 981px)");
+    const desktopQuery = window.matchMedia(CHAPTER_SIDEBAR_DESKTOP_QUERY);
     const syncChapterSidebar = (event: MediaQueryListEvent | MediaQueryList) => {
-      setChapterDrawerOpen(event.matches);
+      setChapterDrawerOpen(event.matches && hasChapterSidebarEntries);
     };
 
     syncChapterSidebar(desktopQuery);
     desktopQuery.addEventListener("change", syncChapterSidebar);
     return () => desktopQuery.removeEventListener("change", syncChapterSidebar);
-  }, []);
+  }, [hasChapterSidebarEntries]);
 
   useEffect(() => {
     window.localStorage.setItem("reader-font-mode", readerFontMode);
@@ -3301,6 +3443,72 @@ function App() {
     if (activeBookId === renamedRow.id) {
       setBook((current) => (current ? { ...current, title: renamedRow.title } : current));
     }
+  };
+
+  useEffect(() => {
+    if (!readerRenameTarget) return;
+    readerRenameInputRef.current?.focus();
+    readerRenameInputRef.current?.select();
+  }, [readerRenameTarget]);
+
+  const openReaderRename = (row: BookRow, displayTitle = row.title) => {
+    setReaderRenameTarget(row);
+    setReaderRenameTitle(displayTitle);
+    setReaderRenameError("");
+    setSettingsOpen(false);
+    setReaderMenuOpen(null);
+  };
+
+  const cancelReaderRename = () => {
+    if (isReaderRenamingBook) return;
+    setReaderRenameTarget(null);
+    setReaderRenameTitle("");
+    setReaderRenameError("");
+  };
+
+  const commitReaderRename = async () => {
+    if (!readerRenameTarget || !user) return;
+    if (isReaderRenamingBook) return;
+
+    const nextTitle = readerRenameTitle.trim().replace(/\s+/g, " ");
+    if (!nextTitle) {
+      cancelReaderRename();
+      return;
+    }
+
+    if (nextTitle === readerRenameTarget.title) {
+      cancelReaderRename();
+      return;
+    }
+
+    setIsReaderRenamingBook(true);
+    setReaderRenameError("");
+    setNotice("");
+
+    const updatedAt = new Date().toISOString();
+    const { data, error } = await supabase
+      .from("books")
+      .update({ title: nextTitle, updated_at: updatedAt })
+      .eq("id", readerRenameTarget.id)
+      .eq("user_id", user.id)
+      .select("*")
+      .single();
+
+    if (error) {
+      setReaderRenameError(error.message);
+      setIsReaderRenamingBook(false);
+      return;
+    }
+
+    applyRenamedBook(data as BookRow);
+    setReaderRenameTarget(null);
+    setReaderRenameTitle("");
+    setIsReaderRenamingBook(false);
+  };
+
+  const renameReaderBook = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void commitReaderRename();
   };
 
   const renameBook = async (event: FormEvent<HTMLFormElement>) => {
@@ -4033,18 +4241,19 @@ function App() {
     setOpeningPdfPreview(null);
     setActiveBookFile(file ?? null);
     setPdfReaderViewMode(parsed.format === "pdf" ? "pdf" : "text");
-    const safeIndex = parsed.paragraphs.length ? Math.max(0, Math.min(targetIndex, parsed.paragraphs.length - 1)) : 0;
+    const start = resolveMeaningfulStart(parsed, row, targetIndex);
+    const safeIndex = parsed.paragraphs.length ? Math.max(0, Math.min(start.index, parsed.paragraphs.length - 1)) : 0;
     const pageFromIndex = parsed.paragraphs[safeIndex]?.pageNumber ?? 1;
-    const initialPage = Math.max(1, Math.min(row.current_page ?? pageFromIndex, parsed.pageCount ?? pageFromIndex));
-    setPdfScrollOffsetRatio(0);
+    const initialPage = Math.max(1, Math.min(start.page || pageFromIndex, parsed.pageCount ?? pageFromIndex));
+    setPdfScrollOffsetRatio(start.offsetRatio);
     setPdfScrollPage(initialPage);
-    setPdfScrollRequest(0);
-    setPdfVisibleOffsetRatio(0);
+    setPdfScrollRequest(start.offsetRatio > 0 ? 1 : 0);
+    setPdfVisibleOffsetRatio(start.offsetRatio);
     setCurrentPage(initialPage);
     setCurrentIndex(safeIndex);
     pendingScrollIndex.current = parsed.paragraphs.length ? safeIndex : null;
     isInitialOpenRef.current = true;
-    if (safeIndex > 0 || initialPage > 1) {
+    if (!start.usedSmartStart && (safeIndex > 0 || initialPage > 1)) {
       setProgressNoticeToken((token) => token + 1);
       setProgressNotice(true);
     }
@@ -4440,7 +4649,10 @@ function App() {
 
   const moveToChapter = (chapterIndex: number) => {
     if (!book) return;
-    setChapterDrawerOpen(false);
+    if (!window.matchMedia(CHAPTER_SIDEBAR_DESKTOP_QUERY).matches) {
+      setChapterDrawerOpen(false);
+    }
+
     if (book.format === "pdf") {
       const pageNumber = book.chapterPageNumbers?.[chapterIndex];
       const offsetRatio = book.chapterPageOffsets?.[chapterIndex] ?? 0;
@@ -4923,6 +5135,65 @@ function App() {
     </>
   );
 
+  const renderReaderBookTitle = (row: BookRow | null, title: string) => {
+    const isEditing = Boolean(row && readerRenameTarget?.id === row.id);
+
+    if (!row) {
+      return <div className="top-title">{title}</div>;
+    }
+
+    if (isEditing) {
+      return (
+        <form className="top-title reader-title-editor" onSubmit={renameReaderBook}>
+          <input
+            aria-label="Document title"
+            disabled={isReaderRenamingBook}
+            onChange={(event) => {
+              setReaderRenameTitle(event.target.value);
+              setReaderRenameError("");
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                cancelReaderRename();
+              }
+            }}
+            onBlur={() => {
+              void commitReaderRename();
+            }}
+            ref={readerRenameInputRef}
+            value={readerRenameTitle}
+          />
+          <button
+            className="reader-title-icon reader-title-cancel"
+            disabled={isReaderRenamingBook}
+            onClick={cancelReaderRename}
+            onPointerDown={(event) => event.preventDefault()}
+            title="Cancel rename"
+            type="button"
+          >
+            <X size={14} aria-hidden="true" />
+          </button>
+          {readerRenameError && <span className="reader-title-error" role="status">{readerRenameError}</span>}
+        </form>
+      );
+    }
+
+    return (
+      <div className="top-title reader-title-rename-trigger">
+        <span>{title}</span>
+        <button
+          className="reader-title-icon"
+          onClick={() => openReaderRename(row, title)}
+          title="Rename document"
+          type="button"
+        >
+          <Pencil size={13} aria-hidden="true" />
+        </button>
+      </div>
+    );
+  };
+
   const renderOpeningHeader = (row: BookRow) => (
     <header className="topbar">
       <div className="reader-top-actions">
@@ -4940,7 +5211,7 @@ function App() {
           <PanelLeft size={18} aria-hidden="true" />
         </button>
       </div>
-      <div className="top-title">{openingPdfPreview?.title || row.title}</div>
+      {renderReaderBookTitle(row, openingPdfPreview?.title || row.title)}
       <div className="settings-button-wrapper" style={{ position: "relative", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
         <button
           aria-expanded={settingsOpen}
@@ -5384,63 +5655,69 @@ function App() {
                     className={catalogBook.id === activeBookId ? "catalog-book active" : "catalog-book"}
                     key={catalogBook.id}
                   >
-                    <button
-                      className="catalog-book-open"
-                      onClick={() => void openBook(catalogBook)}
-                      type="button"
-                    >
-                      <BookCover book={catalogBook} />
-                      <span className="catalog-book-copy">
-                        <strong>{catalogBook.title}</strong>
-                        <small>
-                          {catalogBook.author || catalogBook.file_name} · {formatBytes(catalogBook.file_size)}{bookProcessingLabel(catalogBook)}
-                        </small>
-                      </span>
-                    </button>
-                    <div
-                      className="catalog-actions"
-                      ref={catalogActionBookId === catalogBook.id ? catalogActionMenuRef : null}
-                    >
+                    <div className="catalog-book-open">
                       <button
-                        aria-expanded={catalogActionBookId === catalogBook.id}
-                        aria-haspopup="menu"
-                        className="catalog-actions-trigger"
-                        disabled={busy}
-                        onClick={(event) => {
-                          if (event.detail === 0) {
-                            setCatalogActionBookId((openId) => (openId === catalogBook.id ? "" : catalogBook.id));
-                          }
-                        }}
-                        onPointerDown={(event) => {
-                          if (busy) return;
-                          event.preventDefault();
-                          setCatalogActionBookId((openId) => (openId === catalogBook.id ? "" : catalogBook.id));
-                        }}
-                        title="Book actions"
+                        className="catalog-book-main"
+                        onClick={() => void openBook(catalogBook)}
                         type="button"
                       >
-                        <MoreVertical size={17} aria-hidden="true" />
+                        <BookCover book={catalogBook} />
                       </button>
-                      {catalogActionBookId === catalogBook.id && (
-                        <div className="catalog-actions-menu" role="menu" aria-label={`Actions for ${catalogBook.title}`}>
-                          <button onClick={() => openRenameDialog(catalogBook)} role="menuitem" type="button">
-                            <Pencil size={14} aria-hidden="true" />
-                            <span>Rename</span>
+                      <span className="catalog-book-copy">
+                        <span className="catalog-book-title-row">
+                          <button className="catalog-title-button" onClick={() => void openBook(catalogBook)} type="button">
+                            <strong>{catalogBook.title}</strong>
                           </button>
-                          <button
-                            className="danger"
-                            onClick={() => {
-                              setCatalogActionBookId("");
-                              void deleteBook(catalogBook);
-                            }}
-                            role="menuitem"
-                            type="button"
+                          <div
+                            className="catalog-actions"
+                            ref={catalogActionBookId === catalogBook.id ? catalogActionMenuRef : null}
                           >
-                            <Trash2 size={14} aria-hidden="true" />
-                            <span>Delete</span>
-                          </button>
-                        </div>
-                      )}
+                            <button
+                              aria-expanded={catalogActionBookId === catalogBook.id}
+                              aria-haspopup="menu"
+                              className="catalog-actions-trigger"
+                              disabled={busy}
+                              onClick={(event) => {
+                                if (event.detail === 0) {
+                                  setCatalogActionBookId((openId) => (openId === catalogBook.id ? "" : catalogBook.id));
+                                }
+                              }}
+                              onPointerDown={(event) => {
+                                if (busy) return;
+                                event.preventDefault();
+                                setCatalogActionBookId((openId) => (openId === catalogBook.id ? "" : catalogBook.id));
+                              }}
+                              title="Book actions"
+                              type="button"
+                            >
+                              <MoreHorizontal size={16} aria-hidden="true" />
+                            </button>
+                            {catalogActionBookId === catalogBook.id && (
+                              <div className="catalog-actions-menu" role="menu" aria-label={`Actions for ${catalogBook.title}`}>
+                                <button onClick={() => openRenameDialog(catalogBook)} role="menuitem" type="button">
+                                  <Pencil size={14} aria-hidden="true" />
+                                  <span>Rename</span>
+                                </button>
+                                <button
+                                  className="danger"
+                                  onClick={() => {
+                                    setCatalogActionBookId("");
+                                    void deleteBook(catalogBook);
+                                  }}
+                                  role="menuitem"
+                                  type="button"
+                                >
+                                  <Trash2 size={14} aria-hidden="true" />
+                                  <span>Delete</span>
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </span>
+                        <small>
+                          {catalogBook.author || catalogBook.file_name}
+                        </small>
+                      </span>
                     </div>
                   </div>
                 ))}
@@ -5607,7 +5884,7 @@ function App() {
             <PanelLeft size={18} aria-hidden="true" />
           </button>
         </div>
-        <div className="top-title">{book.title}</div>
+        {renderReaderBookTitle(activeReaderRow, book.title)}
         <div className="settings-button-wrapper" style={{ position: "relative", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
           <button
             aria-expanded={settingsOpen}
