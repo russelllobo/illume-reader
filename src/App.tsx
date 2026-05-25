@@ -3901,7 +3901,7 @@ function App() {
         </button>
         <div className="pro-comparison-hero">
           <h2 className="pro-comparison-brand library-brand-mark" id="pro-comparison-title">
-            <img src="/landing/logo.jpeg" alt="" aria-hidden="true" />
+            <img src="/landing/logo.webp" alt="" aria-hidden="true" />
             <span>illume</span>
             <span className="library-plan-badge pro">
               <span>Pro</span>
@@ -5435,7 +5435,7 @@ function App() {
         <header className="topbar catalog-topbar" style={{ position: "relative" }}>
           <div className="catalog-storage-summary">
             <div className="library-brand-mark" aria-label={`illume ${isPro ? "Pro" : "Free"}`}>
-              <img src="/landing/logo.jpeg" alt="" aria-hidden="true" />
+              <img src="/landing/logo.webp" alt="" aria-hidden="true" />
               <span>illume</span>
               {isPro ? (
                 <span className="library-plan-badge pro">
