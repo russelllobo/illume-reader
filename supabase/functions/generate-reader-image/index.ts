@@ -3,7 +3,7 @@ import { createClient } from "npm:@supabase/supabase-js@2.106.0";
 
 const READER_IMAGE_BUCKET = "reader-images";
 const FREE_READER_IMAGE_LIFETIME_LIMIT = 25;
-const PRO_READER_IMAGE_MONTHLY_LIMIT = 100;
+const PRO_READER_IMAGE_MONTHLY_LIMIT = 1000;
 type ReaderImageStyle = "cartoon" | "cute";
 
 const corsHeaders = {

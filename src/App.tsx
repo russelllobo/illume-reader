@@ -34,7 +34,7 @@ import {
   Users,
   X
 } from "lucide-react";
-import { ChangeEvent, CSSProperties, FormEvent, Fragment, KeyboardEvent, MouseEvent, PointerEvent, ReactNode, RefObject, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, CSSProperties, DragEvent, FormEvent, Fragment, KeyboardEvent, MouseEvent, PointerEvent, ReactNode, RefObject, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
 import { parsePdf, pdfjsLib, readPdfPreview, type PdfPreview } from "./pdf";
 import { createEdgeTtsPlayer, EdgeTtsPlayer } from "./edgeTts";
@@ -158,6 +158,8 @@ const READER_LINE_HEIGHT_MIN = 1.1;
 const READER_LINE_HEIGHT_MAX = 2;
 const READER_LINE_WIDTH_MIN = 30;
 const READER_LINE_WIDTH_MAX = 60;
+const PDF_PAGE_SCALE_MIN = 0.75;
+const PDF_PAGE_SCALE_MAX = 1.5;
 const READER_THEMES: Array<{ label: string; value: ReaderTheme }> = [
   { value: "default", label: "Default" },
   { value: "flexoki", label: "Flexoki" },
@@ -194,6 +196,9 @@ const clampReaderLineHeight = (value: number) =>
 
 const clampReaderLineWidth = (value: number) =>
   Math.min(READER_LINE_WIDTH_MAX, Math.max(READER_LINE_WIDTH_MIN, value));
+
+const clampPdfPageScale = (value: number) =>
+  Math.min(PDF_PAGE_SCALE_MAX, Math.max(PDF_PAGE_SCALE_MIN, value));
 
 const formatNarrationRate = (value: number) =>
   Number.isInteger(value) ? `${value.toFixed(0)}x` : `${value.toFixed(2).replace(/0$/, "")}x`;
@@ -292,7 +297,7 @@ const READER_IMAGE_STORE_NAME = "images";
 const READER_IMAGE_CHUNK_WORDS = 1000;
 const READER_IMAGE_SETTLE_DELAY_MS = 900;
 const FREE_READER_IMAGE_LIFETIME_LIMIT = 25;
-const PRO_READER_IMAGE_MONTHLY_LIMIT = 100;
+const PRO_READER_IMAGE_MONTHLY_LIMIT = 1000;
 const APP_TITLE = "Illume Reader | Make reading more immersive";
 const READER_IMAGE_STYLES: Array<{ id: ReaderImageStyle; label: string; summary: string; previewAlt: string; previewSrc: string }> = [
   {
@@ -932,6 +937,7 @@ const PdfPageCanvas = memo(function PdfPageCanvas({
   active,
   metrics,
   pageNumber,
+  pageScale,
   pdf,
   rootRef,
   sideImage,
@@ -943,6 +949,7 @@ const PdfPageCanvas = memo(function PdfPageCanvas({
   metrics?: PdfPageMetrics;
   pageNumber: number;
   paragraphs: ReaderParagraph[];
+  pageScale: number;
   pdf: pdfjsLib.PDFDocumentProxy;
   rootRef: RefObject<HTMLElement | null>;
   sideImage?: ReactNode;
@@ -1009,8 +1016,10 @@ const PdfPageCanvas = memo(function PdfPageCanvas({
       if (cancelled) return;
 
       const unscaledViewport = page.getViewport({ scale: 1 });
-      const availableWidth = Math.max(280, holder.clientWidth - 8);
-      const scale = Math.min(2.1, availableWidth / unscaledViewport.width);
+      const surfaceWidth = rootRef.current?.clientWidth ?? holder.clientWidth;
+      const inSpread = Boolean(holder.closest(".pdf-page-spread"));
+      const baseAvailableWidth = Math.max(260, inSpread ? (surfaceWidth - 110) / 2 : surfaceWidth - 88);
+      const scale = Math.min(3, (baseAvailableWidth * pageScale) / unscaledViewport.width);
       const viewport = page.getViewport({ scale });
       const deviceScale = window.devicePixelRatio || 1;
       const context = canvas.getContext("2d");
@@ -1068,7 +1077,7 @@ const PdfPageCanvas = memo(function PdfPageCanvas({
       cancelled = true;
       task?.cancel();
     };
-  }, [pageNumber, pdf, shouldRender]);
+  }, [pageNumber, pageScale, pdf, rootRef, shouldRender]);
 
   const imageSlot = sideImage ? (
     <div className={`pdf-page-image-slot ${pageNumber % 2 === 1 ? "left" : "right"}`}>
@@ -1140,6 +1149,7 @@ function PdfDocumentView({
   renderPageImage,
   speechHighlight,
   pdfPageLayout,
+  pdfPageScale,
   onWordClick
 }: {
   currentPage: number;
@@ -1153,6 +1163,7 @@ function PdfDocumentView({
   renderPageImage?: (pageNumber: number) => ReactNode;
   speechHighlight: SpeechHighlight | null;
   pdfPageLayout: "single" | "double";
+  pdfPageScale: number;
   onWordClick?: (pageNumber: number, pageWordIndex: number) => void;
 }) {
   const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
@@ -1308,6 +1319,7 @@ function PdfDocumentView({
             metrics={pageMetrics[page1 - 1]}
             pageNumber={page1}
             paragraphs={paragraphs}
+            pageScale={pdfPageScale}
             pdf={pdf}
             rootRef={surfaceRef}
             sideImage={renderPageImage?.(page1)}
@@ -1320,6 +1332,7 @@ function PdfDocumentView({
               metrics={pageMetrics[page2 - 1]}
               pageNumber={page2}
               paragraphs={paragraphs}
+              pageScale={pdfPageScale}
               pdf={pdf}
               rootRef={surfaceRef}
               sideImage={renderPageImage?.(page2)}
@@ -1337,6 +1350,7 @@ function PdfDocumentView({
           metrics={pageMetrics[index]}
           pageNumber={index + 1}
           paragraphs={paragraphs}
+          pageScale={pdfPageScale}
           pdf={pdf}
           rootRef={surfaceRef}
           sideImage={renderPageImage?.(index + 1)}
@@ -2258,6 +2272,7 @@ function App() {
   const pendingDeleteRef = useRef<PendingDelete | null>(null);
   const uploadedBookNoticeTimer = useRef<number | null>(null);
   const catalogActionMenuRef = useRef<HTMLDivElement | null>(null);
+  const catalogDropDepth = useRef(0);
   const readingScrollFrame = useRef<number | null>(null);
   const coverLookupRef = useRef(new Set<string>());
   const isInitialOpenRef = useRef(false);
@@ -2268,10 +2283,18 @@ function App() {
     const saved = window.localStorage.getItem("pdf-page-layout");
     return saved === "double" ? "double" : "single";
   });
+  const [pdfPageScale, setPdfPageScale] = useState(() => {
+    const saved = Number(window.localStorage.getItem("pdf-page-scale"));
+    return Number.isFinite(saved) ? clampPdfPageScale(saved) : 1;
+  });
 
   useEffect(() => {
     window.localStorage.setItem("pdf-page-layout", pdfPageLayout);
   }, [pdfPageLayout]);
+
+  useEffect(() => {
+    window.localStorage.setItem("pdf-page-scale", pdfPageScale.toFixed(2));
+  }, [pdfPageScale]);
 
   useEffect(() => {
     return () => {
@@ -2284,6 +2307,7 @@ function App() {
   const [importingClassicId, setImportingClassicId] = useState<string | null>(null);
   const [pendingBookImports, setPendingBookImports] = useState<PendingBookImport[]>([]);
   const [uploadedBookNotice, setUploadedBookNotice] = useState("");
+  const [isCatalogDragActive, setIsCatalogDragActive] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [readerMenuOpen, setReaderMenuOpen] = useState<ReaderMenuId | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -2299,8 +2323,8 @@ function App() {
 
   const user = session?.user ?? null;
   const isReaderDashboard =
-    window.location.hostname === "russell.systems" ||
-    window.location.hostname === "www.russell.systems" ||
+    window.location.hostname === "illumereader.com" ||
+    window.location.hostname === "www.illumereader.com" ||
     window.location.pathname.startsWith("/dashboard");
   const dashboardUserMatch = dashboardPath.match(/^\/dashboard\/users\/([^/]+)\/?$/);
   const selectedDashboardUserId = isReaderDashboard ? decodeURIComponent(dashboardUserMatch?.[1] ?? "") || null : null;
@@ -3265,6 +3289,10 @@ function App() {
     setReaderLineWidth((width) => clampReaderLineWidth(Math.round(width + delta)));
   };
 
+  const adjustPdfPageScale = (delta: number) => {
+    setPdfPageScale((scale) => clampPdfPageScale(Number((scale + delta).toFixed(2))));
+  };
+
   const handleNarrationRateChange = (event: ChangeEvent<HTMLInputElement>) => {
     const value = Number(event.currentTarget.value);
     if (!Number.isFinite(value)) return;
@@ -3544,7 +3572,7 @@ function App() {
               <span className="pro-plan-label">illume Pro</span>
             </div>
             <div className="pro-plan-price">
-              <strong>100</strong>
+              <strong>{PRO_READER_IMAGE_MONTHLY_LIMIT}</strong>
               <small>images / month</small>
             </div>
             <p>Your Pro allowance refreshes monthly.</p>
@@ -3651,6 +3679,48 @@ function App() {
     }
   };
 
+  const importDocumentFiles = async (files: File[]) => {
+    if (!files.length || !user) return;
+
+    if (files.some((file) => !isEpubFile(file) && !isPdfFile(file))) {
+      setNotice("Please select EPUB or PDF files only.");
+      return;
+    }
+
+    const totalUploadSize = files.reduce((total, file) => total + file.size, 0);
+    if (storageUsed + totalUploadSize > USER_STORAGE_QUOTA_BYTES) {
+      setNotice(`This upload would exceed your ${formatBytes(USER_STORAGE_QUOTA_BYTES)} library limit.`);
+      return;
+    }
+
+    stopAudio();
+    setPlayback("idle");
+    setNotice("");
+    clearUploadedBookNotice();
+
+    for (const file of files) {
+      const pendingImportId = `upload-${crypto.randomUUID()}`;
+      const displayTitle = file.name.replace(/\.[^.]+$/, "").trim() || file.name;
+      setPendingBookImports((items) => [
+        {
+          author: "Preparing document",
+          coverUrl: null,
+          fileName: file.name,
+          id: pendingImportId,
+          title: displayTitle
+        },
+        ...items
+      ]);
+
+      try {
+        await importDocumentFile(file, false, pendingImportId);
+      } catch (error) {
+        setPendingBookImports((items) => items.filter((item) => item.id !== pendingImportId));
+        setNotice(error instanceof Error ? error.message : "Could not upload this document.");
+      }
+    }
+  };
+
   const addClassicToLibrary = async (classic: ClassicBook) => {
     if (!user) return;
     stopAudio();
@@ -3692,34 +3762,41 @@ function App() {
   };
 
   const handleCatalogUpload = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file || !user) return;
+    await importDocumentFiles(Array.from(event.target.files ?? []));
+    event.target.value = "";
+  };
 
-    stopAudio();
-    setPlayback("idle");
-    setNotice("");
-    clearUploadedBookNotice();
-    const pendingImportId = `upload-${crypto.randomUUID()}`;
-    const displayTitle = file.name.replace(/\.[^.]+$/, "").trim() || file.name;
-    setPendingBookImports((items) => [
-      {
-        author: "Preparing document",
-        coverUrl: null,
-        fileName: file.name,
-        id: pendingImportId,
-        title: displayTitle
-      },
-      ...items
-    ]);
+  const catalogDragHasFiles = (event: DragEvent<HTMLElement>) => Array.from(event.dataTransfer.types).includes("Files");
 
-    try {
-      await importDocumentFile(file, false, pendingImportId);
-    } catch (error) {
-      setPendingBookImports((items) => items.filter((item) => item.id !== pendingImportId));
-      setNotice(error instanceof Error ? error.message : "Could not upload this document.");
-    } finally {
-      event.target.value = "";
+  const handleCatalogDragEnter = (event: DragEvent<HTMLElement>) => {
+    if (!user || !catalogDragHasFiles(event)) return;
+    event.preventDefault();
+    catalogDropDepth.current += 1;
+    setIsCatalogDragActive(true);
+  };
+
+  const handleCatalogDragOver = (event: DragEvent<HTMLElement>) => {
+    if (!user || !catalogDragHasFiles(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setIsCatalogDragActive(true);
+  };
+
+  const handleCatalogDragLeave = (event: DragEvent<HTMLElement>) => {
+    if (!user || !catalogDragHasFiles(event)) return;
+    event.preventDefault();
+    catalogDropDepth.current = Math.max(0, catalogDropDepth.current - 1);
+    if (catalogDropDepth.current === 0) {
+      setIsCatalogDragActive(false);
     }
+  };
+
+  const handleCatalogDrop = (event: DragEvent<HTMLElement>) => {
+    if (!user || !catalogDragHasFiles(event)) return;
+    event.preventDefault();
+    catalogDropDepth.current = 0;
+    setIsCatalogDragActive(false);
+    void importDocumentFiles(Array.from(event.dataTransfer.files));
   };
 
   const writeAppHistory = (state: AppHistoryState, mode: "push" | "replace" = "push") => {
@@ -4629,7 +4706,7 @@ function App() {
             <label className="catalog-upload" title="Upload document">
               {isBookImporting ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Upload size={16} aria-hidden="true" />}
               <span>Upload</span>
-              <input disabled={isBookImporting} type="file" accept={DOCUMENT_UPLOAD_ACCEPT} onChange={handleCatalogUpload} />
+              <input disabled={isBookImporting} type="file" accept={DOCUMENT_UPLOAD_ACCEPT} multiple onChange={handleCatalogUpload} />
             </label>
             
             <div className="profile-button-wrapper" style={{ position: "relative", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -4710,7 +4787,7 @@ function App() {
                         <div className="profile-usage-item">
                           <div className="profile-usage-header">
                             <span>AI Images</span>
-                            <span>{readerImageUsageLabel}{isPro ? "" : " lifetime"}</span>
+                            <span>{readerImageUsageLabel}{isPro ? " monthly" : " lifetime"}</span>
                           </div>
                           <div className="profile-progress-bar">
                             <div 
@@ -4772,16 +4849,32 @@ function App() {
           </div>
         )}
 
-        <section className="catalog-view" aria-label="Book library">
+        <section
+          className={isCatalogDragActive ? "catalog-view drag-active" : "catalog-view"}
+          aria-label="Book library"
+          onDragEnter={handleCatalogDragEnter}
+          onDragLeave={handleCatalogDragLeave}
+          onDragOver={handleCatalogDragOver}
+          onDrop={handleCatalogDrop}
+        >
           <div className="catalog-books-section">
+            {isCatalogDragActive && (
+              <div className="catalog-drop-overlay" aria-hidden="true">
+                <div className="catalog-drop-target">
+                  <Upload size={22} />
+                  <span>Drop EPUB or PDF books to upload</span>
+                </div>
+              </div>
+            )}
             <div className="catalog-header">
               <h1>Books</h1>
               <label className="catalog-heading-upload" title="Upload document">
                 {isBookImporting ? <Loader2 className="spin" size={14} aria-hidden="true" /> : <Upload size={14} aria-hidden="true" />}
                 <span>Upload</span>
-                <input disabled={isBookImporting} type="file" accept={DOCUMENT_UPLOAD_ACCEPT} onChange={handleCatalogUpload} />
+                <input disabled={isBookImporting} type="file" accept={DOCUMENT_UPLOAD_ACCEPT} multiple onChange={handleCatalogUpload} />
               </label>
             </div>
+            {notice && <div className="notice catalog-notice">{notice}</div>}
             <div className="catalog-list">
               {catalogBooks.length || pendingBookImports.length ? (
                 <>
@@ -4884,7 +4977,7 @@ function App() {
                   <label className="empty-upload-btn" title="Upload document">
                     {isBookImporting ? <Loader2 className="spin" size={15} aria-hidden="true" /> : <Upload size={15} aria-hidden="true" />}
                     <span>Upload</span>
-                    <input disabled={isBookImporting} type="file" accept={DOCUMENT_UPLOAD_ACCEPT} onChange={handleCatalogUpload} />
+                    <input disabled={isBookImporting} type="file" accept={DOCUMENT_UPLOAD_ACCEPT} multiple onChange={handleCatalogUpload} />
                   </label>
                 </div>
               )}
@@ -4955,8 +5048,6 @@ function App() {
             </div>
           </div>
         </section>
-
-        {notice && <div className="notice">{notice}</div>}
         {renameTarget && (
           <div className="catalog-rename-modal-overlay" role="presentation" onClick={closeRenameDialog}>
             <form
@@ -5049,7 +5140,7 @@ function App() {
               setSettingsOpen((isOpen) => !isOpen);
               setReaderMenuOpen(null);
             }}
-            title="Typography"
+            title={isPdfBook ? "PDF page settings" : "Typography"}
             type="button"
           >
             <CaseSensitive size={18} aria-hidden="true" />
@@ -5066,8 +5157,54 @@ function App() {
               />
               <div className="settings-popover-card reader-typography-popover">
                 <div className="settings-popover-body">
-                  <div className="settings-section typography-settings-section" aria-label="Typography settings">
-                    <div className="typography-button-group" aria-label="Text size">
+                  <div className="settings-section typography-settings-section" aria-label={isPdfBook ? "PDF page settings" : "Typography settings"}>
+                    {isPdfBook ? (
+                      <>
+                        <div className="typography-font-group pdf-page-layout-group" aria-label="PDF pages visible">
+                          <button
+                            aria-pressed={pdfPageLayout === "single"}
+                            className={pdfPageLayout === "single" ? "active" : undefined}
+                            onClick={() => setPdfPageLayout("single")}
+                            title="Show one page"
+                            type="button"
+                          >
+                            1 Page
+                          </button>
+                          <button
+                            aria-pressed={pdfPageLayout === "double"}
+                            className={pdfPageLayout === "double" ? "active" : undefined}
+                            onClick={() => setPdfPageLayout("double")}
+                            title="Show two pages"
+                            type="button"
+                          >
+                            2 Pages
+                          </button>
+                        </div>
+
+                        <div className="typography-button-group" aria-label="PDF page size">
+                          <button
+                            aria-label="Decrease page size"
+                            disabled={pdfPageScale <= PDF_PAGE_SCALE_MIN}
+                            onClick={() => adjustPdfPageScale(-0.1)}
+                            title="Decrease page size"
+                            type="button"
+                          >
+                            <Minus size={14} aria-hidden="true" />
+                          </button>
+                          <button
+                            aria-label="Increase page size"
+                            disabled={pdfPageScale >= PDF_PAGE_SCALE_MAX}
+                            onClick={() => adjustPdfPageScale(0.1)}
+                            title="Increase page size"
+                            type="button"
+                          >
+                            <Plus size={14} aria-hidden="true" />
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="typography-button-group" aria-label="Text size">
                       <button
                         aria-label="Decrease text size"
                         disabled={readerTextScale <= READER_TEXT_SCALE_MIN}
@@ -5086,9 +5223,9 @@ function App() {
                       >
                         <Plus size={14} aria-hidden="true" />
                       </button>
-                    </div>
+                        </div>
 
-                    <div className="typography-button-group" aria-label="Line width">
+                        <div className="typography-button-group" aria-label="Line width">
                       <button
                         aria-label="Narrow line width"
                         disabled={readerLineWidth <= READER_LINE_WIDTH_MIN}
@@ -5107,9 +5244,9 @@ function App() {
                       >
                         <MoveHorizontal size={17} aria-hidden="true" />
                       </button>
-                    </div>
+                        </div>
 
-                    <div className="typography-button-group" aria-label="Line height">
+                        <div className="typography-button-group" aria-label="Line height">
                       <button
                         aria-label="Decrease line height"
                         disabled={readerLineHeight <= READER_LINE_HEIGHT_MIN}
@@ -5128,9 +5265,9 @@ function App() {
                       >
                         <AlignJustify size={16} aria-hidden="true" />
                       </button>
-                    </div>
+                        </div>
 
-                    <div className="typography-font-group" aria-label="Reader font">
+                        <div className="typography-font-group" aria-label="Reader font">
                       <button
                         aria-pressed={readerFontMode === "sans"}
                         className={readerFontMode === "sans" ? "active" : undefined}
@@ -5149,9 +5286,9 @@ function App() {
                       >
                         Serif
                       </button>
-                    </div>
+                        </div>
 
-                    <div className="typography-theme-menu">
+                        <div className="typography-theme-menu">
                       <Palette size={14} aria-hidden="true" />
                       <button
                         aria-expanded={readerMenuOpen === "theme"}
@@ -5185,9 +5322,9 @@ function App() {
                           ))}
                         </div>
                       )}
-                    </div>
+                        </div>
 
-                    <div className="typography-theme-menu">
+                        <div className="typography-theme-menu">
                       <Moon size={14} aria-hidden="true" />
                       <button
                         aria-expanded={readerMenuOpen === "appearance"}
@@ -5224,7 +5361,9 @@ function App() {
                           ))}
                         </div>
                       )}
-                    </div>
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
@@ -5313,6 +5452,7 @@ function App() {
               renderPageImage={renderPdfPageReaderImage}
               speechHighlight={speechHighlight}
               pdfPageLayout={pdfPageLayout}
+              pdfPageScale={pdfPageScale}
               onWordClick={handlePdfWordClick}
             />
           ) : (

@@ -3,6 +3,5 @@ dist
 .env
 .DS_Store
 generated-images
-.agents
 skills-lock.json
 supabase/.temp
