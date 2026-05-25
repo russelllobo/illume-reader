@@ -41,7 +41,7 @@ supabase functions deploy reader-dashboard
 
 ## Owner dashboard
 
-The owner dashboard is available when the app is served from `https://illumereader.com` or at `/dashboard`.
+The owner dashboard is available at `/dashboard`.
 It requires Google authentication and only allows `r.lobo2003@gmail.com`. The dashboard uses the
 `reader-dashboard` Edge Function to read aggregate user, book, generated image, and Supabase Storage usage
 without exposing privileged database access to the browser.

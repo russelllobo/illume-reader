@@ -2322,10 +2322,7 @@ function App() {
   const [dashboardPath, setDashboardPath] = useState(() => window.location.pathname);
 
   const user = session?.user ?? null;
-  const isReaderDashboard =
-    window.location.hostname === "illumereader.com" ||
-    window.location.hostname === "www.illumereader.com" ||
-    window.location.pathname.startsWith("/dashboard");
+  const isReaderDashboard = window.location.pathname.startsWith("/dashboard");
   const dashboardUserMatch = dashboardPath.match(/^\/dashboard\/users\/([^/]+)\/?$/);
   const selectedDashboardUserId = isReaderDashboard ? decodeURIComponent(dashboardUserMatch?.[1] ?? "") || null : null;
   const current = book?.paragraphs[currentIndex];
