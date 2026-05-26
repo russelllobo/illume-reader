@@ -28,6 +28,7 @@
   --accent-rose-light: #fef2f2;
   --font-sans: 'Outfit', Arial, Helvetica, sans-serif;
   --font-serif: 'Crimson Text', Georgia, serif;
+  --font-heading: 'Averia Serif Libre', Georgia, serif;
 }
 
 * {
@@ -324,19 +325,23 @@ button:disabled {
 }
 
 .topbar {
+  position: relative;
+  z-index: 220;
   display: grid;
   grid-template-columns: 260px 1fr 52px;
   align-items: center;
   border-bottom: 1px solid #dedede;
   background: #fbfbfb;
+  overflow: visible;
 }
 
 .catalog-topbar {
   grid-template-columns: 1fr auto;
   padding-right: 12px;
-  position: relative;
-  z-index: 220;
-  overflow: visible;
+}
+
+.settings-button-wrapper {
+  z-index: 230;
 }
 
 .top-actions {
@@ -448,9 +453,9 @@ button:disabled {
   border: 0;
   background: transparent;
   color: #111;
-  font-family: var(--font-serif);
+  font-family: var(--font-heading);
   font-size: 1.3rem;
-  font-weight: 700;
+  font-weight: 400;
   line-height: 1;
 }
 
@@ -1582,151 +1587,69 @@ button:disabled {
   color: #e44;
 }
 
-.catalog-rename-modal-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 230;
-  display: grid;
-  place-items: center;
-  padding: 20px;
-  background: rgba(20, 16, 11, 0.38);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  animation: fadeIn 0.18s ease both;
-}
-
-.catalog-rename-modal {
-  position: relative;
-  width: min(380px, 100%);
-  display: grid;
-  gap: 15px;
-  padding: 24px;
-  border: 1px solid rgba(20, 16, 11, 0.13);
-  border-radius: 10px;
-  background: #fffdf7;
-  color: #14100b;
-  box-shadow: 0 26px 70px rgba(20, 16, 11, 0.22);
-  animation: scaleIn 0.22s ease both;
-}
-
-.catalog-rename-close {
-  position: absolute;
-  top: 14px;
-  right: 14px;
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  border: 1px solid rgba(20, 16, 11, 0.14);
-  border-radius: 50%;
-  background: rgba(244, 234, 212, 0.64);
-  color: #766956;
-}
-
-.catalog-rename-close:hover,
-.catalog-rename-close:focus-visible {
-  outline: none;
-  background: #f3ead6;
-  color: #14100b;
-}
-
-.catalog-rename-copy {
+.catalog-inline-rename {
+  min-width: 0;
   display: grid;
   gap: 5px;
-  padding-right: 34px;
 }
 
-.catalog-rename-copy > span {
-  color: #8a5b18;
-  font-family: var(--font-sans);
-  font-size: 0.68rem;
-  font-weight: 850;
-  letter-spacing: 0;
-  text-transform: uppercase;
-}
-
-.catalog-rename-copy h2 {
-  margin: 0;
-  color: #14100b;
-  font-family: var(--font-serif);
-  font-size: 1.5rem;
-  line-height: 1.1;
-  letter-spacing: 0;
-}
-
-.catalog-rename-field {
-  display: grid;
-  gap: 6px;
-}
-
-.catalog-rename-field span {
-  color: #6f6558;
-  font-size: 0.72rem;
-  font-weight: 800;
-  text-transform: uppercase;
-}
-
-.catalog-rename-field input {
+.catalog-inline-rename textarea {
+  min-width: 0;
   width: 100%;
-  height: 42px;
-  padding: 0 12px;
-  border: 1px solid rgba(20, 16, 11, 0.16);
-  border-radius: 7px;
-  background: #fff;
+  height: 58px;
+  padding: 8px 10px;
+  border: 1px solid rgba(20, 16, 11, 0.18);
+  border-radius: 6px;
+  background: #fffdf8;
   color: #14100b;
   font-family: var(--font-sans);
-  font-size: 0.9rem;
+  font-size: 0.82rem;
+  font-weight: 750;
+  line-height: 1.25;
   outline: 0;
+  resize: none;
 }
 
-.catalog-rename-field input:focus {
-  border-color: #111;
+.catalog-inline-rename textarea:focus {
+  border-color: #14100b;
   box-shadow: 0 0 0 3px rgba(20, 16, 11, 0.08);
 }
 
-.catalog-rename-error {
-  margin: -4px 0 0;
-  color: #b91c1c;
-  font-size: 0.78rem;
-  font-weight: 700;
-}
-
-.catalog-rename-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.catalog-rename-actions button {
-  height: 36px;
-  padding: 0 13px;
+.catalog-inline-rename-actions {
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  border-radius: 7px;
-  font-family: var(--font-sans);
-  font-size: 0.8rem;
-  font-weight: 850;
+  justify-content: flex-end;
+  gap: 4px;
 }
 
-.catalog-rename-actions button:first-child {
-  border: 1px solid rgba(20, 16, 11, 0.14);
-  background: transparent;
+.catalog-inline-rename-actions button {
+  width: 28px;
+  height: 24px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(20, 16, 11, 0.12);
+  border-radius: 6px;
+  background: #fff;
   color: #5c5248;
 }
 
-.catalog-rename-actions button:last-child {
-  min-width: 82px;
-  border: 0;
+.catalog-inline-rename-actions button:first-child {
   background: #14100b;
   color: #fff;
 }
 
-.catalog-rename-actions button:hover,
-.catalog-rename-actions button:focus-visible {
+.catalog-inline-rename-actions button:hover,
+.catalog-inline-rename-actions button:focus-visible {
   outline: none;
   filter: brightness(0.96);
+}
+
+.catalog-inline-rename-error {
+  grid-column: 1 / -1;
+  color: #b91c1c;
+  font-size: 0.68rem;
+  font-weight: 750;
+  line-height: 1.25;
 }
 
 .empty-library-container {
@@ -2899,8 +2822,10 @@ button:disabled {
   position: fixed;
   top: 16px;
   left: 50%;
-  z-index: 210;
-  max-width: min(460px, calc(100vw - 32px));
+  z-index: 320;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(560px, calc(100vw - 24px));
   min-height: 42px;
   display: flex;
   align-items: center;
@@ -2915,6 +2840,11 @@ button:disabled {
   font-size: 0.82rem;
   font-weight: 750;
   transform: translateX(-50%);
+  animation: toastSlideIn 0.18s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.undo-delete-toast.leaving {
+  animation: toastSlideOut 0.18s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .undo-delete-toast span {
@@ -2922,6 +2852,7 @@ button:disabled {
 }
 
 .undo-delete-toast > span {
+  flex: 1 1 auto;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -2944,6 +2875,7 @@ button:disabled {
 }
 
 .undo-delete-toast button {
+  flex: 0 0 auto;
   min-width: 70px;
   height: 30px;
   padding: 0 14px;
@@ -2961,6 +2893,28 @@ button:disabled {
 .undo-delete-toast button:focus-visible {
   outline: none;
   background: #fff0c2;
+}
+
+@keyframes toastSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
+@keyframes toastSlideOut {
+  from {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-8px) scale(0.98);
+  }
 }
 
 .image-limit-modal-overlay {

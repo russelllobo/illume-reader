@@ -30,7 +30,6 @@ import {
   Minus,
   Plus,
   Check,
-  Settings,
   Users,
   X
 } from "lucide-react";
@@ -186,6 +185,7 @@ const DEFAULT_READER_PREFERENCES: ReaderPreferences = {
 const BOOK_READER_PREFERENCES_KEY = "reader-book-preferences-v1";
 const PENDING_BOOK_DELETE_KEY = "reader-pending-book-delete-v1";
 const DELETE_UNDO_TIMEOUT_MS = 6000;
+const TOAST_ANIMATION_MS = 180;
 const TOAST_TITLE_WORD_LIMIT = 8;
 
 const clampNarrationRate = (value: number) =>
@@ -494,7 +494,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "jane-austen-pride-and-prejudice",
     title: "Pride and Prejudice",
     author: "Jane Austen",
-    coverUrl: "https://standardebooks.org/ebooks/jane-austen/pride-and-prejudice/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/jane-austen-pride-and-prejudice.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/jane-austen/pride-and-prejudice/downloads/jane-austen_pride-and-prejudice.epub",
     summary: "A classic romantic novel of manners following Elizabeth Bennet as she navigates issues of manners, upbringing, morality, education, and marriage in the British Regency gentry."
   },
@@ -502,7 +502,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "mary-shelley-frankenstein",
     title: "Frankenstein",
     author: "Mary Shelley",
-    coverUrl: "https://standardebooks.org/ebooks/mary-shelley/frankenstein/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/mary-shelley-frankenstein.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/mary-shelley/frankenstein/downloads/mary-shelley_frankenstein.epub",
     summary: "The iconic Gothic novel telling the story of Victor Frankenstein, a young scientist who creates a sapient creature in an unorthodox scientific experiment, and its tragic consequences."
   },
@@ -510,7 +510,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "bram-stoker-dracula",
     title: "Dracula",
     author: "Bram Stoker",
-    coverUrl: "https://standardebooks.org/ebooks/bram-stoker/dracula/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/bram-stoker-dracula.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/bram-stoker/dracula/downloads/bram-stoker_dracula.epub",
     summary: "The seminal vampire horror novel that introduced Count Dracula and established many conventions of subsequent vampire fantasy, structured as an epistolary sequence of diaries."
   },
@@ -518,7 +518,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "lewis-carroll-alices-adventures-in-wonderland",
     title: "Alice’s Adventures in Wonderland",
     author: "Lewis Carroll",
-    coverUrl: "https://standardebooks.org/ebooks/lewis-carroll/alices-adventures-in-wonderland/john-tenniel/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/lewis-carroll-alices-adventures-in-wonderland.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/lewis-carroll/alices-adventures-in-wonderland/john-tenniel/downloads/lewis-carroll_alices-adventures-in-wonderland_john-tenniel.epub",
     summary: "A fantastical tale of a young girl named Alice who falls through a rabbit hole into a subterranean fantasy world populated by peculiar, anthropomorphic creatures."
   },
@@ -526,7 +526,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "arthur-conan-doyle-the-adventures-of-sherlock-holmes",
     title: "The Adventures of Sherlock Holmes",
     author: "Arthur Conan Doyle",
-    coverUrl: "https://standardebooks.org/ebooks/arthur-conan-doyle/the-adventures-of-sherlock-holmes/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/arthur-conan-doyle-the-adventures-of-sherlock-holmes.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/arthur-conan-doyle/the-adventures-of-sherlock-holmes/downloads/arthur-conan-doyle_the-adventures-of-sherlock-holmes.epub",
     summary: "A collection of twelve stories featuring the consulting detective Sherlock Holmes and his companion Dr. John H. Watson, showcasing Holmes' brilliant analytical deduction skills."
   },
@@ -534,7 +534,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "f-scott-fitzgerald-the-great-gatsby",
     title: "The Great Gatsby",
     author: "F. Scott Fitzgerald",
-    coverUrl: "https://standardebooks.org/ebooks/f-scott-fitzgerald/the-great-gatsby/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/f-scott-fitzgerald-the-great-gatsby.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/f-scott-fitzgerald/the-great-gatsby/downloads/f-scott-fitzgerald_the-great-gatsby.epub",
     summary: "Set in the Jazz Age on Long Island, the novel depicts narrator Nick Carraway's interactions with mysterious millionaire Jay Gatsby and Gatsby's obsession to reunite with Daisy Buchanan."
   },
@@ -542,7 +542,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "oscar-wilde-the-picture-of-dorian-gray",
     title: "The Picture of Dorian Gray",
     author: "Oscar Wilde",
-    coverUrl: "https://standardebooks.org/ebooks/oscar-wilde/the-picture-of-dorian-gray/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/oscar-wilde-the-picture-of-dorian-gray.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/oscar-wilde/the-picture-of-dorian-gray/downloads/oscar-wilde_the-picture-of-dorian-gray.epub",
     summary: "A philosophical novel about Dorian Gray, a handsome young man who sells his soul so that a painted portrait of him will age and record his decay, while he remains forever young."
   },
@@ -550,7 +550,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "herman-melville-moby-dick",
     title: "Moby-Dick",
     author: "Herman Melville",
-    coverUrl: "https://standardebooks.org/ebooks/herman-melville/moby-dick/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/herman-melville-moby-dick.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/herman-melville/moby-dick/downloads/herman-melville_moby-dick.epub",
     summary: "The epic sailor Ishmael's narrative of the obsessive quest of Ahab, captain of the whaling ship Pequod, for revenge on Moby Dick, the giant white whale."
   },
@@ -558,7 +558,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "charles-dickens-a-tale-of-two-cities",
     title: "A Tale of Two Cities",
     author: "Charles Dickens",
-    coverUrl: "https://standardebooks.org/ebooks/charles-dickens/a-tale-of-two-cities/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/charles-dickens-a-tale-of-two-cities.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/charles-dickens/a-tale-of-two-cities/downloads/charles-dickens_a-tale-of-two-cities.epub",
     summary: "Set in London and Paris before and during the French Revolution, the novel depicts the plight of the French peasantry and the demagogic excesses of the revolutionaries."
   },
@@ -566,7 +566,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "joseph-conrad-heart-of-darkness",
     title: "Heart of Darkness",
     author: "Joseph Conrad",
-    coverUrl: "https://standardebooks.org/ebooks/joseph-conrad/heart-of-darkness/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/joseph-conrad-heart-of-darkness.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/joseph-conrad/heart-of-darkness/downloads/joseph-conrad_heart-of-darkness.epub",
     summary: "A powerful novella following Charles Marlow's voyage up the Congo River in the Congo Free State, exploring the hypocrisy of European imperialism and the darkness of human nature."
   },
@@ -574,7 +574,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "h-g-wells-the-time-machine",
     title: "The Time Machine",
     author: "H. G. Wells",
-    coverUrl: "https://standardebooks.org/ebooks/h-g-wells/the-time-machine/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/h-g-wells-the-time-machine.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/h-g-wells/the-time-machine/downloads/h-g-wells_the-time-machine.epub",
     summary: "The pioneering science fiction novella that popularized the concept of time travel using a vehicle, following a Victorian inventor's journey to the far future and the split of humanity."
   },
@@ -582,7 +582,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "h-g-wells-the-war-of-the-worlds",
     title: "The War of the Worlds",
     author: "H. G. Wells",
-    coverUrl: "https://standardebooks.org/ebooks/h-g-wells/the-war-of-the-worlds/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/h-g-wells-the-war-of-the-worlds.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/h-g-wells/the-war-of-the-worlds/downloads/h-g-wells_the-war-of-the-worlds.epub",
     summary: "One of the earliest and most influential novels detailing an alien invasion, following a nameless narrator as Martians attack Victorian England with advanced technology."
   },
@@ -590,7 +590,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "robert-louis-stevenson-the-strange-case-of-dr-jekyll-and-mr-hyde",
     title: "The Strange Case of Dr. Jekyll and Mr. Hyde",
     author: "Robert Louis Stevenson",
-    coverUrl: "https://standardebooks.org/ebooks/robert-louis-stevenson/the-strange-case-of-dr-jekyll-and-mr-hyde/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/robert-louis-stevenson-the-strange-case-of-dr-jekyll-and-mr-hyde.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/robert-louis-stevenson/the-strange-case-of-dr-jekyll-and-mr-hyde/downloads/robert-louis-stevenson_the-strange-case-of-dr-jekyll-and-mr-hyde.epub",
     summary: "A gothic novella about a London legal practitioner named John Gabriel Utterson who investigates strange occurrences between his old friend, Dr. Henry Jekyll, and the evil Edward Hyde."
   },
@@ -598,7 +598,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "robert-louis-stevenson-treasure-island",
     title: "Treasure Island",
     author: "Robert Louis Stevenson",
-    coverUrl: "https://standardebooks.org/ebooks/robert-louis-stevenson/treasure-island/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/robert-louis-stevenson-treasure-island.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/robert-louis-stevenson/treasure-island/downloads/robert-louis-stevenson_treasure-island.epub",
     summary: "The classic adventure novel telling the story of 'buccaneers and buried gold', following young Jim Hawkins as he boards the Hispaniola to locate Captain Flint's treasure."
   },
@@ -606,7 +606,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "charlotte-bronte-jane-eyre",
     title: "Jane Eyre",
     author: "Charlotte Brontë",
-    coverUrl: "https://standardebooks.org/ebooks/charlotte-bronte/jane-eyre/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/charlotte-bronte-jane-eyre.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/charlotte-bronte/jane-eyre/downloads/charlotte-bronte_jane-eyre.epub",
     summary: "Following the emotions and experiences of its eponymous heroine, including her growth to adulthood and her love for Mr. Rochester, the master of Thornfield Hall."
   },
@@ -614,7 +614,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "emily-bronte-wuthering-heights",
     title: "Wuthering Heights",
     author: "Emily Brontë",
-    coverUrl: "https://standardebooks.org/ebooks/emily-bronte/wuthering-heights/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/emily-bronte-wuthering-heights.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/emily-bronte/wuthering-heights/downloads/emily-bronte_wuthering-heights.epub",
     summary: "A passionate story of obsessive love and revenge on the Yorkshire moors, following the tumultuous relationship between Heathcliff and Catherine Earnshaw."
   },
@@ -622,7 +622,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "homer-the-odyssey",
     title: "The Odyssey",
     author: "Homer",
-    coverUrl: "https://standardebooks.org/ebooks/homer/the-odyssey/william-cullen-bryant/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/homer-the-odyssey.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/homer/the-odyssey/william-cullen-bryant/downloads/homer_the-odyssey_william-cullen-bryant.epub",
     summary: "One of two major ancient Greek epic poems, following the Greek hero Odysseus, king of Ithaca, and his journey home after the fall of Troy, translated by William Cullen Bryant."
   },
@@ -630,7 +630,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "homer-the-iliad",
     title: "The Iliad",
     author: "Homer",
-    coverUrl: "https://standardebooks.org/ebooks/homer/the-iliad/william-cullen-bryant/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/homer-the-iliad.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/homer/the-iliad/william-cullen-bryant/downloads/homer_the-iliad_william-cullen-bryant.epub",
     summary: "Set during the ten-year siege of the city of Troy by a coalition of Greek states, detailing the battle between Achilles and King Agamemnon, translated by William Cullen Bryant."
   },
@@ -638,7 +638,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "fyodor-dostoevsky-crime-and-punishment",
     title: "Crime and Punishment",
     author: "Fyodor Dostoevsky",
-    coverUrl: "https://standardebooks.org/ebooks/fyodor-dostoevsky/crime-and-punishment/constance-garnett/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/fyodor-dostoevsky-crime-and-punishment.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/fyodor-dostoevsky/crime-and-punishment/constance-garnett/downloads/fyodor-dostoevsky_crime-and-punishment_constance-garnett.epub",
     summary: "Following Rodion Raskolnikov, an impoverished ex-student in Saint Petersburg who formulates a plan to kill an unscrupulous pawnbroker for her money, translated by Constance Garnett."
   },
@@ -646,7 +646,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "fyodor-dostoevsky-the-brothers-karamazov",
     title: "The Brothers Karamazov",
     author: "Fyodor Dostoevsky",
-    coverUrl: "https://standardebooks.org/ebooks/fyodor-dostoevsky/the-brothers-karamazov/constance-garnett/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/fyodor-dostoevsky-the-brothers-karamazov.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/fyodor-dostoevsky/the-brothers-karamazov/constance-garnett/downloads/fyodor-dostoevsky_the-brothers-karamazov_constance-garnett.epub",
     summary: "A passionate philosophical novel that enters deeply into the questions of God, free will, and morality, detailing the drama of the Karamazov family, translated by Constance Garnett."
   },
@@ -654,7 +654,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "henry-david-thoreau-walden",
     title: "Walden",
     author: "Henry David Thoreau",
-    coverUrl: "https://standardebooks.org/ebooks/henry-david-thoreau/walden/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/henry-david-thoreau-walden.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/henry-david-thoreau/walden/downloads/henry-david-thoreau_walden.epub",
     summary: "Thoreau's reflection upon simple living in natural surroundings, detailing his experiences over two years in a cabin he built near Walden Pond, Massachusetts."
   },
@@ -662,7 +662,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "walt-whitman-leaves-of-grass",
     title: "Leaves of Grass",
     author: "Walt Whitman",
-    coverUrl: "https://standardebooks.org/ebooks/walt-whitman/leaves-of-grass/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/walt-whitman-leaves-of-grass.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/walt-whitman/leaves-of-grass/downloads/walt-whitman_leaves-of-grass.epub",
     summary: "A landmark poetry collection in American literature, celebrating nature, humanity, individualism, and the sensual experience of the human spirit."
   },
@@ -670,7 +670,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "alexandre-dumas-the-count-of-monte-cristo",
     title: "The Count of Monte Cristo",
     author: "Alexandre Dumas",
-    coverUrl: "https://standardebooks.org/ebooks/alexandre-dumas/the-count-of-monte-cristo/chapman-and-hall/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/alexandre-dumas-the-count-of-monte-cristo.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/alexandre-dumas/the-count-of-monte-cristo/chapman-and-hall/downloads/alexandre-dumas_the-count-of-monte-cristo_chapman-and-hall.epub",
     summary: "Following Edmond Dantès, a young French sailor who is falsely accused of treason, escapes from prison, and seeks retribution against his betrayers."
   },
@@ -678,7 +678,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "alexandre-dumas-the-three-musketeers",
     title: "The Three Musketeers",
     author: "Alexandre Dumas",
-    coverUrl: "https://standardebooks.org/ebooks/alexandre-dumas/the-three-musketeers/william-robson/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/alexandre-dumas-the-three-musketeers.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/alexandre-dumas/the-three-musketeers/william-robson/downloads/alexandre-dumas_the-three-musketeers_william-robson.epub",
     summary: "The adventures of young d'Artagnan as he travels to Paris to join the Musketeers of the Guard, befriending Athos, Porthos, and Aramis, translated by William Robson."
   },
@@ -686,7 +686,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "charles-dickens-great-expectations",
     title: "Great Expectations",
     author: "Charles Dickens",
-    coverUrl: "https://standardebooks.org/ebooks/charles-dickens/great-expectations/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/charles-dickens-great-expectations.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/charles-dickens/great-expectations/downloads/charles-dickens_great-expectations.epub",
     summary: "Pip, an orphan growing up in a humble blacksmith's household, is suddenly elevated to the rank of gentleman by an anonymous benefactor, navigating London high society."
   },
@@ -694,7 +694,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "charles-dickens-oliver-twist",
     title: "Oliver Twist",
     author: "Charles Dickens",
-    coverUrl: "https://standardebooks.org/ebooks/charles-dickens/oliver-twist/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/charles-dickens-oliver-twist.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/charles-dickens/oliver-twist/downloads/charles-dickens_oliver-twist.epub",
     summary: "The story of the orphan Oliver Twist, who starts his life in a workhouse and is then apprenticed with an undertaker, escaping to London and finding a gang of juvenile pickpockets."
   },
@@ -702,7 +702,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "charles-dickens-a-christmas-carol",
     title: "A Christmas Carol",
     author: "Charles Dickens",
-    coverUrl: "https://standardebooks.org/ebooks/charles-dickens/a-christmas-carol/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/charles-dickens-a-christmas-carol.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/charles-dickens/a-christmas-carol/downloads/charles-dickens_a-christmas-carol.epub",
     summary: "The transformation of Ebenezer Scrooge, a miserly old businessman, after he is visited by the ghosts of Christmas Past, Present, and Yet to Come."
   },
@@ -710,7 +710,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "james-joyce-dubliners",
     title: "Dubliners",
     author: "James Joyce",
-    coverUrl: "https://standardebooks.org/ebooks/james-joyce/dubliners/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/james-joyce-dubliners.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/james-joyce/dubliners/downloads/james-joyce_dubliners.epub",
     summary: "A collection of fifteen short stories depicting Irish middle-class life in and around Dublin in the early years of the 20th century, exploring moments of epiphany."
   },
@@ -718,7 +718,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "james-joyce-a-portrait-of-the-artist-as-a-young-man",
     title: "A Portrait of the Artist as a Young Man",
     author: "James Joyce",
-    coverUrl: "https://standardebooks.org/ebooks/james-joyce/a-portrait-of-the-artist-as-a-young-man/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/james-joyce-a-portrait-of-the-artist-as-a-young-man.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/james-joyce/a-portrait-of-the-artist-as-a-young-man/downloads/james-joyce_a-portrait-of-the-artist-as-a-young-man.epub",
     summary: "A semi-autobiographical novel tracing the intellectual, philosophical, and aesthetic awakening of Stephen Dedalus, a young man who rebels against his Catholic upbringing."
   },
@@ -726,7 +726,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "james-joyce-ulysses",
     title: "Ulysses",
     author: "James Joyce",
-    coverUrl: "https://standardebooks.org/ebooks/james-joyce/ulysses/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/james-joyce-ulysses.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/james-joyce/ulysses/downloads/james-joyce_ulysses.epub",
     summary: "A modern masterpiece chronicling the passage of Leopold Bloom through Dublin in the course of an ordinary day, establishing parallels to Homer's epic Odyssey."
   },
@@ -734,7 +734,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "jonathan-swift-gullivers-travels",
     title: "Gulliver’s Travels",
     author: "Jonathan Swift",
-    coverUrl: "https://standardebooks.org/ebooks/jonathan-swift/gullivers-travels/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/jonathan-swift-gullivers-travels.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/jonathan-swift/gullivers-travels/downloads/jonathan-swift_gullivers-travels.epub",
     summary: "A brilliant satire of human nature and traveler's tales, following Lemuel Gulliver's voyages to Lilliput, Brobdingnag, Laputa, and the land of the Houyhnhnms."
   },
@@ -742,7 +742,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "kenneth-grahame-the-wind-in-the-willows",
     title: "The Wind in the Willows",
     author: "Kenneth Grahame",
-    coverUrl: "https://standardebooks.org/ebooks/kenneth-grahame/the-wind-in-the-willows/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/kenneth-grahame-the-wind-in-the-willows.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/kenneth-grahame/the-wind-in-the-willows/downloads/kenneth-grahame_the-wind-in-the-willows.epub",
     summary: "The charming adventures of Mole, Water Rat, Badger, and the eccentric Mr. Toad of Toad Hall, exploring the Thames Valley wilderness and themes of friendship."
   },
@@ -750,7 +750,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "jack-london-the-call-of-the-wild",
     title: "The Call of the Wild",
     author: "Jack London",
-    coverUrl: "https://standardebooks.org/ebooks/jack-london/the-call-of-the-wild/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/jack-london-the-call-of-the-wild.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/jack-london/the-call-of-the-wild/downloads/jack-london_the-call-of-the-wild.epub",
     summary: "Set in the Yukon Territory during the Klondike Gold Rush, following Buck, a domesticated dog who is stolen, sold into service, and reverts to wild instincts."
   },
@@ -758,7 +758,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "jack-london-white-fang",
     title: "White Fang",
     author: "Jack London",
-    coverUrl: "https://standardebooks.org/ebooks/jack-london/white-fang/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/jack-london-white-fang.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/jack-london/white-fang/downloads/jack-london_white-fang.epub",
     summary: "A companion novel to Call of the Wild, focusing on a wild wolf-dog's journey to domestication in the Yukon Territory during the Gold Rush."
   },
@@ -766,7 +766,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "george-bernard-shaw-pygmalion",
     title: "Pygmalion",
     author: "George Bernard Shaw",
-    coverUrl: "https://standardebooks.org/ebooks/george-bernard-shaw/pygmalion/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/george-bernard-shaw-pygmalion.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/george-bernard-shaw/pygmalion/downloads/george-bernard-shaw_pygmalion.epub",
     summary: "A brilliant play about Henry Higgins, a professor of phonetics, who makes a bet that he can train a bedraggled Cockney flower girl, Eliza Doolittle, to pass for a duchess."
   },
@@ -774,7 +774,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "leo-tolstoy-anna-karenina",
     title: "Anna Karenina",
     author: "Leo Tolstoy",
-    coverUrl: "https://standardebooks.org/ebooks/leo-tolstoy/anna-karenina/constance-garnett/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/leo-tolstoy-anna-karenina.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/leo-tolstoy/anna-karenina/constance-garnett/downloads/leo-tolstoy_anna-karenina_constance-garnett.epub",
     summary: "A complex novel in eight parts, tracing the tragic extramarital affair between the socialite Anna Karenina and the dashing cavalry officer Count Vronsky, translated by Constance Garnett."
   },
@@ -782,7 +782,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "leo-tolstoy-war-and-peace",
     title: "War and Peace",
     author: "Leo Tolstoy",
-    coverUrl: "https://standardebooks.org/ebooks/leo-tolstoy/war-and-peace/louise-maude_aylmer-maude/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/leo-tolstoy-war-and-peace.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/leo-tolstoy/war-and-peace/louise-maude_aylmer-maude/downloads/leo-tolstoy_war-and-peace_louise-maude_aylmer-maude.epub",
     summary: "An epic chronicle of the history of the French invasion of Russia and the impact of the Napoleonic era on Tsarist society through five Russian aristocratic families."
   },
@@ -790,7 +790,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "oscar-wilde-the-importance-of-being-earnest",
     title: "The Importance of Being Earnest",
     author: "Oscar Wilde",
-    coverUrl: "https://standardebooks.org/ebooks/oscar-wilde/the-importance-of-being-earnest/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/oscar-wilde-the-importance-of-being-earnest.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/oscar-wilde/the-importance-of-being-earnest/downloads/oscar-wilde_the-importance-of-being-earnest.epub",
     summary: "A farcical comedy in which the protagonists maintain fictitious personae in order to escape burdensome social obligations, showcasing Wilde's sharp wit."
   },
@@ -798,7 +798,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "jane-austen-sense-and-sensibility",
     title: "Sense and Sensibility",
     author: "Jane Austen",
-    coverUrl: "https://standardebooks.org/ebooks/jane-austen/sense-and-sensibility/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/jane-austen-sense-and-sensibility.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/jane-austen/sense-and-sensibility/downloads/jane-austen_sense-and-sensibility.epub",
     summary: "Following the Dashwood sisters, Elinor (representing sense) and Marianne (representing sensibility), as they navigate romance, family, and financial hardship."
   },
@@ -806,7 +806,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "jane-austen-emma",
     title: "Emma",
     author: "Jane Austen",
-    coverUrl: "https://standardebooks.org/ebooks/jane-austen/emma/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/jane-austen-emma.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/jane-austen/emma/downloads/jane-austen_emma.epub",
     summary: "Emma Woodhouse, beautiful, clever, and rich, has a very happy home and little to distress her. But she has an unfortunate habit of matchmaking in her small village."
   },
@@ -814,7 +814,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "jane-austen-persuasion",
     title: "Persuasion",
     author: "Jane Austen",
-    coverUrl: "https://standardebooks.org/ebooks/jane-austen/persuasion/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/jane-austen-persuasion.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/jane-austen/persuasion/downloads/jane-austen_persuasion.epub",
     summary: "The story of Anne Elliot, who, years after breaking her engagement to naval captain Frederick Wentworth, meets him again and must navigate unresolved feelings."
   },
@@ -822,7 +822,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "niccolo-machiavelli-the-prince",
     title: "The Prince",
     author: "Niccolò Machiavelli",
-    coverUrl: "https://standardebooks.org/ebooks/niccolo-machiavelli/the-prince/w-k-marriott/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/niccolo-machiavelli-the-prince.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/niccolo-machiavelli/the-prince/w-k-marriott/downloads/niccolo-machiavelli_the-prince_w-k-marriott.epub",
     summary: "The classic political treatise on statecraft, describing how a ruler should acquire, maintain, and govern a principality, translated by W. K. Marriott."
   },
@@ -830,7 +830,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "friedrich-nietzsche-beyond-good-and-evil",
     title: "Beyond Good and Evil",
     author: "Friedrich Nietzsche",
-    coverUrl: "https://standardebooks.org/ebooks/friedrich-nietzsche/beyond-good-and-evil/helen-zimmern/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/friedrich-nietzsche-beyond-good-and-evil.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/friedrich-nietzsche/beyond-good-and-evil/helen-zimmern/downloads/friedrich-nietzsche_beyond-good-and-evil_helen-zimmern.epub",
     summary: "A fundamental critique of traditional morality and philosophy, introducing Nietzsche's concepts of the will to power and master-slave moralities."
   },
@@ -838,7 +838,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "friedrich-nietzsche-thus-spoke-zarathustra",
     title: "Thus Spoke Zarathustra",
     author: "Friedrich Nietzsche",
-    coverUrl: "https://standardebooks.org/ebooks/friedrich-nietzsche/thus-spake-zarathustra/thomas-common/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/friedrich-nietzsche-thus-spoke-zarathustra.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/friedrich-nietzsche/thus-spake-zarathustra/thomas-common/downloads/friedrich-nietzsche_thus-spake-zarathustra_thomas-common.epub",
     summary: "A philosophical novel containing the fictional travels and speeches of Zarathustra, introducing the concepts of the Übermensch and eternal recurrence."
   },
@@ -846,7 +846,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "kahlil-gibran-the-prophet",
     title: "The Prophet",
     author: "Kahlil Gibran",
-    coverUrl: "https://standardebooks.org/ebooks/khalil-gibran/the-prophet/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/kahlil-gibran-the-prophet.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/khalil-gibran/the-prophet/downloads/khalil-gibran_the-prophet.epub",
     summary: "A book of 26 poetic essays delivered by the prophet Almustafa, offering spiritual insights on love, marriage, children, work, joy, sorrow, and death."
   },
@@ -854,7 +854,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "frances-hodgson-burnett-the-secret-garden",
     title: "The Secret Garden",
     author: "Frances Hodgson Burnett",
-    coverUrl: "https://standardebooks.org/ebooks/frances-hodgson-burnett/the-secret-garden/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/frances-hodgson-burnett-the-secret-garden.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/frances-hodgson-burnett/the-secret-garden/downloads/frances-hodgson-burnett_the-secret-garden.epub",
     summary: "Following Mary Lennox, a spoiled and unloved orphan who is sent to Yorkshire to live with her uncle, discovering a locked and neglected secret garden."
   },
@@ -862,7 +862,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "j-m-barrie-peter-and-wendy",
     title: "Peter and Wendy",
     author: "J. M. Barrie",
-    coverUrl: "https://standardebooks.org/ebooks/j-m-barrie/peter-and-wendy/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/j-m-barrie-peter-and-wendy.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/j-m-barrie/peter-and-wendy/downloads/j-m-barrie_peter-and-wendy.epub",
     summary: "The classic fantasy story of Peter Pan, the boy who wouldn't grow up, as he takes Wendy Darling and her brothers to the magical island of Neverland."
   },
@@ -870,7 +870,7 @@ const CURATED_CLASSICS: ClassicBook[] = [
     id: "brothers-grimm-fairy-tales",
     title: "Grimms’ Fairy Tales",
     author: "Brothers Grimm",
-    coverUrl: "https://standardebooks.org/ebooks/jacob-grimm_wilhelm-grimm/household-tales/margaret-hunt/downloads/cover-thumbnail.jpg",
+    coverUrl: "/classic-covers/brothers-grimm-fairy-tales.jpg",
     downloadUrl: "https://standardebooks.org/ebooks/jacob-grimm_wilhelm-grimm/household-tales/margaret-hunt/downloads/jacob-grimm_wilhelm-grimm_household-tales_margaret-hunt.epub",
     summary: "A renowned collection of German folklore and fairy tales, including Cinderella, Hansel and Gretel, Rapunzel, Rumpelstiltskin, and Sleeping Beauty."
   }
@@ -2764,6 +2764,7 @@ function App() {
   const [speedPopoverOpen, setSpeedPopoverOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
+  const [pendingDeleteExiting, setPendingDeleteExiting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [checkoutResult, setCheckoutResult] = useState<"success" | "canceled" | "">("");
   const [speechHighlight, setSpeechHighlight] = useState<SpeechHighlight | null>(null);
@@ -2797,7 +2798,9 @@ function App() {
   });
   const progressSaveTimer = useRef<number | null>(null);
   const pendingDeleteRef = useRef<PendingDelete | null>(null);
+  const pendingDeleteExitTimer = useRef<number | null>(null);
   const uploadedBookNoticeTimer = useRef<number | null>(null);
+  const uploadedBookNoticeExitTimer = useRef<number | null>(null);
   const catalogActionMenuRef = useRef<HTMLDivElement | null>(null);
   const catalogDropDepth = useRef(0);
   const readingScrollFrame = useRef<number | null>(null);
@@ -2829,12 +2832,19 @@ function App() {
       if (uploadedBookNoticeTimer.current) {
         window.clearTimeout(uploadedBookNoticeTimer.current);
       }
+      if (uploadedBookNoticeExitTimer.current) {
+        window.clearTimeout(uploadedBookNoticeExitTimer.current);
+      }
+      if (pendingDeleteExitTimer.current) {
+        window.clearTimeout(pendingDeleteExitTimer.current);
+      }
     };
   }, []);
 
   const [importingClassicId, setImportingClassicId] = useState<string | null>(null);
   const [pendingBookImports, setPendingBookImports] = useState<PendingBookImport[]>([]);
   const [uploadedBookNotice, setUploadedBookNotice] = useState("");
+  const [uploadedBookNoticeExiting, setUploadedBookNoticeExiting] = useState(false);
   const [isCatalogDragActive, setIsCatalogDragActive] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [readerMenuOpen, setReaderMenuOpen] = useState<ReaderMenuId | null>(null);
@@ -2848,6 +2858,7 @@ function App() {
   const [readerRenameTitle, setReaderRenameTitle] = useState("");
   const [readerRenameError, setReaderRenameError] = useState("");
   const [isReaderRenamingBook, setIsReaderRenamingBook] = useState(false);
+  const catalogRenameInputRef = useRef<HTMLTextAreaElement | null>(null);
   const readerRenameInputRef = useRef<HTMLInputElement | null>(null);
   const [dashboardData, setDashboardData] = useState<ReaderDashboardData | null>(null);
   const [dashboardError, setDashboardError] = useState("");
@@ -3699,19 +3710,25 @@ function App() {
 
             resumedPending.timer = window.setTimeout(() => {
               if (pendingDeleteRef.current?.row.id !== pending.row.id) return;
-              pendingDeleteRef.current = null;
-              setPendingDelete(null);
-              void permanentlyDeleteBook(pending.row).catch((deleteError) => {
-                clearPendingBookDelete(pending.row.id);
-                setNotice(deleteError instanceof Error ? deleteError.message : "Could not delete this book.");
-                setCatalogBooks((items) => {
-                  if (items.some((item) => item.id === pending.row.id)) return items;
-                  return sortBooksByRecentActivity([...items, pending.row]);
+              setPendingDeleteExiting(true);
+              pendingDeleteExitTimer.current = window.setTimeout(() => {
+                pendingDeleteRef.current = null;
+                setPendingDelete(null);
+                setPendingDeleteExiting(false);
+                pendingDeleteExitTimer.current = null;
+                void permanentlyDeleteBook(pending.row).catch((deleteError) => {
+                  clearPendingBookDelete(pending.row.id);
+                  setNotice(deleteError instanceof Error ? deleteError.message : "Could not delete this book.");
+                  setCatalogBooks((items) => {
+                    if (items.some((item) => item.id === pending.row.id)) return items;
+                    return sortBooksByRecentActivity([...items, pending.row]);
+                  });
                 });
-              });
+              }, TOAST_ANIMATION_MS);
             }, pending.deadline - Date.now());
 
             pendingDeleteRef.current = resumedPending;
+            setPendingDeleteExiting(false);
             setPendingDelete(resumedPending);
           }
         }
@@ -3843,6 +3860,12 @@ function App() {
       setBook((current) => (current ? { ...current, title: renamedRow.title } : current));
     }
   };
+
+  useEffect(() => {
+    if (!renameTarget) return;
+    catalogRenameInputRef.current?.focus();
+    catalogRenameInputRef.current?.select();
+  }, [renameTarget]);
 
   useEffect(() => {
     if (!readerRenameTarget) return;
@@ -4351,10 +4374,20 @@ function App() {
     if (uploadedBookNoticeTimer.current) {
       window.clearTimeout(uploadedBookNoticeTimer.current);
     }
+    if (uploadedBookNoticeExitTimer.current) {
+      window.clearTimeout(uploadedBookNoticeExitTimer.current);
+      uploadedBookNoticeExitTimer.current = null;
+    }
 
+    setUploadedBookNoticeExiting(false);
     setUploadedBookNotice(title);
     uploadedBookNoticeTimer.current = window.setTimeout(() => {
-      setUploadedBookNotice("");
+      setUploadedBookNoticeExiting(true);
+      uploadedBookNoticeExitTimer.current = window.setTimeout(() => {
+        setUploadedBookNotice("");
+        setUploadedBookNoticeExiting(false);
+        uploadedBookNoticeExitTimer.current = null;
+      }, TOAST_ANIMATION_MS);
       uploadedBookNoticeTimer.current = null;
     }, 4200);
   };
@@ -4364,7 +4397,17 @@ function App() {
       window.clearTimeout(uploadedBookNoticeTimer.current);
       uploadedBookNoticeTimer.current = null;
     }
-    setUploadedBookNotice("");
+    if (uploadedBookNoticeExitTimer.current) {
+      window.clearTimeout(uploadedBookNoticeExitTimer.current);
+      uploadedBookNoticeExitTimer.current = null;
+    }
+    if (!uploadedBookNotice) return;
+    setUploadedBookNoticeExiting(true);
+    uploadedBookNoticeExitTimer.current = window.setTimeout(() => {
+      setUploadedBookNotice("");
+      setUploadedBookNoticeExiting(false);
+      uploadedBookNoticeExitTimer.current = null;
+    }, TOAST_ANIMATION_MS);
   };
 
   const loadStoredPdfPages = async (bookId: string): Promise<StoredPdfPage[]> => {
@@ -4821,9 +4864,18 @@ function App() {
     if (!pending) return;
 
     window.clearTimeout(pending.timer);
+    if (pendingDeleteExitTimer.current) {
+      window.clearTimeout(pendingDeleteExitTimer.current);
+      pendingDeleteExitTimer.current = null;
+    }
     pendingDeleteRef.current = null;
     clearPendingBookDelete(pending.row.id);
-    setPendingDelete(null);
+    setPendingDeleteExiting(true);
+    pendingDeleteExitTimer.current = window.setTimeout(() => {
+      setPendingDelete(null);
+      setPendingDeleteExiting(false);
+      pendingDeleteExitTimer.current = null;
+    }, TOAST_ANIMATION_MS);
     setCatalogBooks((items) => {
       if (items.some((item) => item.id === pending.row.id)) return items;
       return sortBooksByRecentActivity([...items, pending.row]);
@@ -4843,9 +4895,14 @@ function App() {
 
     if (pendingDeleteRef.current) {
       window.clearTimeout(pendingDeleteRef.current.timer);
+      if (pendingDeleteExitTimer.current) {
+        window.clearTimeout(pendingDeleteExitTimer.current);
+        pendingDeleteExitTimer.current = null;
+      }
       const previousRow = pendingDeleteRef.current.row;
       pendingDeleteRef.current = null;
       setPendingDelete(null);
+      setPendingDeleteExiting(false);
       clearPendingBookDelete(previousRow.id);
       void permanentlyDeleteBook(previousRow).catch((error) => {
         setNotice(error instanceof Error ? error.message : "Could not delete this book.");
@@ -4879,19 +4936,25 @@ function App() {
 
     pending.timer = window.setTimeout(() => {
       if (pendingDeleteRef.current?.row.id !== row.id) return;
-      pendingDeleteRef.current = null;
-      setPendingDelete(null);
-      void permanentlyDeleteBook(row).catch((error) => {
-        setNotice(error instanceof Error ? error.message : "Could not delete this book.");
-        clearPendingBookDelete(row.id);
-        setCatalogBooks((items) => {
-          if (items.some((item) => item.id === pending.row.id)) return items;
-          return sortBooksByRecentActivity([...items, pending.row]);
+      setPendingDeleteExiting(true);
+      pendingDeleteExitTimer.current = window.setTimeout(() => {
+        pendingDeleteRef.current = null;
+        setPendingDelete(null);
+        setPendingDeleteExiting(false);
+        pendingDeleteExitTimer.current = null;
+        void permanentlyDeleteBook(row).catch((error) => {
+          setNotice(error instanceof Error ? error.message : "Could not delete this book.");
+          clearPendingBookDelete(row.id);
+          setCatalogBooks((items) => {
+            if (items.some((item) => item.id === pending.row.id)) return items;
+            return sortBooksByRecentActivity([...items, pending.row]);
+          });
         });
-      });
+      }, TOAST_ANIMATION_MS);
     }, DELETE_UNDO_TIMEOUT_MS);
 
     pendingDeleteRef.current = pending;
+    setPendingDeleteExiting(false);
     setPendingDelete(pending);
   };
 
@@ -5874,7 +5937,7 @@ function App() {
                         <div className="profile-actions-row">
                           {billingProfile?.stripe_customer_id && (
                             <button className="secondary-button manage-btn" disabled={busy} onClick={() => { setProfileOpen(false); void openBillingPortal(); }} type="button">
-                              <Settings size={12} aria-hidden="true" />
+                              <CreditCard size={12} aria-hidden="true" />
                               <span>Billing</span>
                             </button>
                           )}
@@ -5893,7 +5956,7 @@ function App() {
         </header>
 
         {pendingDelete && (
-          <div className="undo-delete-toast" role="status" aria-live="polite">
+          <div className={pendingDeleteExiting ? "undo-delete-toast leaving" : "undo-delete-toast"} role="status" aria-live="polite">
             <span>
               <span className="toast-book-title">{toastTitle(pendingDelete.row.title)}</span>
               <span className="toast-action">deleted</span>
@@ -5905,10 +5968,18 @@ function App() {
         )}
 
         {uploadedBookNotice && (
-          <div className="undo-delete-toast upload-complete-toast" role="status" aria-live="polite">
+          <div
+            className={[
+              "undo-delete-toast",
+              "upload-complete-toast",
+              uploadedBookNoticeExiting ? "leaving" : ""
+            ].filter(Boolean).join(" ")}
+            role="status"
+            aria-live="polite"
+          >
             <span>
               <span className="toast-book-title">{toastTitle(uploadedBookNotice)}</span>
-              <span className="toast-action">uploaded</span>
+              <span className="toast-action">ready</span>
             </span>
           </div>
         )}
@@ -5984,77 +6055,109 @@ function App() {
                     </div>
                   </div>
                 ))}
-                {catalogBooks.map((catalogBook) => (
-                  <div
-                    className={catalogBook.id === activeBookId ? "catalog-book active" : "catalog-book"}
-                    key={catalogBook.id}
-                  >
-                    <div className="catalog-book-open">
-                      <button
-                        className="catalog-book-main"
-                        onClick={() => void openBook(catalogBook)}
-                        type="button"
-                      >
-                        <BookCover book={catalogBook} />
-                      </button>
-                      <span className="catalog-book-copy">
-                        <span className="catalog-book-title-row">
-                          <button className="catalog-title-button" onClick={() => void openBook(catalogBook)} type="button">
-                            <strong>{catalogBook.title}</strong>
-                          </button>
-                          <div
-                            className="catalog-actions"
-                            ref={catalogActionBookId === catalogBook.id ? catalogActionMenuRef : null}
-                          >
-                            <button
-                              aria-expanded={catalogActionBookId === catalogBook.id}
-                              aria-haspopup="menu"
-                              className="catalog-actions-trigger"
-                              disabled={busy}
-                              onClick={(event) => {
-                                if (event.detail === 0) {
-                                  setCatalogActionBookId((openId) => (openId === catalogBook.id ? "" : catalogBook.id));
-                                }
+                {catalogBooks.map((catalogBook) => {
+                  const isCatalogRenameActive = renameTarget?.id === catalogBook.id;
+
+                  return (
+                    <div
+                      className={catalogBook.id === activeBookId ? "catalog-book active" : "catalog-book"}
+                      key={catalogBook.id}
+                    >
+                      <div className="catalog-book-open">
+                        <button
+                          className="catalog-book-main"
+                          onClick={() => void openBook(catalogBook)}
+                          type="button"
+                        >
+                          <BookCover book={catalogBook} />
+                        </button>
+                        {isCatalogRenameActive ? (
+                          <form className="catalog-inline-rename" onSubmit={renameBook}>
+                            <textarea
+                              aria-label={`Rename ${catalogBook.title}`}
+                              disabled={isRenamingBook}
+                              onChange={(event) => {
+                                setRenameTitle(event.target.value);
+                                setRenameError("");
                               }}
-                              onPointerDown={(event) => {
-                                if (busy) return;
-                                event.preventDefault();
-                                setCatalogActionBookId((openId) => (openId === catalogBook.id ? "" : catalogBook.id));
+                              onKeyDown={(event) => {
+                                if (event.key === "Escape") closeRenameDialog();
                               }}
-                              title="Book actions"
-                              type="button"
-                            >
-                              <MoreHorizontal size={16} aria-hidden="true" />
-                            </button>
-                            {catalogActionBookId === catalogBook.id && (
-                              <div className="catalog-actions-menu" role="menu" aria-label={`Actions for ${catalogBook.title}`}>
-                                <button onClick={() => openRenameDialog(catalogBook)} role="menuitem" type="button">
-                                  <Pencil size={14} aria-hidden="true" />
-                                  <span>Rename</span>
-                                </button>
+                              ref={catalogRenameInputRef}
+                              rows={2}
+                              value={renameTitle}
+                            />
+                            <span className="catalog-inline-rename-actions">
+                              <button disabled={isRenamingBook} title="Save title" type="submit">
+                                {isRenamingBook ? <Loader2 className="spin" size={13} aria-hidden="true" /> : <Check size={13} aria-hidden="true" />}
+                              </button>
+                              <button disabled={isRenamingBook} onClick={closeRenameDialog} title="Cancel rename" type="button">
+                                <X size={13} aria-hidden="true" />
+                              </button>
+                            </span>
+                            {renameError && <span className="catalog-inline-rename-error" role="status">{renameError}</span>}
+                          </form>
+                        ) : (
+                          <span className="catalog-book-copy">
+                            <span className="catalog-book-title-row">
+                              <button className="catalog-title-button" onClick={() => void openBook(catalogBook)} type="button">
+                                <strong>{catalogBook.title}</strong>
+                              </button>
+                              <div
+                                className="catalog-actions"
+                                ref={catalogActionBookId === catalogBook.id ? catalogActionMenuRef : null}
+                              >
                                 <button
-                                  className="danger"
-                                  onClick={() => {
-                                    setCatalogActionBookId("");
-                                    void deleteBook(catalogBook);
+                                  aria-expanded={catalogActionBookId === catalogBook.id}
+                                  aria-haspopup="menu"
+                                  className="catalog-actions-trigger"
+                                  disabled={busy}
+                                  onClick={(event) => {
+                                    if (event.detail === 0) {
+                                      setCatalogActionBookId((openId) => (openId === catalogBook.id ? "" : catalogBook.id));
+                                    }
                                   }}
-                                  role="menuitem"
+                                  onPointerDown={(event) => {
+                                    if (busy) return;
+                                    event.preventDefault();
+                                    setCatalogActionBookId((openId) => (openId === catalogBook.id ? "" : catalogBook.id));
+                                  }}
+                                  title="Book actions"
                                   type="button"
                                 >
-                                  <Trash2 size={14} aria-hidden="true" />
-                                  <span>Delete</span>
+                                  <MoreHorizontal size={16} aria-hidden="true" />
                                 </button>
+                                {catalogActionBookId === catalogBook.id && (
+                                  <div className="catalog-actions-menu" role="menu" aria-label={`Actions for ${catalogBook.title}`}>
+                                    <button onClick={() => openRenameDialog(catalogBook)} role="menuitem" type="button">
+                                      <Pencil size={14} aria-hidden="true" />
+                                      <span>Rename</span>
+                                    </button>
+                                    <button
+                                      className="danger"
+                                      onClick={() => {
+                                        setCatalogActionBookId("");
+                                        void deleteBook(catalogBook);
+                                      }}
+                                      role="menuitem"
+                                      type="button"
+                                    >
+                                      <Trash2 size={14} aria-hidden="true" />
+                                      <span>Delete</span>
+                                    </button>
+                                  </div>
+                                )}
                               </div>
-                            )}
-                          </div>
-                        </span>
-                        <small>
-                          {catalogBook.author || catalogBook.file_name}
-                        </small>
-                      </span>
+                            </span>
+                            <small>
+                              {catalogBook.author || catalogBook.file_name}
+                            </small>
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
                 </>
               ) : (
                 <div className="empty-library-container">
@@ -6160,46 +6263,6 @@ function App() {
             </>
           )}
         </section>
-        {renameTarget && (
-          <div className="catalog-rename-modal-overlay" role="presentation" onClick={closeRenameDialog}>
-            <form
-              aria-labelledby="rename-book-title"
-              aria-modal="true"
-              className="catalog-rename-modal"
-              onClick={(event) => event.stopPropagation()}
-              onSubmit={renameBook}
-              role="dialog"
-            >
-              <button className="catalog-rename-close" disabled={isRenamingBook} onClick={closeRenameDialog} title="Close" type="button">
-                <X size={14} aria-hidden="true" />
-              </button>
-              <div className="catalog-rename-copy">
-                <span>Rename</span>
-                <h2 id="rename-book-title">Document title</h2>
-              </div>
-              <label className="catalog-rename-field">
-                <span>Title</span>
-                <input
-                  autoFocus
-                  disabled={isRenamingBook}
-                  onChange={(event) => {
-                    setRenameTitle(event.target.value);
-                    setRenameError("");
-                  }}
-                  value={renameTitle}
-                />
-              </label>
-              {renameError && <p className="catalog-rename-error">{renameError}</p>}
-              <div className="catalog-rename-actions">
-                <button disabled={isRenamingBook} onClick={closeRenameDialog} type="button">Cancel</button>
-                <button disabled={isRenamingBook} type="submit">
-                  {isRenamingBook ? <Loader2 className="spin" size={14} aria-hidden="true" /> : <Check size={14} aria-hidden="true" />}
-                  <span>Save</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        )}
         {readerImageUpgradeOpen && renderProComparison()}
       </main>
     );

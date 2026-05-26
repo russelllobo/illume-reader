@@ -19,52 +19,52 @@ const TOP_SHELF_BOOKS: ClassicBook[] = [
   {
     title: "Pride and Prejudice",
     author: "Jane Austen",
-    cover: "https://standardebooks.org/ebooks/jane-austen/pride-and-prejudice/downloads/cover-thumbnail.jpg"
+    cover: "/landing/covers/pride-and-prejudice.jpg"
   },
   {
     title: "Frankenstein",
     author: "Mary Shelley",
-    cover: "https://standardebooks.org/ebooks/mary-shelley/frankenstein/downloads/cover-thumbnail.jpg"
+    cover: "/landing/covers/frankenstein.jpg"
   },
   {
     title: "Dracula",
     author: "Bram Stoker",
-    cover: "https://standardebooks.org/ebooks/bram-stoker/dracula/downloads/cover-thumbnail.jpg"
+    cover: "/landing/covers/dracula.jpg"
   },
   {
     title: "The Great Gatsby",
     author: "F. Scott Fitzgerald",
-    cover: "https://standardebooks.org/ebooks/f-scott-fitzgerald/the-great-gatsby/downloads/cover-thumbnail.jpg"
+    cover: "/landing/covers/the-great-gatsby.jpg"
   },
   {
     title: "Moby-Dick",
     author: "Herman Melville",
-    cover: "https://standardebooks.org/ebooks/herman-melville/moby-dick/downloads/cover-thumbnail.jpg"
+    cover: "/landing/covers/moby-dick.jpg"
   },
   {
     title: "Dorian Gray",
     author: "Oscar Wilde",
-    cover: "https://standardebooks.org/ebooks/oscar-wilde/the-picture-of-dorian-gray/downloads/cover-thumbnail.jpg"
+    cover: "/landing/covers/the-picture-of-dorian-gray.jpg"
   },
   {
     title: "The Odyssey",
     author: "Homer",
-    cover: "https://standardebooks.org/ebooks/homer/the-odyssey/william-cullen-bryant/downloads/cover-thumbnail.jpg"
+    cover: "/landing/covers/the-odyssey.jpg"
   },
   {
     title: "Crime and Punishment",
     author: "Fyodor Dostoevsky",
-    cover: "https://standardebooks.org/ebooks/fyodor-dostoevsky/crime-and-punishment/constance-garnett/downloads/cover-thumbnail.jpg"
+    cover: "/landing/covers/crime-and-punishment.jpg"
   },
   {
     title: "Monte Cristo",
     author: "Alexandre Dumas",
-    cover: "https://standardebooks.org/ebooks/alexandre-dumas/the-count-of-monte-cristo/chapman-and-hall/downloads/cover-thumbnail.jpg"
+    cover: "/landing/covers/the-count-of-monte-cristo.jpg"
   },
   {
     title: "Jane Eyre",
     author: "Charlotte Bronte",
-    cover: "https://standardebooks.org/ebooks/charlotte-bronte/jane-eyre/downloads/cover-thumbnail.jpg"
+    cover: "/landing/covers/jane-eyre.jpg"
   }
 ];
 
@@ -72,52 +72,52 @@ const LOWER_SHELF_BOOKS: ClassicBook[] = [
   {
     title: "Wuthering Heights",
     author: "Emily Bronte",
-    cover: "https://standardebooks.org/ebooks/emily-bronte/wuthering-heights/downloads/cover-thumbnail.jpg"
+    cover: "/landing/covers/wuthering-heights.jpg"
   },
   {
     title: "The Secret Garden",
     author: "Frances Hodgson Burnett",
-    cover: "https://standardebooks.org/ebooks/frances-hodgson-burnett/the-secret-garden/downloads/cover-thumbnail.jpg"
+    cover: "/landing/covers/the-secret-garden.jpg"
   },
   {
     title: "Little Women",
     author: "Louisa May Alcott",
-    cover: "https://standardebooks.org/ebooks/louisa-may-alcott/little-women/downloads/cover-thumbnail.jpg"
+    cover: "/landing/covers/little-women.jpg"
   },
   {
     title: "The Scarlet Letter",
     author: "Nathaniel Hawthorne",
-    cover: "https://standardebooks.org/ebooks/nathaniel-hawthorne/the-scarlet-letter/downloads/cover-thumbnail.jpg"
+    cover: "/landing/covers/the-scarlet-letter.jpg"
   },
   {
     title: "Two Cities",
     author: "Charles Dickens",
-    cover: "https://standardebooks.org/ebooks/charles-dickens/a-tale-of-two-cities/downloads/cover-thumbnail.jpg"
+    cover: "/landing/covers/a-tale-of-two-cities.jpg"
   },
   {
     title: "Treasure Island",
     author: "Robert Louis Stevenson",
-    cover: "https://standardebooks.org/ebooks/robert-louis-stevenson/treasure-island/downloads/cover-thumbnail.jpg"
+    cover: "/landing/covers/treasure-island.jpg"
   },
   {
     title: "Anne of Green Gables",
     author: "L. M. Montgomery",
-    cover: "https://standardebooks.org/ebooks/l-m-montgomery/anne-of-green-gables/downloads/cover-thumbnail.jpg"
+    cover: "/landing/covers/anne-of-green-gables.jpg"
   },
   {
     title: "The Time Machine",
     author: "H. G. Wells",
-    cover: "https://standardebooks.org/ebooks/h-g-wells/the-time-machine/downloads/cover-thumbnail.jpg"
+    cover: "/landing/covers/the-time-machine.jpg"
   },
   {
     title: "War of the Worlds",
     author: "H. G. Wells",
-    cover: "https://standardebooks.org/ebooks/h-g-wells/the-war-of-the-worlds/downloads/cover-thumbnail.jpg"
+    cover: "/landing/covers/the-war-of-the-worlds.jpg"
   },
   {
     title: "Wizard of Oz",
     author: "L. Frank Baum",
-    cover: "https://standardebooks.org/ebooks/l-frank-baum/the-wonderful-wizard-of-oz/downloads/cover-thumbnail.jpg"
+    cover: "/landing/covers/the-wonderful-wizard-of-oz.jpg"
   }
 ];
 
@@ -172,7 +172,7 @@ const LANDING_READER_IMAGES = [
 
 const LANDING_HERO_IMAGE_TIMEOUT_MS = 520;
 const prideAndPrejudiceCover =
-  "https://standardebooks.org/ebooks/jane-austen/pride-and-prejudice/downloads/cover-thumbnail.jpg";
+  "/landing/covers/pride-and-prejudice.jpg";
 
 const preloadImage = (src: string) =>
   new Promise<void>((resolve) => {
