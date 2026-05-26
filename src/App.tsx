@@ -81,6 +81,7 @@ type PendingBookImport = {
   coverUrl: string | null;
   fileName: string;
   id: string;
+  progress: number;
   title: string;
 };
 type PersistedPendingDelete = {
@@ -459,6 +460,14 @@ const READER_IMAGE_CHUNK_WORDS = 1000;
 const READER_IMAGE_SETTLE_DELAY_MS = 900;
 const FREE_READER_IMAGE_LIFETIME_LIMIT = 25;
 const PRO_READER_IMAGE_MONTHLY_LIMIT = 1000;
+const FREE_USER_STORAGE_QUOTA_BYTES = Number(
+  import.meta.env.VITE_FREE_USER_STORAGE_QUOTA_BYTES ??
+  import.meta.env.VITE_USER_STORAGE_QUOTA_BYTES ??
+  104_857_600
+);
+const PRO_USER_STORAGE_QUOTA_BYTES = Number(
+  import.meta.env.VITE_PRO_USER_STORAGE_QUOTA_BYTES ?? 5_368_709_120
+);
 const APP_TITLE = "Illume Reader | Make reading more immersive";
 const READER_IMAGE_STYLES: Array<{ id: ReaderImageStyle; label: string; summary: string; previewAlt: string; previewSrc: string }> = [
   {
@@ -476,10 +485,6 @@ const READER_IMAGE_STYLES: Array<{ id: ReaderImageStyle; label: string; summary:
     previewSrc: "/cute.jpg"
   }
 ];
-const USER_STORAGE_QUOTA_BYTES = Number(
-  import.meta.env.VITE_USER_STORAGE_QUOTA_BYTES ?? 104_857_600
-);
-
 type ClassicBook = {
   id: string;
   title: string;
@@ -2743,6 +2748,7 @@ function App() {
   const [view, setView] = useState<"catalog" | "reader">("catalog");
   const [book, setBook] = useState<ReaderBook | null>(null);
   const [openingBook, setOpeningBook] = useState<BookRow | null>(null);
+  const [openingBookProgress, setOpeningBookProgress] = useState(0);
   const [openingPdfPreview, setOpeningPdfPreview] = useState<PdfPreview | null>(null);
   const [activeBookFile, setActiveBookFile] = useState<File | null>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -2905,6 +2911,7 @@ function App() {
   const storageUsed = catalogBooks.reduce((total, item) => total + item.file_size, 0);
   const isBookImporting = pendingBookImports.length > 0;
   const isPro = billingProfile?.plan === "pro" && ["active", "trialing"].includes(billingProfile.status);
+  const storageQuotaBytes = isPro ? PRO_USER_STORAGE_QUOTA_BYTES : FREE_USER_STORAGE_QUOTA_BYTES;
   const readerImageLimit = isPro ? PRO_READER_IMAGE_MONTHLY_LIMIT : FREE_READER_IMAGE_LIFETIME_LIMIT;
   const readerImageUsageLabel = `${readerImageCount} / ${readerImageLimit}`;
   const paragraphWordMetrics = useMemo(
@@ -3024,6 +3031,7 @@ function App() {
       setReaderImageUpgradeOpen(false);
       setBook(null);
       setOpeningBook(null);
+      setOpeningBookProgress(0);
       setOpeningPdfPreview(null);
       setActiveBookFile(null);
       setView("catalog");
@@ -3377,7 +3385,10 @@ function App() {
 
       frame = window.requestAnimationFrame(() => {
         frame = window.requestAnimationFrame(() => {
-          if (!cancelled) setOpeningBook(null);
+          if (!cancelled) {
+            setOpeningBook(null);
+            setOpeningBookProgress(0);
+          }
         });
       });
     };
@@ -4345,6 +4356,7 @@ function App() {
               <small>images</small>
             </div>
             <p>Included with your free account.</p>
+            <p>{formatBytes(FREE_USER_STORAGE_QUOTA_BYTES)} library storage.</p>
           </div>
           <div className="pro-plan-column pro">
             <div className="pro-plan-heading">
@@ -4355,6 +4367,7 @@ function App() {
               <small>images / month</small>
             </div>
             <p>Your Pro allowance refreshes monthly.</p>
+            <p>{formatBytes(PRO_USER_STORAGE_QUOTA_BYTES)} library storage.</p>
           </div>
         </div>
         <div className="pro-comparison-actions">
@@ -4410,6 +4423,14 @@ function App() {
     }, TOAST_ANIMATION_MS);
   };
 
+  const updatePendingImportProgress = (id: string | undefined, progress: number) => {
+    if (!id) return;
+    const clampedProgress = Math.max(0, Math.min(100, Math.round(progress)));
+    setPendingBookImports((items) =>
+      items.map((item) => (item.id === id ? { ...item, progress: clampedProgress } : item))
+    );
+  };
+
   const loadStoredPdfPages = async (bookId: string): Promise<StoredPdfPage[]> => {
     const { data, error } = await supabase
       .from("book_pages")
@@ -4450,19 +4471,24 @@ function App() {
       throw new Error("Please select an EPUB or PDF file.");
     }
 
-    if (storageUsed + file.size > USER_STORAGE_QUOTA_BYTES) {
-      throw new Error(`This upload would exceed your ${formatBytes(USER_STORAGE_QUOTA_BYTES)} library limit.`);
+    if (storageUsed + file.size > storageQuotaBytes) {
+      throw new Error(`This upload would exceed your ${formatBytes(storageQuotaBytes)} library limit.`);
     }
 
     const format = isPdfFile(file) ? "pdf" : "epub";
     const mimeType = documentMimeType(format);
+    updatePendingImportProgress(pendingImportId, 12);
     const pdfPreview = format === "pdf" ? await readPdfPreview(file) : null;
+    updatePendingImportProgress(pendingImportId, 25);
     const parsed = pdfPreview ? pdfPreviewToBook(file, pdfPreview) : await parseEpub(file);
+    updatePendingImportProgress(pendingImportId, 42);
     const embeddedCoverUrl = parsed.coverUrl ? await shrinkCoverDataUrl(parsed.coverUrl) : "";
     const coverUrl = embeddedCoverUrl || (format === "epub" ? await getOpenLibraryCoverUrl(parsed.title, parsed.author) : "");
+    updatePendingImportProgress(pendingImportId, 58);
     const id = crypto.randomUUID();
     const storagePath = `${user.id}/${id}/${safeDocumentFileName(file.name, format)}`;
 
+    updatePendingImportProgress(pendingImportId, 68);
     const upload = await supabase.storage.from(EPUB_BUCKET).upload(storagePath, file, {
       contentType: mimeType,
       upsert: false
@@ -4474,6 +4500,7 @@ function App() {
       }
       throw upload.error;
     }
+    updatePendingImportProgress(pendingImportId, 82);
 
     const newBook = {
       id,
@@ -4503,6 +4530,7 @@ function App() {
       last_opened_at: new Date().toISOString()
     };
     const { data, error } = await supabase.from("books").insert(newBook).select("*").single();
+    updatePendingImportProgress(pendingImportId, 94);
 
     if (error) {
       await supabase.storage.from(EPUB_BUCKET).remove([storagePath]);
@@ -4515,6 +4543,7 @@ function App() {
     void cacheBookFile(row, file);
     setCatalogBooks((items) => sortBooksByRecentActivity([row, ...items]));
     if (format === "pdf") queuePdfProcessing(row.id);
+    updatePendingImportProgress(pendingImportId, 100);
     if (pendingImportId) {
       setPendingBookImports((items) => items.filter((item) => item.id !== pendingImportId));
     }
@@ -4533,8 +4562,8 @@ function App() {
     }
 
     const totalUploadSize = files.reduce((total, file) => total + file.size, 0);
-    if (storageUsed + totalUploadSize > USER_STORAGE_QUOTA_BYTES) {
-      setNotice(`This upload would exceed your ${formatBytes(USER_STORAGE_QUOTA_BYTES)} library limit.`);
+    if (storageUsed + totalUploadSize > storageQuotaBytes) {
+      setNotice(`This upload would exceed your ${formatBytes(storageQuotaBytes)} library limit.`);
       return;
     }
 
@@ -4552,6 +4581,7 @@ function App() {
           coverUrl: null,
           fileName: file.name,
           id: pendingImportId,
+          progress: 6,
           title: displayTitle
         },
         ...items
@@ -4579,6 +4609,7 @@ function App() {
         coverUrl: classic.coverUrl,
         fileName: `${safeFileName(classic.title)}.epub`,
         id: pendingImportId,
+        progress: 6,
         title: classic.title
       },
       ...items
@@ -4586,10 +4617,12 @@ function App() {
     setImportingClassicId(classic.id);
 
     try {
+      updatePendingImportProgress(pendingImportId, 16);
       const response = await fetch(classicDownloadUrl(classic.downloadUrl));
       if (!response.ok) throw new Error("Could not download ebook from Standard Ebooks.");
 
       const blob = await response.blob();
+      updatePendingImportProgress(pendingImportId, 34);
       if (!await blobLooksLikeEpub(blob)) {
         throw new Error(`The download for ${classic.title} did not return an EPUB. Please try again in a moment.`);
       }
@@ -4735,6 +4768,7 @@ function App() {
     setActiveBookId(row.id);
     setBook(null);
     setOpeningBook(row);
+    setOpeningBookProgress(8);
     setOpeningPdfPreview(null);
     setActiveBookFile(null);
     setPdfReaderViewMode(bookFormat(row) === "pdf" ? "pdf" : "text");
@@ -4745,8 +4779,10 @@ function App() {
 
     await waitForOpeningPaint();
     if (runId !== bookOpenRunRef.current) return;
+    setOpeningBookProgress(18);
 
     if (cached && !cachedPdfNeedsProcessedText && (cached.format !== "pdf" || cachedFile)) {
+      setOpeningBookProgress(100);
       setBusy(false);
       openParsedBook(row, cached, undefined, cachedFile, { updateHistory: false });
       return;
@@ -4755,6 +4791,7 @@ function App() {
     try {
       let file = await getCachedBookFile(row);
       if (runId !== bookOpenRunRef.current) return;
+      setOpeningBookProgress(file ? 56 : 28);
 
       if (!file) {
         const { data, error } = await supabase.storage.from(EPUB_BUCKET).download(row.storage_path);
@@ -4762,14 +4799,18 @@ function App() {
         if (runId !== bookOpenRunRef.current) return;
         file = new File([data], row.file_name, { type: documentMimeType(bookFormat(row)) });
         void cacheBookFile(row, file);
+        setOpeningBookProgress(56);
       }
 
       const format = bookFormat(row);
       const pdfPagesPromise = format === "pdf" ? loadStoredPdfPages(row.id) : Promise.resolve([]);
+      setOpeningBookProgress(68);
       const preview = format === "pdf" ? pdfPreviewFromRow(row) ?? await readPdfPreview(file) : null;
       const pages = await pdfPagesPromise;
+      setOpeningBookProgress(82);
       const parsed = preview ? pdfPreviewToBook(file, preview, pages) : await parseEpub(file);
       if (runId !== bookOpenRunRef.current) return;
+      setOpeningBookProgress(92);
       if (format === "pdf") {
         setActiveBookFile(file);
         setOpeningPdfPreview({
@@ -4811,11 +4852,13 @@ function App() {
       }
       parsedBooks.current.set(row.id, parsed);
       parsedBookFiles.current.set(row.id, file);
+      setOpeningBookProgress(100);
       openParsedBook(row, parsed, undefined, file, { updateHistory: false });
     } catch (error) {
       if (runId !== bookOpenRunRef.current) return;
       setNotice(error instanceof Error ? error.message : "Could not open this book.");
       setOpeningBook(null);
+      setOpeningBookProgress(0);
       setBook(null);
       setActiveBookFile(null);
       setActiveBookId("");
@@ -4929,6 +4972,7 @@ function App() {
     if (activeBookId === row.id) {
       setBook(null);
       setOpeningBook(null);
+      setOpeningBookProgress(0);
       setActiveBookFile(null);
       setActiveBookId("");
       setView("catalog");
@@ -5184,6 +5228,7 @@ function App() {
     setProgressNotice(false);
     if (activeBookId && book) void saveReadingProgress(activeBookId, currentIndex, currentPage);
     setOpeningBook(null);
+    setOpeningBookProgress(0);
     setOpeningPdfPreview(null);
     setView("catalog");
     if (updateHistory) writeAppHistory({ illumeView: "catalog" });
@@ -5762,7 +5807,12 @@ function App() {
   };
 
   const renderOpeningBookStage = (row: BookRow) => (
-      <section className="reader-cover-loading-stage" role="status" aria-label="Opening book">
+      <section
+        className="reader-cover-loading-stage"
+        role="status"
+        aria-label="Opening book"
+        style={{ "--cover-load-progress": openingBookProgress } as CSSProperties}
+      >
         <div className="reader-loading-cover-page">
           <BookCover book={row} />
         </div>
@@ -5903,12 +5953,12 @@ function App() {
                         <div className="profile-usage-item">
                           <div className="profile-usage-header">
                             <span>Storage</span>
-                            <span>{formatBytes(storageUsed)} / {formatBytes(USER_STORAGE_QUOTA_BYTES)}</span>
+                            <span>{formatBytes(storageUsed)} / {formatBytes(storageQuotaBytes)}</span>
                           </div>
                           <div className="profile-progress-bar">
                             <div 
                               className="profile-progress-fill" 
-                              style={{ width: `${Math.min(100, (storageUsed / USER_STORAGE_QUOTA_BYTES) * 100)}%` }} 
+                              style={{ width: `${Math.min(100, (storageUsed / storageQuotaBytes) * 100)}%` }} 
                             />
                           </div>
                         </div>
@@ -6034,7 +6084,12 @@ function App() {
               {catalogBooks.length || pendingBookImports.length ? (
                 <>
                 {pendingBookImports.map((pendingImport) => (
-                  <div className="catalog-book catalog-book-pending" key={pendingImport.id} aria-busy="true">
+                  <div
+                    className="catalog-book catalog-book-pending"
+                    key={pendingImport.id}
+                    aria-busy="true"
+                    style={{ "--cover-load-progress": pendingImport.progress } as CSSProperties}
+                  >
                     <div className="catalog-book-open" role="status" aria-label={`${pendingImport.title} is being added`}>
                       <span className="catalog-pending-cover">
                         <BookCover

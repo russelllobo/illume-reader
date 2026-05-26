@@ -18,10 +18,11 @@ The app expects these Vite environment variables:
 ```bash
 VITE_SUPABASE_URL=
 VITE_SUPABASE_PUBLISHABLE_KEY=
-VITE_USER_STORAGE_QUOTA_BYTES=104857600
+VITE_FREE_USER_STORAGE_QUOTA_BYTES=104857600
+VITE_PRO_USER_STORAGE_QUOTA_BYTES=5368709120
 ```
 
-The current quota is set to 100 MB per user for Supabase free-tier testing. Use `2147483648` for a 2 GB per-user quota after moving to a paid storage plan.
+The default library quota is 100 MB for free users and 5 GB for Pro users. `VITE_USER_STORAGE_QUOTA_BYTES` is still accepted as the free-plan quota for older local env files.
 
 Image mode uses a Supabase Edge Function so the OpenAI key stays server-side. It stores generated images in the private `reader-images` storage bucket and records metadata in `public.reader_images` so future reads reuse existing images before calling OpenAI again. Free users can generate 25 lifetime images; Pro users get 1,000 images per month. Lifetime and monthly usage are tracked in `public.reader_image_usage`.
 
@@ -56,7 +57,7 @@ The database migrations create:
 
 ## Stripe Billing
 
-The app includes a Pro subscription checkout flow backed by Supabase Edge Functions. Pro status is stored in `public.billing_profiles` and raises the image generation limit from 25 lifetime images to 1,000 images per month.
+The app includes a Pro subscription checkout flow backed by Supabase Edge Functions. Pro status is stored in `public.billing_profiles` and raises the image generation limit from 25 lifetime images to 1,000 images per month, with 5 GB of library storage.
 
 The current Stripe Pro product and price are:
 
@@ -96,5 +97,5 @@ Subscribe it to `checkout.session.completed`, `customer.subscription.created`, `
 - Add the production domain to Supabase Auth redirect URLs.
 - Keep `SITE_URL` set to the production app URL before deploying live billing.
 - Configure email templates or SMTP before inviting real users.
-- Raise the app and database quota constants when storage capacity is available.
+- Confirm the Supabase `epubs` bucket file size limit is at least 5 GB before promoting Pro storage.
 - Add Terms and Privacy pages before public launch.

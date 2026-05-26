@@ -22,8 +22,6 @@
   --accent-cobalt: #2563eb;
   --accent-cobalt-hover: #1d4ed8;
   --accent-cobalt-light: #eff6ff;
-  --accent-emerald: #10b981;
-  --accent-emerald-light: #ecfdf5;
   --accent-rose: #ef4444;
   --accent-rose-light: #fef2f2;
   --font-sans: 'Outfit', Arial, Helvetica, sans-serif;
@@ -106,8 +104,8 @@ button:disabled {
   --reader-theme-muted: #5c5c5c;
   --reader-theme-faint: #b7b5ac;
   --reader-theme-border: #e6e4d9;
-  --reader-theme-selection: #ddf1e4;
-  --reader-theme-accent: #24837b;
+  --reader-theme-selection: #f6e6b8;
+  --reader-theme-accent: #af3029;
 }
 
 .app-shell[data-reader-theme="ayu"] {
@@ -225,8 +223,8 @@ button:disabled {
   --reader-theme-muted: #878580;
   --reader-theme-faint: #575653;
   --reader-theme-border: #282726;
-  --reader-theme-selection: #122f2c;
-  --reader-theme-accent: #3aa99f;
+  --reader-theme-selection: #4a2b18;
+  --reader-theme-accent: #da702c;
 }
 
 .app-shell[data-reader-mode="dark"][data-reader-theme="ayu"] {
@@ -265,7 +263,7 @@ button:disabled {
   --reader-theme-faint: #627972;
   --reader-theme-border: #475258;
   --reader-theme-selection: rgba(134, 70, 93, 0.5);
-  --reader-theme-accent: #a7c080;
+  --reader-theme-accent: #dbbc7f;
 }
 
 .app-shell[data-reader-mode="dark"][data-reader-theme="gruvbox"] {
@@ -635,6 +633,27 @@ button:disabled {
 .reader-cover-loading-stage .reader-loading-cover-page {
   min-height: 0;
   animation: coverOnlyIn 0.16s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.reader-cover-loading-stage .reader-loading-cover-page .catalog-cover-art,
+.catalog-book-pending .catalog-cover-art {
+  --cover-load-blur: calc((100 - var(--cover-load-progress, 0)) * 0.1px);
+  --cover-load-dim: calc(0.1 + (100 - var(--cover-load-progress, 0)) * 0.0022);
+  filter: blur(var(--cover-load-blur)) grayscale(calc((100 - var(--cover-load-progress, 0)) * 0.006)) saturate(calc(1 - (100 - var(--cover-load-progress, 0)) * 0.003));
+  opacity: calc(1 - (100 - var(--cover-load-progress, 0)) * 0.0024);
+  transform: translateZ(0);
+  transition: filter 0.28s ease, opacity 0.28s ease;
+}
+
+.reader-cover-loading-stage .reader-loading-cover-page .catalog-cover-art::after,
+.catalog-book-pending .catalog-cover-art::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: rgba(237, 231, 220, var(--cover-load-dim));
+  transition: background 0.28s ease;
 }
 
 .reader-cover-loading-copy {
@@ -1334,32 +1353,7 @@ button:disabled {
 }
 
 .catalog-book-pending .catalog-cover-art {
-  animation: catalog-cover-pulse 1.45s ease-in-out infinite;
-  filter: grayscale(0.62) saturate(0.58) brightness(0.88);
-  opacity: 0.76;
   box-shadow: 0 12px 28px rgba(20, 20, 20, 0.12);
-  transform-origin: center;
-}
-
-.catalog-book-pending .catalog-cover-art::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  background: rgba(220, 220, 220, 0.22);
-}
-
-@keyframes catalog-cover-pulse {
-  0%,
-  100% {
-    opacity: 0.7;
-    transform: scale(0.985);
-  }
-
-  50% {
-    opacity: 0.86;
-    transform: scale(1.01);
-  }
 }
 
 .catalog-book-pending .catalog-book-copy small {
@@ -5631,8 +5625,6 @@ button:disabled {
   --accent-cobalt: var(--illume-rust);
   --accent-cobalt-hover: #7a2508;
   --accent-cobalt-light: rgba(158, 52, 22, 0.12);
-  --accent-emerald: #10b981;
-  --accent-emerald-light: #ecfdf5;
   --accent-rose: #ef4444;
   --accent-rose-light: #fef2f2;
   min-height: 100vh;
