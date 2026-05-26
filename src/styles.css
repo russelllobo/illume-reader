@@ -5682,18 +5682,91 @@ button:disabled {
 }
 
 .illume-hero-proof {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
   width: fit-content;
-  margin: 0 0 18px;
-  padding: 8px 12px;
-  border: 1px solid rgba(20, 16, 11, 0.12);
+  max-width: 100%;
+  margin: 0 0 26px;
+  padding: 7px 18px 7px 14px;
+  border: 1px solid rgba(20, 16, 11, 0.07);
   border-radius: 999px;
-  background: rgba(255, 248, 233, 0.34);
-  color: rgba(20, 16, 11, 0.66);
-  font-size: 0.72rem;
-  font-weight: 900;
-  letter-spacing: 0.1em;
+  background: rgba(255, 248, 233, 0.42);
+  color: var(--illume-ink);
+  font-family: var(--font-sans);
   line-height: 1;
-  text-transform: uppercase;
+}
+
+.proof-avatars {
+  display: flex;
+  align-items: center;
+}
+
+.proof-dot {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 2px solid var(--illume-cream);
+  margin-left: -7px;
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1;
+  color: #fff;
+}
+
+.proof-dot:first-child {
+  margin-left: 0;
+}
+
+.proof-dot--a {
+  background: #9e3416;
+}
+
+.proof-dot--b {
+  background: #78674e;
+}
+
+.proof-dot--c {
+  background: #14100b;
+}
+
+.proof-dot--d {
+  background: var(--illume-gold);
+}
+
+.proof-text {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.proof-stat {
+  color: var(--illume-ink);
+}
+
+.proof-divider-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--illume-muted);
+  opacity: 0.5;
+  flex-shrink: 0;
+  align-self: center;
+  display: inline-block;
+}
+
+.proof-rating {
+  color: var(--illume-muted);
+  font-weight: 600;
+  font-size: 0.74rem;
 }
 
 .illume-hero h1 {
@@ -6707,6 +6780,27 @@ button:disabled {
 
   .illume-primary-button {
     width: 100%;
+  }
+
+  .illume-hero-proof {
+    gap: 8px;
+    padding: 6px 14px 6px 10px;
+  }
+
+  .proof-dot {
+    width: 22px;
+    height: 22px;
+    font-size: 0.5rem;
+    margin-left: -5px;
+  }
+
+  .proof-text {
+    font-size: 0.72rem;
+    gap: 6px;
+  }
+
+  .proof-rating {
+    font-size: 0.68rem;
   }
 }
 

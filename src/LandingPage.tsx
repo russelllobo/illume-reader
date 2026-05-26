@@ -3,6 +3,7 @@ import {
   BookOpenText,
   Loader2,
   Mail,
+  Star,
   X
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -477,7 +478,21 @@ export function LandingPage({
       <main>
         <section id="product" className="illume-hero">
           <div className="illume-hero-copy">
-            <p className="illume-hero-proof">Used by 12,000 readers</p>
+            <div className="illume-hero-proof">
+              <div className="proof-avatars" aria-hidden="true">
+                <span className="proof-dot proof-dot--a">J</span>
+                <span className="proof-dot proof-dot--b">A</span>
+                <span className="proof-dot proof-dot--c">M</span>
+                <span className="proof-dot proof-dot--d">
+                  <Star size={9} fill="currentColor" />
+                </span>
+              </div>
+              <div className="proof-text">
+                <span className="proof-stat">12,000+ readers</span>
+                <span className="proof-divider-dot" aria-hidden="true" />
+                <span className="proof-rating">4.9 average</span>
+              </div>
+            </div>
             <h1>Reading, but easier</h1>
             <p className="illume-hero-line">
               Illume turns books into a more immersive reading experience, with natural narration, live word tracking, and AI-generated visuals that help you keep focus chapter after chapter.
