@@ -170,6 +170,25 @@ const LANDING_READER_IMAGES = [
   "/landing/reader-4.webp"
 ];
 
+const LANDING_HERO_IMAGE_TIMEOUT_MS = 520;
+const prideAndPrejudiceCover =
+  "https://standardebooks.org/ebooks/jane-austen/pride-and-prejudice/downloads/cover-thumbnail.jpg";
+
+const preloadImage = (src: string) =>
+  new Promise<void>((resolve) => {
+    const image = new Image();
+    image.onload = () => {
+      if ("decode" in image) {
+        image.decode().then(() => resolve()).catch(() => resolve());
+        return;
+      }
+
+      resolve();
+    };
+    image.onerror = () => resolve();
+    image.src = src;
+  });
+
 const readerParagraphs = `
 Had she found Jane in any apparent danger, Mrs. Bennet would have been very miserable; but being satisfied on seeing her that her illness was not alarming, she had no wish of her recovering immediately, as her restoration to health would probably remove her from Netherfield. She would not listen therefore to her daughter's proposal of being carried home; neither did the apothecary, who arrived about the same time, think it at all advisable. After sitting a little while with Jane, on Miss Bingley's appearance and invitation, the mother and three daughters all attended her into the breakfast parlour. Bingley met them with hopes that Mrs. Bennet had not found Miss Bennet worse than she expected.
 
@@ -272,9 +291,6 @@ function IllumeProductScreenshot({
   currentWordIndex: number;
   currentImageIndex: number;
 }) {
-  const prideAndPrejudiceCover =
-    "https://standardebooks.org/ebooks/jane-austen/pride-and-prejudice/downloads/cover-thumbnail.jpg";
-
   return (
     <div className="landing-reader-demo" aria-label="illume image mode product screenshot">
       <div className="landing-reader-page">
@@ -349,6 +365,7 @@ export function LandingPage({
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [currentWordIndex, setCurrentWordIndex] = useState(0);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
+  const [isHeroReady, setIsHeroReady] = useState(false);
   const [authPane, setAuthPane] = useState<"choice" | "email">("choice");
   const [isHeaderCondensed, setIsHeaderCondensed] = useState(false);
   const [detailHeadingProgress, setDetailHeadingProgress] = useState(0);
@@ -429,10 +446,22 @@ export function LandingPage({
   }, []);
 
   useEffect(() => {
-    LANDING_READER_IMAGES.forEach((src) => {
-      const image = new Image();
-      image.src = src;
-    });
+    let isMounted = true;
+    const readyTimer = window.setTimeout(() => {
+      if (isMounted) setIsHeroReady(true);
+    }, LANDING_HERO_IMAGE_TIMEOUT_MS);
+
+    Promise.all([preloadImage(prideAndPrejudiceCover), ...LANDING_READER_IMAGES.map(preloadImage)])
+      .then(() => {
+        if (!isMounted) return;
+        window.clearTimeout(readyTimer);
+        setIsHeroReady(true);
+      });
+
+    return () => {
+      isMounted = false;
+      window.clearTimeout(readyTimer);
+    };
   }, []);
 
   useEffect(() => {
@@ -476,7 +505,7 @@ export function LandingPage({
       </header>
 
       <main>
-        <section id="product" className="illume-hero">
+        <section id="product" className={isHeroReady ? "illume-hero is-ready" : "illume-hero"}>
           <div className="illume-hero-copy">
             <div className="illume-hero-proof">
               <div className="proof-avatars" aria-hidden="true">

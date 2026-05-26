@@ -2705,6 +2705,31 @@ const waitForOpeningPaint = () =>
     });
   });
 
+const preloadLibraryCover = (src: string) =>
+  new Promise<void>((resolve) => {
+    const image = new Image();
+    image.onload = () => {
+      if ("decode" in image) {
+        image.decode().then(() => resolve()).catch(() => resolve());
+        return;
+      }
+
+      resolve();
+    };
+    image.onerror = () => resolve();
+    image.src = src;
+  });
+
+const waitForLibraryCovers = (rows: BookRow[], timeoutMs = 620) => {
+  const coverUrls = [...new Set(rows.map((row) => row.cover_url).filter((src): src is string => Boolean(src)))];
+  if (!coverUrls.length) return Promise.resolve();
+
+  return Promise.race([
+    Promise.all(coverUrls.map(preloadLibraryCover)).then(() => undefined),
+    new Promise<void>((resolve) => window.setTimeout(resolve, timeoutMs))
+  ]);
+};
+
 function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -2712,6 +2737,7 @@ function App() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [catalogBooks, setCatalogBooks] = useState<BookRow[]>([]);
+  const [catalogReady, setCatalogReady] = useState(false);
   const [billingProfile, setBillingProfile] = useState<BillingProfile | null>(null);
   const [activeBookId, setActiveBookId] = useState("");
   const [view, setView] = useState<"catalog" | "reader">("catalog");
@@ -2981,6 +3007,7 @@ function App() {
 
     if (!user) {
       setCatalogBooks([]);
+      setCatalogReady(false);
       setBillingProfile(null);
       setReaderImageCount(0);
       setReaderImageUpgradeOpen(false);
@@ -2990,7 +3017,7 @@ function App() {
       setActiveBookFile(null);
       setView("catalog");
       setActiveBookId("");
-    coverLookupRef.current.clear();
+      coverLookupRef.current.clear();
       parsedBookFiles.current.clear();
       return;
     }
@@ -3026,6 +3053,8 @@ function App() {
     if (!user || !catalogBooks.length) return;
 
     const hydrateMissingCovers = async () => {
+      const coverUpdates = new Map<string, string>();
+
       for (let bookIndex = 0; bookIndex < catalogBooks.length; bookIndex++) {
         const catalogBook = catalogBooks[bookIndex];
         if (catalogBook.cover_url || coverLookupRef.current.has(catalogBook.id)) continue;
@@ -3034,14 +3063,23 @@ function App() {
         const coverUrl = await getOpenLibraryCoverUrl(catalogBook.title, catalogBook.author);
         if (!coverUrl) continue;
 
-        setCatalogBooks((items) =>
-          sortBooksByRecentActivity(items.map((item) => (item.id === catalogBook.id ? { ...item, cover_url: coverUrl } : item)))
-        );
+        coverUpdates.set(catalogBook.id, coverUrl);
         const { error: updateError } = await supabase.from("books").update({ cover_url: coverUrl }).eq("id", catalogBook.id);
         if (updateError) {
           console.error("Failed to save Open Library cover to database:", updateError);
         }
       }
+
+      if (!coverUpdates.size) return;
+
+      setCatalogBooks((items) =>
+        sortBooksByRecentActivity(
+          items.map((item) => {
+            const coverUrl = coverUpdates.get(item.id);
+            return coverUrl ? { ...item, cover_url: coverUrl } : item;
+          })
+        )
+      );
     };
 
     void hydrateMissingCovers();
@@ -3311,6 +3349,44 @@ function App() {
   }, [book?.paragraphs, currentIndex]);
 
   useEffect(() => {
+    if (view !== "reader" || !book || !openingBook || openingBook.id !== activeBookId) return;
+
+    let cancelled = false;
+    let frame = 0;
+    const startedAt = performance.now();
+
+    const settleOpening = () => {
+      if (cancelled) return;
+
+      const timedOut = performance.now() - startedAt > 1400;
+      if (pendingScrollIndex.current !== null && !timedOut) {
+        frame = window.requestAnimationFrame(settleOpening);
+        return;
+      }
+
+      frame = window.requestAnimationFrame(() => {
+        frame = window.requestAnimationFrame(() => {
+          if (!cancelled) setOpeningBook(null);
+        });
+      });
+    };
+
+    frame = window.requestAnimationFrame(settleOpening);
+
+    return () => {
+      cancelled = true;
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [activeBookId, book, openingBook, view]);
+
+  useEffect(() => {
+    if (view !== "reader" || !book || openingBook || pendingScrollIndex.current === null) return;
+    pendingScrollIndex.current = null;
+    isInitialOpenRef.current = false;
+    isInstantScrollRef.current = false;
+  }, [book, openingBook, view]);
+
+  useEffect(() => {
     if (progressNotice) {
       const timer = window.setTimeout(() => {
         setProgressNotice(false);
@@ -3578,47 +3654,29 @@ function App() {
 
   const loadLibrary = async (_user: User) => {
     setBusy(true);
+    setCatalogReady(false);
     setNotice("");
 
-    const { data, error } = await supabase
-      .from("books")
-      .select("*")
-      .order("last_opened_at", { ascending: false, nullsFirst: false })
-      .order("created_at", { ascending: false });
+    try {
+      const { data, error } = await supabase
+        .from("books")
+        .select("*")
+        .order("last_opened_at", { ascending: false, nullsFirst: false })
+        .order("created_at", { ascending: false });
 
-    if (error) {
-      setNotice(error.message);
-    } else {
-      const rows = (data ?? []) as BookRow[];
-      const pending = readPendingBookDelete();
-      setCatalogBooks(sortBooksByRecentActivity(pending ? rows.filter((row) => row.id !== pending.row.id) : rows));
+      if (error) {
+        setNotice(error.message);
+        setCatalogBooks([]);
+      } else {
+        const rows = (data ?? []) as BookRow[];
+        const pending = readPendingBookDelete();
+        const visibleRows = sortBooksByRecentActivity(pending ? rows.filter((row) => row.id !== pending.row.id) : rows);
 
-      if (pending) {
-        if (Date.now() >= pending.deadline) {
-          void permanentlyDeleteBook(pending.row).catch((deleteError) => {
-            clearPendingBookDelete(pending.row.id);
-            setNotice(deleteError instanceof Error ? deleteError.message : "Could not delete this book.");
-            setCatalogBooks((items) => {
-              if (items.some((item) => item.id === pending.row.id)) return items;
-              return sortBooksByRecentActivity([...items, pending.row]);
-            });
-          });
-        } else if (!pendingDeleteRef.current || pendingDeleteRef.current.row.id !== pending.row.id) {
-          if (pendingDeleteRef.current) window.clearTimeout(pendingDeleteRef.current.timer);
-          const resumedPending: PendingDelete = {
-            book: parsedBooks.current.get(pending.row.id) ?? null,
-            deadline: pending.deadline,
-            file: parsedBookFiles.current.get(pending.row.id) ?? null,
-            index: pending.index,
-            row: pending.row,
-            timer: 0,
-            wasActive: activeBookId === pending.row.id
-          };
+        setCatalogBooks(visibleRows);
+        await waitForLibraryCovers(visibleRows);
 
-          resumedPending.timer = window.setTimeout(() => {
-            if (pendingDeleteRef.current?.row.id !== pending.row.id) return;
-            pendingDeleteRef.current = null;
-            setPendingDelete(null);
+        if (pending) {
+          if (Date.now() >= pending.deadline) {
             void permanentlyDeleteBook(pending.row).catch((deleteError) => {
               clearPendingBookDelete(pending.row.id);
               setNotice(deleteError instanceof Error ? deleteError.message : "Could not delete this book.");
@@ -3627,15 +3685,46 @@ function App() {
                 return sortBooksByRecentActivity([...items, pending.row]);
               });
             });
-          }, pending.deadline - Date.now());
+          } else if (!pendingDeleteRef.current || pendingDeleteRef.current.row.id !== pending.row.id) {
+            if (pendingDeleteRef.current) window.clearTimeout(pendingDeleteRef.current.timer);
+            const resumedPending: PendingDelete = {
+              book: parsedBooks.current.get(pending.row.id) ?? null,
+              deadline: pending.deadline,
+              file: parsedBookFiles.current.get(pending.row.id) ?? null,
+              index: pending.index,
+              row: pending.row,
+              timer: 0,
+              wasActive: activeBookId === pending.row.id
+            };
 
-          pendingDeleteRef.current = resumedPending;
-          setPendingDelete(resumedPending);
+            resumedPending.timer = window.setTimeout(() => {
+              if (pendingDeleteRef.current?.row.id !== pending.row.id) return;
+              pendingDeleteRef.current = null;
+              setPendingDelete(null);
+              void permanentlyDeleteBook(pending.row).catch((deleteError) => {
+                clearPendingBookDelete(pending.row.id);
+                setNotice(deleteError instanceof Error ? deleteError.message : "Could not delete this book.");
+                setCatalogBooks((items) => {
+                  if (items.some((item) => item.id === pending.row.id)) return items;
+                  return sortBooksByRecentActivity([...items, pending.row]);
+                });
+              });
+            }, pending.deadline - Date.now());
+
+            pendingDeleteRef.current = resumedPending;
+            setPendingDelete(resumedPending);
+          }
         }
       }
-    }
 
-    setBusy(false);
+      setCatalogReady(true);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not load your library.");
+      setCatalogBooks([]);
+      setCatalogReady(true);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const loadBillingProfile = async (_user: User) => {
@@ -4547,7 +4636,6 @@ function App() {
     setNarrationRate(readerPreferences.narrationRate);
     setActiveBookId(row.id);
     setBook(parsed);
-    setOpeningBook(null);
     setOpeningPdfPreview(null);
     setActiveBookFile(file ?? null);
     setPdfReaderViewMode(parsed.format === "pdf" ? "pdf" : "text");
@@ -5610,13 +5698,7 @@ function App() {
     );
   };
 
-  const renderOpeningBookSkeleton = (row: BookRow) => (
-    <main
-      aria-busy="true"
-      className="app-shell reader-themed-shell reader-loading-shell reader-cover-loading-shell"
-      data-reader-mode={readerThemeMode}
-      data-reader-theme={readerTheme}
-    >
+  const renderOpeningBookStage = (row: BookRow) => (
       <section className="reader-cover-loading-stage" role="status" aria-label="Opening book">
         <div className="reader-loading-cover-page">
           <BookCover book={row} />
@@ -5626,6 +5708,16 @@ function App() {
           <p>Opening your book...</p>
         </div>
       </section>
+  );
+
+  const renderOpeningBookSkeleton = (row: BookRow) => (
+    <main
+      aria-busy="true"
+      className="app-shell reader-themed-shell reader-loading-shell reader-cover-loading-shell"
+      data-reader-mode={readerThemeMode}
+      data-reader-theme={readerTheme}
+    >
+      {renderOpeningBookStage(row)}
     </main>
   );
 
@@ -5822,7 +5914,12 @@ function App() {
         )}
 
         <section
-          className={isCatalogDragActive ? "catalog-view drag-active" : "catalog-view"}
+          className={[
+            "catalog-view",
+            catalogReady ? "catalog-ready" : "catalog-loading",
+            isCatalogDragActive ? "drag-active" : ""
+          ].filter(Boolean).join(" ")}
+          aria-busy={!catalogReady}
           aria-label="Book library"
           onDragEnter={handleCatalogDragEnter}
           onDragLeave={handleCatalogDragLeave}
@@ -5847,7 +5944,22 @@ function App() {
               </label>
             </div>
             {notice && <div className="notice catalog-notice">{notice}</div>}
-            <div className="catalog-list">
+            {!catalogReady ? (
+              <div className="catalog-list catalog-skeleton-list" role="status" aria-label="Loading library">
+                {Array.from({ length: 3 }).map((_, index) => (
+                  <div className="catalog-book catalog-book-skeleton" key={`library-skeleton-${index}`}>
+                    <div className="catalog-book-open">
+                      <span className="catalog-cover-art catalog-cover-skeleton" aria-hidden="true" />
+                      <span className="catalog-book-copy">
+                        <span className="catalog-skeleton-line title" aria-hidden="true" />
+                        <span className="catalog-skeleton-line meta" aria-hidden="true" />
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="catalog-list">
               {catalogBooks.length || pendingBookImports.length ? (
                 <>
                 {pendingBookImports.map((pendingImport) => (
@@ -5957,71 +6069,96 @@ function App() {
                 </div>
               )}
             </div>
+            )}
           </div>
 
           {/* Explore Classics Section */}
-          <div className="explore-divider">
-            <span>Explore Classics</span>
-          </div>
+          {!catalogReady ? (
+            <>
+              <div className="explore-divider explore-divider-skeleton" aria-hidden="true">
+                <span className="catalog-skeleton-line divider" />
+              </div>
 
-          <div className="explore-section">
-            <div className="explore-grid">
-              {CURATED_CLASSICS.map((classicBook) => {
-                const matchingBook = catalogBooks.find(
-                  (cb) => cb.title.toLowerCase().trim() === classicBook.title.toLowerCase().trim()
-                );
-                const alreadyAdded = !!matchingBook;
-                const isImporting = importingClassicId === classicBook.id;
-
-                return (
-                  <div className="explore-card" key={classicBook.id}>
-                    <div className="explore-cover-container">
-                      <img 
-                        className="explore-cover" 
-                        src={classicBook.coverUrl} 
-                        alt={classicBook.title} 
-                        loading="lazy"
-                      />
-                      <div className="explore-cover-overlay">
-                        <div className="explore-synopsis">
-                          <span className="explore-synopsis-label">Synopsis</span>
-                          <p>{classicBook.summary || "No synopsis available."}</p>
-                        </div>
-
-                        <button
-                          className={`explore-action-btn primary-action ${alreadyAdded ? "already-added" : ""}`}
-                          disabled={isImporting || (!alreadyAdded && importingClassicId !== null)}
-                          onClick={() => {
-                            if (alreadyAdded && matchingBook) {
-                              void openBook(matchingBook);
-                            } else {
-                              void addClassicToLibrary(classicBook);
-                            }
-                          }}
-                          title={alreadyAdded ? "Read Book" : "Add to Library"}
-                          type="button"
-                        >
-                          {isImporting ? (
-                            <Loader2 className="spin" size={16} />
-                          ) : alreadyAdded ? (
-                            <BookOpen size={16} />
-                          ) : (
-                            <Plus size={16} />
-                          )}
-                          <span>{isImporting ? "Adding..." : alreadyAdded ? "Read" : "Add to Library"}</span>
-                        </button>
+              <div className="explore-section explore-section-skeleton" role="status" aria-label="Loading classics">
+                <div className="explore-grid">
+                  {Array.from({ length: 3 }).map((_, index) => (
+                    <div className="explore-card explore-card-skeleton" key={`classic-skeleton-${index}`}>
+                      <div className="explore-cover-container explore-cover-skeleton" aria-hidden="true" />
+                      <div className="explore-meta">
+                        <span className="catalog-skeleton-line title" aria-hidden="true" />
+                        <span className="catalog-skeleton-line meta" aria-hidden="true" />
                       </div>
                     </div>
-                    
-                    <div className="explore-meta">
-                      <h3 className="explore-title" title={classicBook.title}>{classicBook.title}</h3>
-                      <p className="explore-author">{classicBook.author}</p>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="explore-divider">
+                <span>Explore Classics</span>
+              </div>
+
+              <div className="explore-section">
+                <div className="explore-grid">
+                  {CURATED_CLASSICS.map((classicBook) => {
+                    const matchingBook = catalogBooks.find(
+                      (cb) => cb.title.toLowerCase().trim() === classicBook.title.toLowerCase().trim()
+                    );
+                    const alreadyAdded = !!matchingBook;
+                    const isImporting = importingClassicId === classicBook.id;
+
+                    return (
+                      <div className="explore-card" key={classicBook.id}>
+                        <div className="explore-cover-container">
+                          <img 
+                            className="explore-cover" 
+                            src={classicBook.coverUrl} 
+                            alt={classicBook.title} 
+                            loading="lazy"
+                          />
+                          <div className="explore-cover-overlay">
+                            <div className="explore-synopsis">
+                              <span className="explore-synopsis-label">Synopsis</span>
+                              <p>{classicBook.summary || "No synopsis available."}</p>
+                            </div>
+
+                            <button
+                              className={`explore-action-btn primary-action ${alreadyAdded ? "already-added" : ""}`}
+                              disabled={isImporting || (!alreadyAdded && importingClassicId !== null)}
+                              onClick={() => {
+                                if (alreadyAdded && matchingBook) {
+                                  void openBook(matchingBook);
+                                } else {
+                                  void addClassicToLibrary(classicBook);
+                                }
+                              }}
+                              title={alreadyAdded ? "Read Book" : "Add to Library"}
+                              type="button"
+                            >
+                              {isImporting ? (
+                                <Loader2 className="spin" size={16} />
+                              ) : alreadyAdded ? (
+                                <BookOpen size={16} />
+                              ) : (
+                                <Plus size={16} />
+                              )}
+                              <span>{isImporting ? "Adding..." : alreadyAdded ? "Read" : "Add to Library"}</span>
+                            </button>
+                          </div>
+                        </div>
+                        
+                        <div className="explore-meta">
+                          <h3 className="explore-title" title={classicBook.title}>{classicBook.title}</h3>
+                          <p className="explore-author">{classicBook.author}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          )}
         </section>
         {renameTarget && (
           <div className="catalog-rename-modal-overlay" role="presentation" onClick={closeRenameDialog}>
@@ -6081,6 +6218,11 @@ function App() {
       data-reader-mode={readerThemeMode}
       data-reader-theme={readerTheme}
     >
+      {openingBook && openingBook.id === activeBookId && (
+        <div className="reader-opening-overlay reader-opening-settle-overlay" aria-busy="true">
+          {renderOpeningBookStage(openingBook)}
+        </div>
+      )}
       <header className="topbar" style={{ position: "relative" }}>
         <div className="reader-top-actions">
           <button className="top-icon" type="button" title="Back to library" onClick={() => openCatalog()}>
