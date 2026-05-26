@@ -2698,6 +2698,13 @@ const deleteCachedBookFile = async (bookId: string) => {
   }
 };
 
+const waitForOpeningPaint = () =>
+  new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => resolve());
+    });
+  });
+
 function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -4574,13 +4581,6 @@ function App() {
       row.processing_status === "processed" &&
       row.paragraph_count > 0 &&
       cached.paragraphs.length === 0;
-    if (cached && !cachedPdfNeedsProcessedText && (cached.format !== "pdf" || cachedFile)) {
-      bookOpenRunRef.current += 1;
-      setBusy(false);
-      openParsedBook(row, cached, undefined, cachedFile, { updateHistory });
-      return;
-    }
-
     const runId = bookOpenRunRef.current + 1;
     bookOpenRunRef.current = runId;
     stopAudio();
@@ -4611,6 +4611,15 @@ function App() {
     setCurrentIndex(Math.max(0, row.current_index ?? 0));
     setView("reader");
     if (updateHistory) writeAppHistory({ illumeView: "reader", bookId: row.id });
+
+    await waitForOpeningPaint();
+    if (runId !== bookOpenRunRef.current) return;
+
+    if (cached && !cachedPdfNeedsProcessedText && (cached.format !== "pdf" || cachedFile)) {
+      setBusy(false);
+      openParsedBook(row, cached, undefined, cachedFile, { updateHistory: false });
+      return;
+    }
 
     try {
       let file = await getCachedBookFile(row);
@@ -5601,115 +5610,22 @@ function App() {
     );
   };
 
-  const renderOpeningPdfSkeleton = (row: BookRow) => {
-    const previewMetrics = openingPdfPreview?.pageMetrics ?? [];
-    const previewMetric = previewMetrics[0] ?? { height: 792, width: 612 };
-    const pageCount = openingPdfPreview?.pageCount ?? Math.max(row.current_page ?? 1, 8);
-    const pageStyle = {
-      "--pdf-page-aspect-ratio": `${previewMetric.width} / ${previewMetric.height}`,
-      "--pdf-page-height": `${previewMetric.height}px`,
-      "--pdf-page-width": `${previewMetric.width}px`
-    } as CSSProperties;
-    const pages = Array.from({ length: pageCount }, (_, index) => index + 1);
-    const pageSkeleton = (pageNumber: number) => (
-      <div className="pdf-page-row pdf-page-loading-row" data-page-number={pageNumber} key={pageNumber} style={pageStyle}>
-        <div className={pageNumber === currentPage ? "pdf-page active pdf-page-loading" : "pdf-page pdf-page-loading"} style={pageStyle}>
-          <div className="pdf-page-loading-sheet">
-            {Array.from({ length: 10 }).map((_, index) => (
-              <span className="reader-loading-line" key={index} style={{ width: `${index % 4 === 3 ? 54 : 78 + (index % 3) * 7}%` }} />
-            ))}
-          </div>
-        </div>
-      </div>
-    );
-
-    const renderedPages = pdfPageLayout === "double"
-      ? Array.from({ length: Math.ceil(pageCount / 2) }, (_, rowIndex) => {
-          const firstPage = rowIndex * 2 + 1;
-          const secondPage = firstPage + 1;
-          return (
-            <div className="pdf-page-spread" key={firstPage}>
-              {pageSkeleton(firstPage)}
-              {secondPage <= pageCount ? pageSkeleton(secondPage) : null}
-            </div>
-          );
-        })
-      : pages.map(pageSkeleton);
-
-    return (
-      <main
-        aria-busy="true"
-        className="app-shell reader-themed-shell reader-loading-shell"
-        data-reader-mode={readerThemeMode}
-        data-reader-theme={readerTheme}
-      >
-        {renderOpeningHeader(row)}
-        <section className="reader-frame reader-loading-frame pdf-reader-frame">
-          <aside className="chapter-sidebar reader-loading-sidebar" aria-hidden="true">
-            <div className="chapter-heading">Table of contents</div>
-            <nav className="chapter-list" aria-label="Table of contents">
-              {openingPdfPreview?.chapters.length ? (
-                openingPdfPreview.chapters.map((chapter, index) => (
-                  <div className="chapter-item-container" key={`${chapter}-${index}`}>
-                    <span className={index === 0 ? "chapter-item active reader-loading-toc-item" : "chapter-item reader-loading-toc-item"}>{chapter}</span>
-                  </div>
-                ))
-              ) : (
-                renderOpeningTocSkeleton()
-              )}
-            </nav>
-          </aside>
-
-          <div className={`main-spread reader-only reader-loading-main pdf-reader-main pdf-reader-pdf pdf-layout-${pdfPageLayout}`}>
-            <section className="pdf-surface pdf-loading-surface" aria-label="Preparing PDF pages" role="status">
-              <div className="pdf-page-spread reader-loading-cover-spread">
-                <div className="pdf-page-row pdf-page-loading-row" style={pageStyle}>
-                  <div className="pdf-page active pdf-page-loading reader-loading-cover-page" style={pageStyle}>
-                    <BookCover book={row} />
-                  </div>
-                </div>
-              </div>
-              {renderedPages.slice(1)}
-            </section>
-          </div>
-        </section>
-        <div className="progress-wrap reader-loading-progress" aria-hidden="true">
-          <span />
-        </div>
-        {renderOpeningControls(row)}
-      </main>
-    );
-  };
-
-  const renderOpeningBookSkeleton = (row: BookRow) => bookFormat(row) === "pdf" ? renderOpeningPdfSkeleton(row) : (
+  const renderOpeningBookSkeleton = (row: BookRow) => (
     <main
       aria-busy="true"
-      className="app-shell reader-themed-shell reader-loading-shell"
+      className="app-shell reader-themed-shell reader-loading-shell reader-cover-loading-shell"
       data-reader-mode={readerThemeMode}
       data-reader-theme={readerTheme}
     >
-      {renderOpeningHeader(row)}
-      <section className="reader-frame reader-loading-frame">
-        <aside className="chapter-sidebar reader-loading-sidebar" id="reader-chapter-sidebar" aria-hidden="true">
-          <div className="chapter-heading">Chapters</div>
-          <nav className="chapter-list" aria-label="Chapters">
-            {renderOpeningTocSkeleton(7)}
-          </nav>
-        </aside>
-
-        <div className="main-spread reader-only reader-loading-main">
-          <section className="reading-surface reader-loading-surface" role="status" aria-label="Preparing reader">
-            <div className="reader-loading-cover-page">
-              <BookCover book={row} />
-            </div>
-          </section>
+      <section className="reader-cover-loading-stage" role="status" aria-label="Opening book">
+        <div className="reader-loading-cover-page">
+          <BookCover book={row} />
+        </div>
+        <div className="reader-cover-loading-copy">
+          <h1>{row.title}</h1>
+          <p>Opening your book...</p>
         </div>
       </section>
-
-      <div className="progress-wrap reader-loading-progress" aria-hidden="true">
-        <span />
-      </div>
-      {renderOpeningControls(row)}
     </main>
   );
 
@@ -5814,41 +5730,25 @@ function App() {
                   <div className="profile-popover-overlay" onClick={() => setProfileOpen(false)} />
                   <div className="profile-popover-card">
                     <div className="profile-popover-header">
-                      <div className="profile-user-info">
-                        <div className="profile-popover-avatar">
-                          {user?.user_metadata?.avatar_url || user?.user_metadata?.picture ? (
-                            <img 
-                              src={user.user_metadata.avatar_url || user.user_metadata.picture} 
-                              alt="Profile" 
-                            />
-                          ) : (
-                            <span>{user?.email?.[0].toUpperCase() ?? "U"}</span>
+                      <div className="profile-user-details">
+                        <div className="profile-name-row">
+                          <span className="profile-name">
+                            {user?.user_metadata?.full_name || user?.user_metadata?.name || "Reader User"}
+                          </span>
+                          {isPro && (
+                            <span className="profile-plan-badge pro">PRO</span>
                           )}
                         </div>
-                        <div className="profile-user-details">
-                          <div className="profile-name-row">
-                            <span className="profile-name">
-                              {user?.user_metadata?.full_name || user?.user_metadata?.name || "Reader User"}
-                            </span>
-                            <span className={`profile-plan-badge ${isPro ? "pro" : "free"}`}>
-                              {isPro ? <Crown size={12} aria-hidden="true" /> : <CreditCard size={12} aria-hidden="true" />}
-                              <span>{isPro ? "Pro Plan" : "Free Plan"}</span>
-                            </span>
-                          </div>
-                          <span className="profile-email">{user?.email}</span>
-                        </div>
+                        <span className="profile-email">{user?.email}</span>
                       </div>
                     </div>
                     
                     <div className="profile-popover-body">
-                      {/* Storage and Usage stats */}
                       <div className="profile-section">
-                        <span className="profile-section-label">Usage &amp; Quotas</span>
-                        
                         <div className="profile-usage-item">
                           <div className="profile-usage-header">
                             <span>Storage</span>
-                            <span>{formatBytes(storageUsed)} of {formatBytes(USER_STORAGE_QUOTA_BYTES)}</span>
+                            <span>{formatBytes(storageUsed)} / {formatBytes(USER_STORAGE_QUOTA_BYTES)}</span>
                           </div>
                           <div className="profile-progress-bar">
                             <div 
@@ -5861,7 +5761,7 @@ function App() {
                         <div className="profile-usage-item">
                           <div className="profile-usage-header">
                             <span>AI Images</span>
-                            <span>{readerImageUsageLabel}{isPro ? " monthly" : " lifetime"}</span>
+                            <span>{readerImageUsageLabel}{isPro ? " / mo" : " total"}</span>
                           </div>
                           <div className="profile-progress-bar">
                             <div 
@@ -5872,28 +5772,26 @@ function App() {
                         </div>
                       </div>
 
-                      {/* Billing Action Buttons */}
                       <div className="profile-section billing-actions-section">
                         {!isPro && (
                           <button className="primary-button upgrade-btn" disabled={busy} onClick={() => { setProfileOpen(false); setReaderImageUpgradeOpen(true); }} type="button">
-                            <Crown size={15} aria-hidden="true" />
+                            <Crown size={12} aria-hidden="true" />
                             <span>Upgrade to Pro</span>
                           </button>
                         )}
-                        {billingProfile?.stripe_customer_id && (
-                          <button className="secondary-button manage-btn" disabled={busy} onClick={() => { setProfileOpen(false); void openBillingPortal(); }} type="button">
-                            <Settings size={15} aria-hidden="true" />
-                            <span>Manage billing</span>
+                        <div className="profile-actions-row">
+                          {billingProfile?.stripe_customer_id && (
+                            <button className="secondary-button manage-btn" disabled={busy} onClick={() => { setProfileOpen(false); void openBillingPortal(); }} type="button">
+                              <Settings size={12} aria-hidden="true" />
+                              <span>Billing</span>
+                            </button>
+                          )}
+                          <button className="secondary-button signout-btn" onClick={() => { setProfileOpen(false); void signOut(); }} type="button">
+                            <LogOut size={12} aria-hidden="true" />
+                            <span>Sign out</span>
                           </button>
-                        )}
+                        </div>
                       </div>
-                    </div>
-
-                    <div className="profile-popover-footer">
-                      <button className="signout-btn" onClick={() => { setProfileOpen(false); void signOut(); }} type="button">
-                        <LogOut size={15} aria-hidden="true" />
-                        <span>Sign Out</span>
-                      </button>
                     </div>
                   </div>
                 </>
