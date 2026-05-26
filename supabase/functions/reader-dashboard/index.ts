@@ -39,6 +39,15 @@ type StorageObjectRow = {
   name: string;
 };
 
+type TimelineEvent = {
+  booksBytes: number;
+  booksCount: number;
+  date: string;
+  imagesBytes: number;
+  imagesCount: number;
+  usersCount: number;
+};
+
 const requiredEnv = (name: string) => {
   const value = Deno.env.get(name);
   if (!value) throw new Error(`Missing ${name}`);
@@ -57,6 +66,15 @@ const objectSize = (object: StorageObjectRow) => {
   const rawSize = object.metadata?.size;
   const size = typeof rawSize === "number" ? rawSize : Number(rawSize ?? 0);
   return Number.isFinite(size) ? size : 0;
+};
+
+const dateKey = (value: string | null | undefined) => {
+  if (!value) return null;
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+
+  return date.toISOString().slice(0, 10);
 };
 
 const storageFolderFor = (path: string) => {
@@ -122,6 +140,104 @@ const listAllUsers = async (adminClient: any) => {
   return users;
 };
 
+const buildTimeline = ({
+  books,
+  bookSizes,
+  generatedAt,
+  imageSizes,
+  images,
+  users
+}: {
+  books: BookRow[];
+  bookSizes: Map<string, number>;
+  generatedAt: string;
+  imageSizes: Map<string, number>;
+  images: ReaderImageRow[];
+  users: Array<{ created_at?: string }>;
+}) => {
+  const events = new Map<string, TimelineEvent>();
+  const ensureEvent = (date: string) => {
+    const existing = events.get(date);
+    if (existing) return existing;
+
+    const event = { booksBytes: 0, booksCount: 0, date, imagesBytes: 0, imagesCount: 0, usersCount: 0 };
+    events.set(date, event);
+    return event;
+  };
+
+  users.forEach((user) => {
+    const date = dateKey(user.created_at);
+    if (date) ensureEvent(date).usersCount += 1;
+  });
+
+  books.forEach((book) => {
+    const date = dateKey(book.created_at);
+    if (!date) return;
+
+    const event = ensureEvent(date);
+    event.booksCount += 1;
+    event.booksBytes += bookSizes.get(book.storage_path) ?? Number(book.file_size ?? 0);
+  });
+
+  images.forEach((image) => {
+    const date = dateKey(image.created_at);
+    if (!date) return;
+
+    const event = ensureEvent(date);
+    event.imagesCount += 1;
+    event.imagesBytes += imageSizes.get(image.storage_path) ?? 0;
+  });
+
+  const today = dateKey(generatedAt);
+  if (today) ensureEvent(today);
+
+  const totals = { booksBytes: 0, booksCount: 0, imagesBytes: 0, imagesCount: 0, usersCount: 0 };
+
+  return [...events.values()]
+    .sort((left, right) => left.date.localeCompare(right.date))
+    .map((event) => {
+      totals.booksBytes += event.booksBytes;
+      totals.booksCount += event.booksCount;
+      totals.imagesBytes += event.imagesBytes;
+      totals.imagesCount += event.imagesCount;
+      totals.usersCount += event.usersCount;
+
+      return {
+        booksBytes: totals.booksBytes,
+        booksCount: totals.booksCount,
+        date: event.date,
+        imagesBytes: totals.imagesBytes,
+        imagesCount: totals.imagesCount,
+        storageBytes: totals.booksBytes + totals.imagesBytes,
+        usersCount: totals.usersCount
+      };
+    });
+};
+
+const buildUserTimeline = ({
+  books,
+  bookSizes,
+  generatedAt,
+  imageSizes,
+  images,
+  user
+}: {
+  books: BookRow[];
+  bookSizes: Map<string, number>;
+  generatedAt: string;
+  imageSizes: Map<string, number>;
+  images: ReaderImageRow[];
+  user: { created_at?: string };
+}) =>
+  buildTimeline({
+    books,
+    bookSizes,
+    generatedAt,
+    imageSizes,
+    images,
+    users: user.created_at ? [user] : []
+  });
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "GET") return jsonResponse({ error: "Method not allowed" }, 405);
@@ -177,12 +293,23 @@ Deno.serve(async (req) => {
     const bookStorageFallback = bookRows.reduce((total, book) => total + Number(book.file_size ?? 0), 0);
     const bookStorageBytes = bookObjects.reduce((total, object) => total + objectSize(object), 0) || bookStorageFallback;
     const imageStorageBytes = imageObjects.reduce((total, object) => total + objectSize(object), 0);
+    const bookSizeByPath = new Map(bookObjects.map((object) => [object.name, objectSize(object)]));
+    const imageSizeByPath = new Map(imageObjects.map((object) => [object.name, objectSize(object)]));
     const imageSignedUrls = await createSignedUrlMap(
       adminClient,
       READER_IMAGE_BUCKET,
       imageRows.map((image) => image.storage_path)
     ).catch(() => new Map<string, string>());
     const bookTitlesById = new Map(bookRows.map((book) => [book.id, book.title]));
+    const generatedAt = new Date().toISOString();
+    const timeline = buildTimeline({
+      books: bookRows,
+      bookSizes: bookSizeByPath,
+      generatedAt,
+      imageSizes: imageSizeByPath,
+      images: imageRows,
+      users
+    });
 
     const byUser = users.map((user) => {
       const userBooks = bookRows.filter((book) => book.user_id === user.id);
@@ -223,12 +350,20 @@ Deno.serve(async (req) => {
             startWord: image.start_word,
             style: image.style ?? "cartoon"
           })),
-        imagesGenerated: userImages.length
+        imagesGenerated: userImages.length,
+        timeline: buildUserTimeline({
+          books: userBooks,
+          bookSizes: bookSizeByPath,
+          generatedAt,
+          imageSizes: imageSizeByPath,
+          images: userImages,
+          user
+        })
       };
     });
 
     return jsonResponse({
-      generatedAt: new Date().toISOString(),
+      generatedAt,
       storage: {
         booksBytes: bookStorageBytes,
         imagesBytes: imageStorageBytes,
@@ -239,6 +374,7 @@ Deno.serve(async (req) => {
         imagesGenerated: imageRows.length,
         users: users.length
       },
+      timeline,
       users: byUser.sort((left, right) => {
         const rightCreatedAt = right.createdAt ?? "";
         const leftCreatedAt = left.createdAt ?? "";

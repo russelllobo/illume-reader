@@ -34,7 +34,7 @@ import {
   Users,
   X
 } from "lucide-react";
-import { ChangeEvent, CSSProperties, DragEvent, FormEvent, Fragment, KeyboardEvent, MouseEvent, PointerEvent, ReactNode, RefObject, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, Component, CSSProperties, DragEvent, FormEvent, Fragment, KeyboardEvent, MouseEvent, PointerEvent, ReactNode, RefObject, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
 import { pdfPreviewToBook, pdfjsLib, readPdfPreview, type PdfPreview, type StoredPdfPage } from "./pdf";
 import { createEdgeTtsPlayer, EdgeTtsPlayer } from "./edgeTts";
@@ -423,6 +423,16 @@ type ReaderDashboardUser = {
   imageStorageBytes: number;
   images: ReaderDashboardImage[];
   imagesGenerated: number;
+  timeline?: ReaderDashboardTimelinePoint[];
+};
+type ReaderDashboardTimelinePoint = {
+  booksBytes: number;
+  booksCount: number;
+  date: string;
+  imagesBytes: number;
+  imagesCount: number;
+  storageBytes: number;
+  usersCount: number;
 };
 type ReaderDashboardData = {
   generatedAt: string;
@@ -436,6 +446,7 @@ type ReaderDashboardData = {
     imagesGenerated: number;
     users: number;
   };
+  timeline?: ReaderDashboardTimelinePoint[];
   users: ReaderDashboardUser[];
 };
 
@@ -988,6 +999,227 @@ const formatShortDate = (value: string | null) => {
     month: "short",
     year: "numeric"
   }).format(new Date(value));
+};
+
+const formatCompactDate = (value: string) =>
+  new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "short"
+  }).format(new Date(value));
+
+const buildSparklinePath = (values: number[], width = 180, height = 48, padding = 4) => {
+  if (!values.length) return "";
+
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const drawableWidth = width - padding * 2;
+  const drawableHeight = height - padding * 2;
+
+  return values
+    .map((value, index) => {
+      const ratio = values.length === 1 ? 1 : index / (values.length - 1);
+      const x = padding + ratio * drawableWidth;
+      const y = padding + drawableHeight - ((value - min) / range) * drawableHeight;
+
+      return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+    })
+    .join(" ");
+};
+
+const buildSparklineAreaPath = (linePath: string, values: number[], width = 180, height = 48, padding = 4) => {
+  if (!linePath || !values.length) return "";
+
+  const baseline = height - padding;
+  const startX = padding;
+  const endX = values.length === 1 ? padding : width - padding;
+
+  return `${linePath} L ${endX} ${baseline} L ${startX} ${baseline} Z`;
+};
+
+function DashboardSparkline({
+  label,
+  points,
+  valueKey
+}: {
+  label: string;
+  points: ReaderDashboardTimelinePoint[];
+  valueKey: keyof Pick<ReaderDashboardTimelinePoint, "booksBytes" | "imagesBytes" | "imagesCount" | "storageBytes" | "usersCount">;
+}) {
+  const values = points.map((point) => Number(point[valueKey] ?? 0));
+  const linePath = buildSparklinePath(values);
+  const areaPath = buildSparklineAreaPath(linePath, values);
+  const firstPoint = points[0];
+  const lastPoint = points[points.length - 1];
+
+  return (
+    <div className="dashboard-sparkline" aria-label={label}>
+      {points.length ? (
+        <>
+          <svg viewBox="0 0 180 48" preserveAspectRatio="none" role="img" aria-label={label}>
+            <path className="dashboard-sparkline-area" d={areaPath} />
+            <path className="dashboard-sparkline-line" d={linePath} />
+          </svg>
+          <div className="dashboard-sparkline-dates" aria-hidden="true">
+            <span>{firstPoint ? formatCompactDate(firstPoint.date) : ""}</span>
+            <span>{lastPoint ? formatCompactDate(lastPoint.date) : ""}</span>
+          </div>
+        </>
+      ) : (
+        <div className="dashboard-sparkline-empty">No timeline yet</div>
+      )}
+    </div>
+  );
+}
+
+const buildDashboardTimelineFromUsers = (data: ReaderDashboardData | null): ReaderDashboardTimelinePoint[] => {
+  if (!data) return [];
+
+  const events = new Map<string, Omit<ReaderDashboardTimelinePoint, "storageBytes">>();
+  const ensureEvent = (date: string) => {
+    const existing = events.get(date);
+    if (existing) return existing;
+
+    const event = { booksBytes: 0, booksCount: 0, date, imagesBytes: 0, imagesCount: 0, usersCount: 0 };
+    events.set(date, event);
+    return event;
+  };
+  const imageCount = data.totals.imagesGenerated || data.users.reduce((total, user) => total + (user.images?.length ?? 0), 0);
+  const imageAverageBytes = imageCount ? data.storage.imagesBytes / imageCount : 0;
+
+  data.users.forEach((user) => {
+    const joinedDate = user.createdAt ? new Date(user.createdAt) : null;
+    if (joinedDate && !Number.isNaN(joinedDate.getTime())) {
+      ensureEvent(joinedDate.toISOString().slice(0, 10)).usersCount += 1;
+    }
+
+    user.books?.forEach((book) => {
+      const createdDate = new Date(book.createdAt);
+      if (Number.isNaN(createdDate.getTime())) return;
+
+      const event = ensureEvent(createdDate.toISOString().slice(0, 10));
+      event.booksCount += 1;
+      event.booksBytes += Number(book.fileSize ?? 0);
+    });
+
+    user.images?.forEach((image) => {
+      const createdDate = new Date(image.createdAt);
+      if (Number.isNaN(createdDate.getTime())) return;
+
+      const event = ensureEvent(createdDate.toISOString().slice(0, 10));
+      event.imagesCount += 1;
+      event.imagesBytes += imageAverageBytes;
+    });
+  });
+
+  const generatedDate = new Date(data.generatedAt);
+  if (!Number.isNaN(generatedDate.getTime())) ensureEvent(generatedDate.toISOString().slice(0, 10));
+
+  const totals = { booksBytes: 0, booksCount: 0, imagesBytes: 0, imagesCount: 0, usersCount: 0 };
+  const timeline = [...events.values()]
+    .sort((left, right) => left.date.localeCompare(right.date))
+    .map((event) => {
+      totals.booksBytes += event.booksBytes;
+      totals.booksCount += event.booksCount;
+      totals.imagesBytes += event.imagesBytes;
+      totals.imagesCount += event.imagesCount;
+      totals.usersCount += event.usersCount;
+
+      return {
+        booksBytes: totals.booksBytes,
+        booksCount: totals.booksCount,
+        date: event.date,
+        imagesBytes: totals.imagesBytes,
+        imagesCount: totals.imagesCount,
+        storageBytes: totals.booksBytes + totals.imagesBytes,
+        usersCount: totals.usersCount
+      };
+    });
+
+  const lastPoint = timeline[timeline.length - 1];
+  if (lastPoint) {
+    lastPoint.booksBytes = data.storage.booksBytes;
+    lastPoint.imagesBytes = data.storage.imagesBytes;
+    lastPoint.storageBytes = data.storage.totalBytes;
+    lastPoint.booksCount = data.totals.books;
+    lastPoint.imagesCount = data.totals.imagesGenerated;
+    lastPoint.usersCount = data.totals.users;
+  }
+
+  return timeline;
+};
+
+const buildUserTimelineFromData = (user: ReaderDashboardUser | null): ReaderDashboardTimelinePoint[] => {
+  if (!user) return [];
+
+  const events = new Map<string, Omit<ReaderDashboardTimelinePoint, "storageBytes">>();
+  const ensureEvent = (date: string) => {
+    const existing = events.get(date);
+    if (existing) return existing;
+
+    const event = { booksBytes: 0, booksCount: 0, date, imagesBytes: 0, imagesCount: 0, usersCount: 0 };
+    events.set(date, event);
+    return event;
+  };
+  const imageCount = user.imagesGenerated || user.images?.length || 0;
+  const imageAverageBytes = imageCount ? user.imageStorageBytes / imageCount : 0;
+
+  const joinedDate = user.createdAt ? new Date(user.createdAt) : null;
+  if (joinedDate && !Number.isNaN(joinedDate.getTime())) {
+    ensureEvent(joinedDate.toISOString().slice(0, 10)).usersCount = 1;
+  }
+
+  user.books?.forEach((book) => {
+    const createdDate = new Date(book.createdAt);
+    if (Number.isNaN(createdDate.getTime())) return;
+
+    const event = ensureEvent(createdDate.toISOString().slice(0, 10));
+    event.booksCount += 1;
+    event.booksBytes += Number(book.fileSize ?? 0);
+  });
+
+  user.images?.forEach((image) => {
+    const createdDate = new Date(image.createdAt);
+    if (Number.isNaN(createdDate.getTime())) return;
+
+    const event = ensureEvent(createdDate.toISOString().slice(0, 10));
+    event.imagesCount += 1;
+    event.imagesBytes += imageAverageBytes;
+  });
+
+  const today = new Date();
+  ensureEvent(today.toISOString().slice(0, 10));
+
+  const totals = { booksBytes: 0, booksCount: 0, imagesBytes: 0, imagesCount: 0, usersCount: 0 };
+  const timeline = [...events.values()]
+    .sort((left, right) => left.date.localeCompare(right.date))
+    .map((event) => {
+      totals.booksBytes += event.booksBytes;
+      totals.booksCount += event.booksCount;
+      totals.imagesBytes += event.imagesBytes;
+      totals.imagesCount += event.imagesCount;
+      totals.usersCount = Math.max(totals.usersCount, event.usersCount);
+
+      return {
+        booksBytes: totals.booksBytes,
+        booksCount: totals.booksCount,
+        date: event.date,
+        imagesBytes: totals.imagesBytes,
+        imagesCount: totals.imagesCount,
+        storageBytes: totals.booksBytes + totals.imagesBytes,
+        usersCount: totals.usersCount
+      };
+    });
+
+  const lastPoint = timeline[timeline.length - 1];
+  if (lastPoint) {
+    lastPoint.booksBytes = user.bookStorageBytes;
+    lastPoint.imagesBytes = user.imageStorageBytes;
+    lastPoint.imagesCount = user.imagesGenerated ?? user.images.length;
+    lastPoint.storageBytes = user.bookStorageBytes + user.imageStorageBytes;
+  }
+
+  return timeline;
 };
 
 const toastTitle = (title: string) => {
@@ -1827,6 +2059,32 @@ const TextReadingSurface = memo(function TextReadingSurface({
   previous.speechHighlight === next.speechHighlight
 ));
 
+class DashboardErrorBoundary extends Component<{ children: ReactNode }, { error: string }> {
+  state = { error: "" };
+
+  static getDerivedStateFromError(error: unknown) {
+    return { error: error instanceof Error ? error.message : "The dashboard could not be displayed." };
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <main className="dashboard-shell auth-dashboard-shell">
+          <section className="dashboard-auth-panel">
+            <div className="dashboard-mark blocked">
+              <X size={24} aria-hidden="true" />
+            </div>
+            <h1>Dashboard error</h1>
+            <p>{this.state.error}</p>
+          </section>
+        </main>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 function ReaderDashboard({
   busy,
   data,
@@ -1851,7 +2109,14 @@ function ReaderDashboard({
   const email = session?.user.email ?? "";
   const isOwner = email.toLowerCase() === "r.lobo2003@gmail.com";
   const storageTotal = data?.storage.totalBytes ?? 0;
-  const selectedUser = selectedUserId ? data?.users.find((item) => item.id === selectedUserId) ?? null : null;
+  const dashboardUsers = data?.users ?? [];
+  const selectedUser = selectedUserId ? dashboardUsers.find((item) => item.id === selectedUserId) ?? null : null;
+  const selectedBooks = selectedUser?.books ?? [];
+  const selectedImages = selectedUser?.images ?? [];
+  const selectedBookStorageBytes = selectedUser?.bookStorageBytes ?? 0;
+  const selectedImageStorageBytes = selectedUser?.imageStorageBytes ?? 0;
+  const selectedUserTimeline = selectedUser?.timeline?.length ? selectedUser.timeline : buildUserTimelineFromData(selectedUser);
+  const timeline = data?.timeline?.length ? data.timeline : buildDashboardTimelineFromUsers(data);
 
   if (!session) {
     return (
@@ -1944,10 +2209,27 @@ function ReaderDashboard({
                 </div>
               </div>
               <div className="dashboard-user-stats">
-                <span>{selectedUser.books.length} books</span>
-                <span>{selectedUser.imagesGenerated} images</span>
-                <span>{formatBytes(selectedUser.bookStorageBytes + selectedUser.imageStorageBytes)}</span>
+                <span>{selectedBooks.length} books</span>
+                <span>{selectedUser.imagesGenerated ?? selectedImages.length} images</span>
+                <span>{formatBytes(selectedBookStorageBytes + selectedImageStorageBytes)}</span>
               </div>
+            </section>
+
+            <section className="dashboard-user-metrics" aria-label={`${selectedUser.email} activity over time`}>
+              <article className="dashboard-metric">
+                <HardDrive size={20} aria-hidden="true" />
+                <span>User storage</span>
+                <strong>{formatBytes(selectedBookStorageBytes + selectedImageStorageBytes)}</strong>
+                <small>{formatBytes(selectedBookStorageBytes)} books · {formatBytes(selectedImageStorageBytes)} images</small>
+                <DashboardSparkline label="User storage over time" points={selectedUserTimeline} valueKey="storageBytes" />
+              </article>
+              <article className="dashboard-metric">
+                <ImageIcon size={20} aria-hidden="true" />
+                <span>User images</span>
+                <strong>{selectedUser.imagesGenerated ?? selectedImages.length}</strong>
+                <small>{formatBytes(selectedImageStorageBytes)} stored</small>
+                <DashboardSparkline label="User images over time" points={selectedUserTimeline} valueKey="imagesCount" />
+              </article>
             </section>
 
             <section className="dashboard-detail-grid">
@@ -1955,16 +2237,16 @@ function ReaderDashboard({
                 <div className="dashboard-section-heading">
                   <div>
                     <h2>Books</h2>
-                    <p>{formatBytes(selectedUser.bookStorageBytes)} stored</p>
+                    <p>{formatBytes(selectedBookStorageBytes)} stored</p>
                   </div>
                 </div>
-                {selectedUser.books.length ? (
+                {selectedBooks.length ? (
                   <div className="dashboard-book-list">
-                    {selectedUser.books.map((book) => (
+                    {selectedBooks.map((book) => (
                       <div className="dashboard-book-row" key={book.id}>
                         <FileText size={15} aria-hidden="true" />
                         <span>{book.title || book.fileName}</span>
-                        <small>{book.documentType.toUpperCase()} · {formatBytes(book.fileSize)}</small>
+                        <small>{(book.documentType || "book").toUpperCase()} · {formatBytes(book.fileSize ?? 0)}</small>
                       </div>
                     ))}
                   </div>
@@ -1977,12 +2259,12 @@ function ReaderDashboard({
                 <div className="dashboard-section-heading">
                   <div>
                     <h2>Images</h2>
-                    <p>{formatBytes(selectedUser.imageStorageBytes)} stored</p>
+                    <p>{formatBytes(selectedImageStorageBytes)} stored</p>
                   </div>
                 </div>
-                {selectedUser.images.length ? (
+                {selectedImages.length ? (
                   <div className="dashboard-image-grid">
-                    {selectedUser.images.map((image) => (
+                    {selectedImages.map((image) => (
                       <article className="dashboard-image-card" key={image.id}>
                         {image.signedUrl ? (
                           <img alt={`Generated image for ${image.bookTitle}`} src={image.signedUrl} />
@@ -1993,7 +2275,7 @@ function ReaderDashboard({
                         )}
                         <div>
                           <strong>{image.bookTitle}</strong>
-                          <span>{image.style} · words {image.startWord}-{image.endWord}</span>
+                          <span>{image.style || "image"} · words {image.startWord ?? "?"}-{image.endWord ?? "?"}</span>
                           <small>{formatShortDate(image.createdAt)}</small>
                         </div>
                       </article>
@@ -2036,23 +2318,27 @@ function ReaderDashboard({
           <HardDrive size={20} aria-hidden="true" />
           <span>Supabase storage</span>
           <strong>{formatBytes(storageTotal)}</strong>
+          <DashboardSparkline label="Supabase storage over time" points={timeline} valueKey="storageBytes" />
         </article>
         <article className="dashboard-metric">
           <BookOpen size={20} aria-hidden="true" />
           <span>Books</span>
           <strong>{formatBytes(data?.storage.booksBytes ?? 0)}</strong>
           <small>{data?.totals.books ?? 0} uploaded</small>
+          <DashboardSparkline label="Book storage over time" points={timeline} valueKey="booksBytes" />
         </article>
         <article className="dashboard-metric">
           <ImageIcon size={20} aria-hidden="true" />
           <span>Images</span>
           <strong>{formatBytes(data?.storage.imagesBytes ?? 0)}</strong>
           <small>{data?.totals.imagesGenerated ?? 0} generated</small>
+          <DashboardSparkline label="Image storage over time" points={timeline} valueKey="imagesBytes" />
         </article>
         <article className="dashboard-metric">
           <Users size={20} aria-hidden="true" />
           <span>Users</span>
           <strong>{data?.totals.users ?? 0}</strong>
+          <DashboardSparkline label="Users over time" points={timeline} valueKey="usersCount" />
         </article>
       </section>
 
@@ -2065,7 +2351,7 @@ function ReaderDashboard({
         </div>
 
         <div className="dashboard-user-list">
-          {(data?.users ?? []).map((item) => (
+          {dashboardUsers.map((item) => (
             <button className="dashboard-user-row dashboard-user-button" key={item.id} onClick={() => onNavigate(`/dashboard/users/${item.id}`)} type="button">
               <div className="dashboard-user-main">
                 <div className="dashboard-avatar">{item.email[0]?.toUpperCase() ?? "U"}</div>
@@ -2075,9 +2361,9 @@ function ReaderDashboard({
                 </div>
               </div>
               <div className="dashboard-user-stats">
-                <span>{item.books.length} books</span>
-                <span>{item.imagesGenerated} images</span>
-                <span>{formatBytes(item.bookStorageBytes + item.imageStorageBytes)}</span>
+                <span>{(item.books ?? []).length} books</span>
+                <span>{item.imagesGenerated ?? (item.images ?? []).length} images</span>
+                <span>{formatBytes((item.bookStorageBytes ?? 0) + (item.imageStorageBytes ?? 0))}</span>
               </div>
               <ChevronRight className="dashboard-row-arrow" size={18} aria-hidden="true" />
             </button>
@@ -2096,6 +2382,12 @@ function ReaderDashboard({
 
 const authRedirectUrl = () => {
   const url = new URL(window.location.href);
+  if (url.pathname.startsWith("/dashboard")) {
+    const redirectUrl = new URL(window.location.origin);
+    redirectUrl.searchParams.set("redirect", url.pathname);
+    return redirectUrl.toString();
+  }
+
   url.search = "";
   url.hash = "";
   return url.toString();
@@ -2657,6 +2949,17 @@ function App() {
 
     return () => data.subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!session) return;
+
+    const url = new URL(window.location.href);
+    const redirectPath = url.searchParams.get("redirect");
+    if (!redirectPath?.startsWith("/dashboard")) return;
+
+    window.history.replaceState({}, "", redirectPath);
+    setDashboardPath(window.location.pathname);
+  }, [session?.user?.id]);
 
   useEffect(() => {
     if (!isReaderDashboard) return;
@@ -4758,23 +5061,49 @@ function App() {
       readingScrollFrame.current = null;
 
       const nextBook = book;
-      const viewportTop = surface.getBoundingClientRect().top + 72;
+      const surfaceTop = surface.scrollTop;
+      const viewportTop = surfaceTop + 72;
+      const viewportBottom = surfaceTop + surface.clientHeight + 320;
       let closestIndex = currentIndex;
       let closestDistance = Number.POSITIVE_INFINITY;
+      let foundVisibleParagraph = false;
+      const scanStart = Math.max(0, currentIndex - 80);
+      const scanEnd = Math.min(nextBook.paragraphs.length - 1, currentIndex + 160);
 
-      for (let index = 0; index < nextBook.paragraphs.length; index++) {
+      for (let index = scanStart; index <= scanEnd; index++) {
         const paragraph = nextBook.paragraphs[index];
         const node = paragraphRefs.current.get(paragraph.id);
         if (!node) continue;
 
-        const bounds = node.getBoundingClientRect();
-        if (bounds.bottom < viewportTop - 320) continue;
-        if (bounds.top > viewportTop + 320) break;
+        const top = node.offsetTop;
+        const bottom = top + node.offsetHeight;
+        if (bottom < viewportTop - 320) continue;
+        if (top > viewportBottom) break;
 
-        const distance = Math.abs(bounds.top - viewportTop);
+        foundVisibleParagraph = true;
+        const distance = Math.abs(top - viewportTop);
         if (distance < closestDistance) {
           closestDistance = distance;
           closestIndex = index;
+        }
+      }
+
+      if (!foundVisibleParagraph) {
+        for (let index = 0; index < nextBook.paragraphs.length; index++) {
+          const paragraph = nextBook.paragraphs[index];
+          const node = paragraphRefs.current.get(paragraph.id);
+          if (!node) continue;
+
+          const top = node.offsetTop;
+          const bottom = top + node.offsetHeight;
+          if (bottom < viewportTop - 320) continue;
+          if (top > viewportBottom) break;
+
+          const distance = Math.abs(top - viewportTop);
+          if (distance < closestDistance) {
+            closestDistance = distance;
+            closestIndex = index;
+          }
         }
       }
 
@@ -4793,13 +5122,9 @@ function App() {
         const target = book.paragraphs[targetIndex];
         if (target && target.id === id) {
           pendingScrollIndex.current = null;
-          if (isInitialOpenRef.current || isInstantScrollRef.current) {
-            node.scrollIntoView({ block: "start", behavior: "auto" });
-            isInitialOpenRef.current = false;
-            isInstantScrollRef.current = false;
-          } else {
-            node.scrollIntoView({ block: "start", behavior: "smooth" });
-          }
+          node.scrollIntoView({ block: "start", behavior: "auto" });
+          isInitialOpenRef.current = false;
+          isInstantScrollRef.current = false;
         }
       }
     } else {
@@ -5398,17 +5723,19 @@ function App() {
 
   if (isReaderDashboard) {
     return (
-      <ReaderDashboard
-        busy={busy || dashboardLoading}
-        data={dashboardData}
-        error={dashboardError}
-        onNavigate={navigateDashboard}
-        onRefresh={() => void loadReaderDashboard()}
-        onSignInWithGoogle={() => void signInWithGoogle()}
-        onSignOut={() => void signOut()}
-        selectedUserId={selectedDashboardUserId}
-        session={session}
-      />
+      <DashboardErrorBoundary key={dashboardPath}>
+        <ReaderDashboard
+          busy={busy || dashboardLoading}
+          data={dashboardData}
+          error={dashboardError}
+          onNavigate={navigateDashboard}
+          onRefresh={() => void loadReaderDashboard()}
+          onSignInWithGoogle={() => void signInWithGoogle()}
+          onSignOut={() => void signOut()}
+          selectedUserId={selectedDashboardUserId}
+          session={session}
+        />
+      </DashboardErrorBoundary>
     );
   }
 
@@ -5639,9 +5966,6 @@ function App() {
                             title: pendingImport.title
                           }}
                         />
-                        <span className="catalog-import-progress" aria-hidden="true">
-                          <Loader2 className="spin" size={22} />
-                        </span>
                       </span>
                       <span className="catalog-book-copy">
                         <strong>{pendingImport.title}</strong>
