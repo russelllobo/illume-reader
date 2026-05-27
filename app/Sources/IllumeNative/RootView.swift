@@ -24,14 +24,20 @@ struct RootView: View {
 
             if let openingBook = app.openingBook {
                 BookOpeningVeil(book: openingBook)
-                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
-            } else if app.isLoading || app.isImporting {
-                LoadingVeil(text: app.isImporting ? "Importing" : "Syncing")
-                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    .transition(.opacity)
+                    .zIndex(1)
+            }
+
+            if app.activeBook != nil && app.openingBook == nil {
+                ReaderView()
+                    .blurLoadIn(radius: 7)
+                    .transition(.opacity)
+                    .zIndex(2)
             }
         }
         .animation(IllumeTheme.spring, value: app.isSignedIn)
         .animation(IllumeTheme.spring, value: app.openingBook?.id)
+        .animation(IllumeTheme.blurLoadIn, value: app.activeBookRow?.id)
         .animation(IllumeTheme.blurLoadIn, value: app.isLoading)
         .animation(IllumeTheme.blurLoadIn, value: app.isImporting)
     }
@@ -41,6 +47,7 @@ struct AuthView: View {
     @EnvironmentObject private var app: IllumeAppModel
     @State private var email = ""
     @State private var password = ""
+    @State private var isEmailSignInExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 28) {
@@ -55,26 +62,7 @@ struct AuthView: View {
                     .foregroundStyle(.secondary)
             }
 
-            VStack(spacing: 14) {
-                TextField("Email", text: $email)
-                    .textContentType(.emailAddress)
-                    .keyboardType(.emailAddress)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .illumeField()
-
-                SecureField("Password", text: $password)
-                    .textContentType(app.authMode == .signIn ? .password : .newPassword)
-                    .illumeField()
-            }
-
             VStack(spacing: 12) {
-                Button(app.authMode == .signIn ? "Sign in" : "Create account") {
-                    Task { await app.authenticate(email: email, password: password) }
-                }
-                .buttonStyle(PillButtonStyle(tint: IllumeTheme.ink))
-                .disabled(email.isEmpty || password.count < 6)
-
                 Button {
                     Task { await app.signInWithApple() }
                 } label: {
@@ -94,13 +82,44 @@ struct AuthView: View {
                 }
                 .buttonStyle(PillButtonStyle(tint: IllumeTheme.coral))
 
+                if isEmailSignInExpanded {
+                    VStack(spacing: 14) {
+                        TextField("Email", text: $email)
+                            .textContentType(.emailAddress)
+                            .keyboardType(.emailAddress)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .illumeField()
+
+                        SecureField("Password", text: $password)
+                            .textContentType(app.authMode == .signIn ? .password : .newPassword)
+                            .illumeField()
+
+                        Button(app.authMode == .signIn ? "Sign in" : "Create account") {
+                            Task { await app.authenticate(email: email, password: password) }
+                        }
+                        .buttonStyle(PillButtonStyle(tint: IllumeTheme.ink))
+                        .disabled(email.isEmpty || password.count < 6)
+                    }
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                } else {
+                    Button {
+                        withAnimation(IllumeTheme.spring) {
+                            isEmailSignInExpanded = true
+                        }
+                    } label: {
+                        Label("Sign in with email", systemImage: "envelope")
+                    }
+                    .buttonStyle(PillButtonStyle(tint: IllumeTheme.ink))
+                }
+
                 Button(app.authMode == .signIn ? "New here? Create an account" : "Already have an account? Sign in") {
                     withAnimation(IllumeTheme.spring) {
                         app.authMode = app.authMode == .signIn ? .signUp : .signIn
+                        isEmailSignInExpanded = true
                     }
                 }
-                .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                .foregroundStyle(IllumeTheme.ink)
+                .buttonStyle(MiniGlassButtonStyle())
             }
 
             if !app.notice.isEmpty {
@@ -120,12 +139,20 @@ struct LibraryShell: View {
     @EnvironmentObject private var app: IllumeAppModel
     @State private var importerOpen = false
     @State private var profileOpen = false
+    @State private var bookToRename: BookRow?
+    @State private var renameTitle = ""
+    @State private var bookToDelete: BookRow?
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
-                    LibraryHeader(profileOpen: $profileOpen, importerOpen: $importerOpen)
+                    LibraryHeader(
+                        profileOpen: $profileOpen,
+                        importerOpen: $importerOpen,
+                        renameBook: beginRenaming,
+                        deleteBook: beginDeleting
+                    )
                         .blurLoadIn(delay: 0.01, radius: 7)
 
                     if !app.notice.isEmpty {
@@ -135,8 +162,8 @@ struct LibraryShell: View {
                     if app.books.isEmpty {
                         EmptyLibrary(importerOpen: $importerOpen)
                     } else {
-                        ContinueSection()
-                        BookGrid()
+                        ContinueSection(renameBook: beginRenaming, deleteBook: beginDeleting)
+                        BookGrid(renameBook: beginRenaming, deleteBook: beginDeleting)
                     }
                 }
                 .padding(.horizontal, 20)
@@ -161,25 +188,82 @@ struct LibraryShell: View {
                     .presentationDetents([.medium, .large])
                     .presentationCornerRadius(30)
             }
-            .fullScreenCover(item: Binding(
-                get: { app.activeBook.map { ActiveReader(id: app.activeBookRow?.id ?? UUID(), book: $0) } },
-                set: { if $0 == nil { app.closeReader() } }
-            )) { _ in
-                ReaderView()
+            .alert("Rename Book", isPresented: renameAlertPresented) {
+                TextField("Title", text: $renameTitle)
+                    .textInputAutocapitalization(.words)
+                Button("Cancel", role: .cancel) {
+                    bookToRename = nil
+                    renameTitle = ""
+                }
+                Button("Save") {
+                    guard let book = bookToRename else { return }
+                    let title = renameTitle
+                    bookToRename = nil
+                    renameTitle = ""
+                    Task { await app.renameBook(book, title: title) }
+                }
+                .disabled(renameTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            } message: {
+                Text("Choose a new title for this book.")
+            }
+            .confirmationDialog(
+                bookToDelete.map { "Delete \"\($0.title)\"?" } ?? "Delete Book?",
+                isPresented: deleteDialogPresented,
+                titleVisibility: .visible
+            ) {
+                Button("Delete Book", role: .destructive) {
+                    guard let book = bookToDelete else { return }
+                    bookToDelete = nil
+                    Task { await app.deleteBook(book) }
+                }
+                Button("Cancel", role: .cancel) {
+                    bookToDelete = nil
+                }
+            } message: {
+                Text("This removes the book from your library.")
             }
         }
     }
-}
 
-struct ActiveReader: Identifiable {
-    let id: UUID
-    let book: ReaderBook
+    private var renameAlertPresented: Binding<Bool> {
+        Binding(
+            get: { bookToRename != nil },
+            set: { isPresented in
+                if !isPresented {
+                    bookToRename = nil
+                    renameTitle = ""
+                }
+            }
+        )
+    }
+
+    private var deleteDialogPresented: Binding<Bool> {
+        Binding(
+            get: { bookToDelete != nil },
+            set: { isPresented in
+                if !isPresented {
+                    bookToDelete = nil
+                }
+            }
+        )
+    }
+
+    private func beginRenaming(_ book: BookRow) {
+        renameTitle = book.title
+        bookToRename = book
+    }
+
+    private func beginDeleting(_ book: BookRow) {
+        bookToDelete = book
+    }
 }
 
 struct LibraryHeader: View {
     @EnvironmentObject private var app: IllumeAppModel
     @Binding var profileOpen: Bool
     @Binding var importerOpen: Bool
+    let renameBook: (BookRow) -> Void
+    let deleteBook: (BookRow) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -220,10 +304,9 @@ struct LibraryHeader: View {
                             .foregroundStyle(IllumeTheme.ink)
                     }
                     .padding(16)
-                    .background(.white.opacity(0.58), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 26).stroke(.black.opacity(0.05)))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LiquidCardButtonStyle(cornerRadius: 26, tint: IllumeTheme.paper))
+                .bookContextMenu(book: first, renameBook: renameBook, deleteBook: deleteBook)
                 .blurLoadIn(delay: 0.04, radius: 8)
             }
         }
@@ -232,6 +315,8 @@ struct LibraryHeader: View {
 
 struct ContinueSection: View {
     @EnvironmentObject private var app: IllumeAppModel
+    let renameBook: (BookRow) -> Void
+    let deleteBook: (BookRow) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -252,7 +337,8 @@ struct ContinueSection: View {
                                     .frame(width: 118, alignment: .leading)
                             }
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(LiquidLiftButtonStyle())
+                        .bookContextMenu(book: book, renameBook: renameBook, deleteBook: deleteBook)
                         .blurLoadIn(delay: min(Double(index) * 0.025, 0.12), radius: 8)
                     }
                 }
@@ -265,6 +351,8 @@ struct ContinueSection: View {
 
 struct BookGrid: View {
     @EnvironmentObject private var app: IllumeAppModel
+    let renameBook: (BookRow) -> Void
+    let deleteBook: (BookRow) -> Void
     private let columns = [GridItem(.adaptive(minimum: 152), spacing: 18)]
 
     var body: some View {
@@ -288,9 +376,9 @@ struct BookGrid: View {
                     }
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.white.opacity(0.5), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LiquidCardButtonStyle(cornerRadius: 18, tint: IllumeTheme.paper))
+                .bookContextMenu(book: book, renameBook: renameBook, deleteBook: deleteBook)
                 .blurLoadIn(delay: min(Double(index) * 0.018, 0.14), radius: 7)
             }
         }
@@ -328,10 +416,9 @@ struct NoticeBanner: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 11)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(IllumeTheme.coral.opacity(0.1), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(IllumeTheme.coral.opacity(0.18)))
-        .transition(.opacity.combined(with: .move(edge: .top)))
-        .blurLoadIn(radius: 6)
+            .illumeLiquidGlassRounded(cornerRadius: 14, tint: IllumeTheme.coral)
+            .transition(.opacity.combined(with: .move(edge: .top)))
+            .blurLoadIn(radius: 6)
     }
 }
 
@@ -502,65 +589,46 @@ private extension ByteCountFormatter {
     }
 }
 
-struct LoadingVeil: View {
-    let text: String
-
-    var body: some View {
-        VStack(spacing: 14) {
-            ProgressView()
-                .controlSize(.large)
-            Text(text)
-                .font(.system(.headline, design: .rounded, weight: .bold))
-        }
-        .padding(22)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
-        .blurLoadIn(radius: 8)
-    }
-}
-
 struct BookOpeningVeil: View {
     let book: BookRow
 
     var body: some View {
         ZStack {
-            IllumeTheme.paper
-                .ignoresSafeArea()
+            IllumeTheme.paper.ignoresSafeArea()
 
-            VStack(spacing: 22) {
-                CoverView(book: book, size: CGSize(width: 190, height: 286))
-
-                VStack(spacing: 6) {
-                    Text(book.title)
-                        .font(IllumeTypography.heading(28, weight: .bold))
-                        .foregroundStyle(IllumeTheme.ink)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(3)
-
-                    ProgressView()
-                        .controlSize(.regular)
-                        .tint(IllumeTheme.accent)
-                        .padding(.top, 8)
-
-                    Text("Opening book")
-                        .font(IllumeTypography.sans(13, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: 310)
-            }
-            .padding(24)
-            .blurLoadIn(radius: 10)
+            CoverView(book: book, size: CGSize(width: 190, height: 286))
+                .blurLoadIn(radius: 10)
         }
     }
 }
 
 private extension View {
+    func bookContextMenu(
+        book: BookRow,
+        renameBook: @escaping (BookRow) -> Void,
+        deleteBook: @escaping (BookRow) -> Void
+    ) -> some View {
+        contextMenu {
+            Button {
+                renameBook(book)
+            } label: {
+                Label("Rename", systemImage: "pencil")
+            }
+
+            Button(role: .destructive) {
+                deleteBook(book)
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+    }
+
     func illumeField() -> some View {
         self
             .font(.system(.body, design: .rounded, weight: .medium))
             .padding(.horizontal, 16)
             .frame(height: 54)
-            .background(.white.opacity(0.66), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 18).stroke(.black.opacity(0.06)))
+            .illumeLiquidGlassRounded(cornerRadius: 18, tint: IllumeTheme.paper)
     }
 }
 

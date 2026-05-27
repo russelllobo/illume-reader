@@ -25,10 +25,25 @@ final class IllumeAppModel: NSObject, ObservableObject {
     @Published var notice = ""
     @Published var readerSettings = ReaderSettings()
     @Published var readerImageResponse: ReaderImageFunctionResponse?
+    @Published var narration = NarrationState()
 
     let backend = SupabaseBackend()
     lazy var billing = BillingService(backend: backend)
     private let synthesizer = AVSpeechSynthesizer()
+    private var audioPlayer: AVPlayer?
+    private var audioEndObserver: NSObjectProtocol?
+    private var audioFailedObserver: NSObjectProtocol?
+    private var audioStatusObserver: NSKeyValueObservation?
+    private var audioTimeObserver: Any?
+    private var narrationAudioURL: URL?
+    private var narrationTask: Task<Void, Never>?
+    private var narrationParagraphIndex: Int?
+    private var narrationTextStartOffset = 0
+    private var currentNarrationText = ""
+    private var narrationWordRanges: [NSRange] = []
+    private var narrationWordIndex = 0
+    private var narrationRateSnapshot = 1.0
+    private var isUsingSystemNarration = false
     private var progressTask: Task<Void, Never>?
     private var appleContinuation: CheckedContinuation<AuthSession, Error>?
     private var googleWebAuthSession: ASWebAuthenticationSession?
@@ -241,6 +256,33 @@ final class IllumeAppModel: NSObject, ObservableObject {
         readerImageResponse = nil
     }
 
+    func renameBook(_ row: BookRow, title: String) async {
+        guard let accessToken = session?.accessToken else { return }
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else { return }
+        await runBusy { [self] in
+            let updated = try await backend.renameBook(bookId: row.id, title: trimmedTitle, accessToken: accessToken)
+            if let index = books.firstIndex(where: { $0.id == updated.id }) {
+                books[index] = updated
+            }
+            if activeBookRow?.id == updated.id {
+                activeBookRow = updated
+                activeBook?.title = updated.title
+            }
+        }
+    }
+
+    func deleteBook(_ row: BookRow) async {
+        guard let accessToken = session?.accessToken else { return }
+        await runBusy { [self] in
+            try await backend.deleteBook(bookId: row.id, accessToken: accessToken)
+            books.removeAll { $0.id == row.id }
+            if activeBookRow?.id == row.id {
+                closeReader()
+            }
+        }
+    }
+
     func saveProgress(index: Int, page: Int) {
         guard let row = activeBookRow, let accessToken = session?.accessToken else { return }
         progressTask?.cancel()
@@ -256,18 +298,294 @@ final class IllumeAppModel: NSObject, ObservableObject {
     }
 
     func speak(_ text: String) {
-        if synthesizer.isSpeaking {
-            synthesizer.stopSpeaking(at: .word)
+        guard let book = activeBook,
+              let paragraphIndex = book.paragraphs.firstIndex(where: { $0.text == text }) else { return }
+        speak(book: book, paragraphIndex: paragraphIndex)
+    }
+
+    func toggleNarration(for book: ReaderBook, from index: Int) {
+        if narration.isPlaying {
+            stopSpeaking()
             return
         }
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.rate = Float(readerSettings.narrationRate)
-        utterance.voice = AVSpeechSynthesisVoice(language: "en-GB") ?? AVSpeechSynthesisVoice(language: "en-US")
-        synthesizer.speak(utterance)
+        speak(book: book, paragraphIndex: index, wordStart: 0)
+    }
+
+    func speak(book: ReaderBook, paragraphIndex: Int, wordStart: Int = 0) {
+        narrationTask?.cancel()
+        narrationTask = Task {
+            await speakEdge(book: book, paragraphIndex: paragraphIndex, wordStart: wordStart)
+        }
+    }
+
+    private func speakEdge(book: ReaderBook, paragraphIndex: Int, wordStart: Int = 0) async {
+        guard book.paragraphs.indices.contains(paragraphIndex) else { return }
+        let paragraph = book.paragraphs[paragraphIndex]
+        guard !paragraph.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        let wordRanges = Self.wordRanges(in: paragraph.text)
+        let safeWordStart = wordRanges.contains { $0.location == wordStart } ? wordStart : wordRanges.first?.location ?? 0
+        let text = Self.substring(paragraph.text, fromUTF16Offset: safeWordStart)
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        stopPlayback(keepNarrationState: true)
+        synthesizer.stopSpeaking(at: .immediate)
+        isUsingSystemNarration = false
+
+        narrationParagraphIndex = paragraphIndex
+        narrationTextStartOffset = safeWordStart
+        currentNarrationText = text
+        narrationWordRanges = Self.wordRanges(in: text)
+        narrationWordIndex = 0
+        narrationRateSnapshot = Self.edgeSpeechRate(from: readerSettings.narrationRate)
+        if let firstRange = narrationWordRanges.first {
+            narration = NarrationState(
+                isPlaying: true,
+                paragraphID: paragraph.id,
+                wordRange: NSRange(location: safeWordStart + firstRange.location, length: firstRange.length)
+            )
+        } else {
+            narration = NarrationState(isPlaying: true, paragraphID: paragraph.id, wordRange: nil)
+        }
+
+        guard let accessToken = session?.accessToken else {
+            playSystemNarration(text)
+            notice = "Using device narration. Sign in for enhanced narration."
+            return
+        }
+
+        do {
+            let data = try await withThrowingTaskGroup(of: Data.self) { group in
+                group.addTask { [backend, narrationRateSnapshot] in
+                    try await backend.synthesizeSpeech(
+                        EdgeTTSRequest(
+                            rate: narrationRateSnapshot,
+                            text: text,
+                            voice: "en-US-AvaMultilingualNeural"
+                        ),
+                        accessToken: accessToken
+                    )
+                }
+                group.addTask {
+                    try await Task.sleep(for: .seconds(6))
+                    throw NarrationPlaybackError.edgeTimedOut
+                }
+                guard let data = try await group.next() else {
+                    throw NarrationPlaybackError.emptyAudio
+                }
+                group.cancelAll()
+                return data
+            }
+            guard narration.isPlaying,
+                  narration.paragraphID == paragraph.id,
+                  narrationTextStartOffset == safeWordStart,
+                  !Task.isCancelled else { return }
+            guard !data.isEmpty else {
+                throw NarrationPlaybackError.emptyAudio
+            }
+            try playNarrationAudio(data)
+        } catch {
+            guard !Task.isCancelled else { return }
+            playSystemNarration(text)
+            notice = "Using device narration because enhanced narration is unavailable."
+        }
     }
 
     func stopSpeaking() {
+        narrationTask?.cancel()
+        narrationTask = nil
+        stopPlayback(keepNarrationState: false)
         synthesizer.stopSpeaking(at: .immediate)
+        isUsingSystemNarration = false
+        narrationParagraphIndex = nil
+        narrationTextStartOffset = 0
+        currentNarrationText = ""
+        narrationWordRanges = []
+        narrationWordIndex = 0
+        narration = NarrationState()
+    }
+
+    private func playNarrationAudio(_ data: Data) throws {
+        #if os(iOS)
+        try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+        try AVAudioSession.sharedInstance().setActive(true)
+        #endif
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("illume-narration-\(UUID().uuidString)")
+            .appendingPathExtension("mp3")
+        try data.write(to: url, options: [.atomic])
+
+        let item = AVPlayerItem(url: url)
+        let player = AVPlayer(playerItem: item)
+        player.volume = 1
+        audioPlayer = player
+        narrationAudioURL = url
+        audioStatusObserver = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+            guard item.status == .failed else { return }
+            let message = item.error?.localizedDescription ?? "Narration audio could not load."
+            Task { @MainActor in
+                guard let self else { return }
+                if self.narration.isPlaying, !self.currentNarrationText.isEmpty {
+                    self.playSystemNarration(self.currentNarrationText)
+                    self.notice = "Using device narration because enhanced narration could not load."
+                } else {
+                    self.stopSpeaking()
+                    self.notice = message
+                }
+            }
+        }
+        audioTimeObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.05, preferredTimescale: 600),
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.updateEstimatedNarrationHighlight()
+            }
+        }
+        audioEndObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.finishCurrentNarrationItem()
+            }
+        }
+        audioFailedObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] notification in
+            let message = (notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error)?.localizedDescription
+                ?? "Narration audio could not play."
+            Task { @MainActor in
+                guard let self else { return }
+                if self.narration.isPlaying, !self.currentNarrationText.isEmpty {
+                    self.playSystemNarration(self.currentNarrationText)
+                    self.notice = "Using device narration because enhanced narration could not play."
+                } else {
+                    self.stopSpeaking()
+                    self.notice = message
+                }
+            }
+        }
+
+        player.play()
+    }
+
+    private func playSystemNarration(_ text: String) {
+        stopPlayback(keepNarrationState: true)
+        synthesizer.stopSpeaking(at: .immediate)
+        #if os(iOS)
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+        try? AVAudioSession.sharedInstance().setActive(true)
+        #endif
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.rate = Self.systemSpeechRate(from: readerSettings.narrationRate)
+        utterance.volume = 1
+        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+            ?? AVSpeechSynthesisVoice(language: "en-GB")
+        isUsingSystemNarration = true
+        synthesizer.speak(utterance)
+    }
+
+    private func stopPlayback(keepNarrationState: Bool) {
+        if let audioTimeObserver {
+            audioPlayer?.removeTimeObserver(audioTimeObserver)
+            self.audioTimeObserver = nil
+        }
+        if let audioEndObserver {
+            NotificationCenter.default.removeObserver(audioEndObserver)
+            self.audioEndObserver = nil
+        }
+        if let audioFailedObserver {
+            NotificationCenter.default.removeObserver(audioFailedObserver)
+            self.audioFailedObserver = nil
+        }
+        audioStatusObserver?.invalidate()
+        audioStatusObserver = nil
+        audioPlayer?.pause()
+        audioPlayer = nil
+        if let narrationAudioURL {
+            try? FileManager.default.removeItem(at: narrationAudioURL)
+            self.narrationAudioURL = nil
+        }
+        if !keepNarrationState {
+            narration = NarrationState()
+        }
+    }
+
+    private func updateEstimatedNarrationHighlight() {
+        guard narration.isPlaying,
+              let player = audioPlayer,
+              let paragraphIndex = narrationParagraphIndex,
+              let book = activeBook,
+              book.paragraphs.indices.contains(paragraphIndex),
+              !narrationWordRanges.isEmpty else { return }
+        let paragraph = book.paragraphs[paragraphIndex]
+
+        let currentTime = player.currentTime().seconds + 0.03
+        guard currentTime.isFinite else { return }
+        let targetIndex = min(narrationWordRanges.count - 1, max(0, Int((currentTime * narrationRateSnapshot) / 0.31)))
+        guard targetIndex != narrationWordIndex || narration.wordRange == nil else { return }
+
+        narrationWordIndex = targetIndex
+        let range = narrationWordRanges[targetIndex]
+        narration = NarrationState(
+            isPlaying: true,
+            paragraphID: paragraph.id,
+            wordRange: NSRange(location: narrationTextStartOffset + range.location, length: range.length)
+        )
+    }
+
+    private func continueNarrationAfterCurrentParagraph() {
+        guard let book = activeBook,
+              let currentIndex = narrationParagraphIndex else {
+            narration = NarrationState()
+            return
+        }
+
+        let nextIndex = book.paragraphs.indices.dropFirst(currentIndex + 1).first {
+            !book.paragraphs[$0].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+
+        if let nextIndex {
+            speak(book: book, paragraphIndex: nextIndex)
+        } else {
+            narrationParagraphIndex = nil
+            narrationTextStartOffset = 0
+            currentNarrationText = ""
+            narration = NarrationState()
+        }
+    }
+
+    private func finishCurrentNarrationItem() {
+        stopPlayback(keepNarrationState: true)
+        isUsingSystemNarration = false
+        continueNarrationAfterCurrentParagraph()
+    }
+
+    nonisolated static func wordRanges(in text: String) -> [NSRange] {
+        let nsText = text as NSString
+        let pattern = #"\S+"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        return regex.matches(in: text, range: NSRange(location: 0, length: nsText.length)).map(\.range)
+    }
+
+    nonisolated private static func substring(_ text: String, fromUTF16Offset offset: Int) -> String {
+        let safeOffset = max(0, min(offset, text.utf16.count))
+        let index = String.Index(utf16Offset: safeOffset, in: text)
+        return String(text[index...])
+    }
+
+    private static func edgeSpeechRate(from value: Double) -> Double {
+        min(2.0, max(0.7, value))
+    }
+
+    private static func systemSpeechRate(from value: Double) -> Float {
+        let clampedValue = min(2.0, max(0.7, Float(value)))
+        let normalizedValue = (clampedValue - 0.7) / 1.3
+        return Float(AVSpeechUtteranceMinimumSpeechRate + normalizedValue * (AVSpeechUtteranceMaximumSpeechRate - AVSpeechUtteranceMinimumSpeechRate))
     }
 
     func generateImage(for paragraph: ReaderParagraph) async {
@@ -496,7 +814,20 @@ private enum AuthSetupError: LocalizedError {
     }
 }
 
-extension IllumeAppModel: AVSpeechSynthesizerDelegate {}
+extension IllumeAppModel: AVSpeechSynthesizerDelegate {
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        Task { @MainActor in
+            guard isUsingSystemNarration else { return }
+            finishCurrentNarrationItem()
+        }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        Task { @MainActor in
+            isUsingSystemNarration = false
+        }
+    }
+}
 
 extension IllumeAppModel: ASAuthorizationControllerDelegate {
     nonisolated func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
@@ -552,8 +883,28 @@ struct ReaderSettings: Equatable {
     var textScale: Double = 1.05
     var lineHeight: Double = 1.55
     var lineWidth: Double = 42
-    var narrationRate: Double = 0.52
+    var narrationRate: Double = 1.0
     var imageStyle: ReaderImageStyle = .cartoon
+}
+
+struct NarrationState: Equatable {
+    var isPlaying = false
+    var paragraphID: String?
+    var wordRange: NSRange?
+}
+
+private enum NarrationPlaybackError: LocalizedError {
+    case emptyAudio
+    case edgeTimedOut
+
+    var errorDescription: String? {
+        switch self {
+        case .emptyAudio:
+            return "Enhanced narration returned no audio."
+        case .edgeTimedOut:
+            return "Enhanced narration took too long to start."
+        }
+    }
 }
 
 enum ReaderThemeChoice: String, CaseIterable {

@@ -34,13 +34,13 @@ enum DocumentParser {
         for chapterPath in chapterPaths {
             guard let html = try? string(named: chapterPath, in: archive) else { continue }
             let extracted = EpubMetadataExtractor.paragraphs(fromHTML: html, chapterTitle: book.title)
-            if let heading = extracted.first(where: { $0.kind == .heading })?.text {
-                chapters.append(heading)
-            }
+            let chapterTitle = extracted.first(where: { $0.kind == .heading })?.text ?? chapterTitle(from: chapterPath, fallback: book.title)
+            chapters.append(chapterTitle)
             paragraphs.append(contentsOf: extracted.map { paragraph in
                 var copy = paragraph
                 copy.id = "epub-\(paragraphs.count)-\(copy.id)"
                 copy.chapterIndex = max(0, chapters.count - 1)
+                copy.chapterTitle = chapterTitle
                 return copy
             })
         }
@@ -48,6 +48,16 @@ enum DocumentParser {
         book.paragraphs = paragraphs
         book.chapters = chapters.isEmpty ? [book.title] : chapters
         return ParsedDocument(book: book, coverDataURL: coverDataURL(opf: opf, opfPath: opfPath, in: archive))
+    }
+
+    private static func chapterTitle(from path: String, fallback: String) -> String {
+        let title = URL(fileURLWithPath: path)
+            .deletingPathExtension()
+            .lastPathComponent
+            .replacingOccurrences(of: #"[_-]+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return title.isEmpty ? fallback : title.capitalized
     }
 
     private static func parsePdf(data: Data, fileName: String) -> ParsedDocument {

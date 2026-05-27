@@ -47,6 +47,8 @@ enum IllumeTypography {
 }
 
 struct PillButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
     var tint: Color = IllumeTheme.ink
     var foreground: Color = .white
 
@@ -57,9 +59,15 @@ struct PillButtonStyle: ButtonStyle {
             .padding(.horizontal, 18)
             .frame(height: 52)
             .frame(maxWidth: .infinity)
-            .background(tint, in: Capsule())
+            .illumeLiquidGlassCapsule(
+                tint: tint,
+                isPressed: configuration.isPressed,
+                isEnabled: isEnabled,
+                isInteractive: true
+            )
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .animation(IllumeTheme.spring, value: configuration.isPressed)
+            .animation(IllumeTheme.spring, value: isEnabled)
     }
 }
 
@@ -73,10 +81,138 @@ struct SoftIconButton: View {
                 .font(.system(size: 16, weight: .bold))
                 .foregroundStyle(IllumeTheme.ink)
                 .frame(width: 44, height: 44)
-                .background(.white.opacity(0.72), in: Circle())
-                .overlay(Circle().stroke(.black.opacity(0.06)))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LiquidIconButtonStyle())
+    }
+}
+
+struct LiquidIconButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .illumeLiquidGlassCircle(
+                tint: IllumeTheme.paper,
+                isPressed: configuration.isPressed,
+                isEnabled: isEnabled,
+                isInteractive: true
+            )
+            .animation(IllumeTheme.spring, value: configuration.isPressed)
+    }
+}
+
+struct LiquidCardButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    var cornerRadius: CGFloat = 22
+    var tint: Color = IllumeTheme.paper
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .illumeLiquidGlassRounded(
+                cornerRadius: cornerRadius,
+                tint: tint,
+                isPressed: configuration.isPressed,
+                isEnabled: isEnabled,
+                isInteractive: true
+            )
+            .animation(IllumeTheme.spring, value: configuration.isPressed)
+    }
+}
+
+struct LiquidLiftButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(isEnabled ? 1 : 0.5)
+            .scaleEffect(configuration.isPressed ? 0.965 : 1)
+            .animation(IllumeTheme.spring, value: configuration.isPressed)
+    }
+}
+
+struct MiniGlassButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(.caption, design: .rounded, weight: .bold))
+            .foregroundStyle(IllumeTheme.ink)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .illumeLiquidGlassCapsule(
+                tint: IllumeTheme.paper,
+                isPressed: configuration.isPressed,
+                isEnabled: isEnabled,
+                isInteractive: true
+            )
+            .animation(IllumeTheme.spring, value: configuration.isPressed)
+    }
+}
+
+private struct IllumeLiquidGlassCapsuleModifier: ViewModifier {
+    let tint: Color
+    let isPressed: Bool
+    let isEnabled: Bool
+    let isInteractive: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+                .glassEffect(.regular.tint(tint).interactive(isInteractive && isEnabled), in: Capsule())
+                .opacity(isEnabled ? 1 : 0.5)
+                .scaleEffect(isPressed ? 0.965 : 1)
+        } else {
+            content
+                .background(.ultraThinMaterial, in: Capsule())
+                .opacity(isEnabled ? 1 : 0.5)
+                .scaleEffect(isPressed ? 0.965 : 1)
+        }
+    }
+}
+
+private struct IllumeLiquidGlassCircleModifier: ViewModifier {
+    let tint: Color
+    let isPressed: Bool
+    let isEnabled: Bool
+    let isInteractive: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+                .glassEffect(.regular.tint(tint).interactive(isInteractive && isEnabled), in: Circle())
+                .opacity(isEnabled ? 1 : 0.5)
+                .scaleEffect(isPressed ? 0.92 : 1)
+        } else {
+            content
+                .background(.ultraThinMaterial, in: Circle())
+                .opacity(isEnabled ? 1 : 0.5)
+                .scaleEffect(isPressed ? 0.92 : 1)
+        }
+    }
+}
+
+private struct IllumeLiquidGlassRoundedModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    let tint: Color
+    let isPressed: Bool
+    let isEnabled: Bool
+    let isInteractive: Bool
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+
+        if #available(iOS 26.0, *) {
+            content
+                .glassEffect(.regular.tint(tint).interactive(isInteractive && isEnabled), in: shape)
+                .opacity(isEnabled ? 1 : 0.5)
+                .scaleEffect(isPressed ? 0.985 : 1)
+        } else {
+            content
+                .background(.ultraThinMaterial, in: shape)
+                .opacity(isEnabled ? 1 : 0.5)
+                .scaleEffect(isPressed ? 0.985 : 1)
+        }
     }
 }
 
@@ -101,6 +237,56 @@ struct BlurLoadInModifier: ViewModifier {
 extension View {
     func blurLoadIn(delay: Double = 0, radius: CGFloat = 9) -> some View {
         modifier(BlurLoadInModifier(delay: delay, blurRadius: radius))
+    }
+
+    func illumeLiquidGlassCapsule(
+        tint: Color = IllumeTheme.paper,
+        isPressed: Bool = false,
+        isEnabled: Bool = true,
+        isInteractive: Bool = false
+    ) -> some View {
+        modifier(
+            IllumeLiquidGlassCapsuleModifier(
+                tint: tint,
+                isPressed: isPressed,
+                isEnabled: isEnabled,
+                isInteractive: isInteractive
+            )
+        )
+    }
+
+    func illumeLiquidGlassCircle(
+        tint: Color = IllumeTheme.paper,
+        isPressed: Bool = false,
+        isEnabled: Bool = true,
+        isInteractive: Bool = false
+    ) -> some View {
+        modifier(
+            IllumeLiquidGlassCircleModifier(
+                tint: tint,
+                isPressed: isPressed,
+                isEnabled: isEnabled,
+                isInteractive: isInteractive
+            )
+        )
+    }
+
+    func illumeLiquidGlassRounded(
+        cornerRadius: CGFloat = 22,
+        tint: Color = IllumeTheme.paper,
+        isPressed: Bool = false,
+        isEnabled: Bool = true,
+        isInteractive: Bool = false
+    ) -> some View {
+        modifier(
+            IllumeLiquidGlassRoundedModifier(
+                cornerRadius: cornerRadius,
+                tint: tint,
+                isPressed: isPressed,
+                isEnabled: isEnabled,
+                isInteractive: isInteractive
+            )
+        )
     }
 }
 #endif
