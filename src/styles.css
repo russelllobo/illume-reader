@@ -982,6 +982,15 @@ button:disabled {
   color: #b8c3be;
 }
 
+.image-reader-shell .narration-voice-trigger {
+  color: #e8f0ed;
+}
+
+.image-reader-shell .narration-voice-trigger:hover {
+  background: transparent;
+  color: #b8c3be;
+}
+
 .image-reader-shell .reader-back-button {
   border-color: #273039;
   background: #161b20;
@@ -3161,6 +3170,101 @@ button:disabled {
   color: #111;
 }
 
+.narration-voice-control {
+  position: relative;
+  font-family: var(--font-sans);
+}
+
+.narration-voice-trigger {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #111;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.narration-voice-trigger:hover {
+  background: transparent;
+  filter: brightness(0.6);
+}
+
+.narration-voice-popover {
+  --popover-open-transform: translateX(-50%) translateY(0) scale(1);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 12px);
+  z-index: 20;
+  width: 200px;
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid rgba(17, 17, 17, 0.1);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 18px 52px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(18px);
+  transform: var(--popover-open-transform);
+  transform-origin: bottom center;
+  will-change: opacity, transform;
+  animation: popoverQuickIn 0.15s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.narration-voice-popover::after {
+  position: absolute;
+  left: 50%;
+  bottom: -7px;
+  width: 12px;
+  height: 12px;
+  border-right: 1px solid rgba(17, 17, 17, 0.1);
+  border-bottom: 1px solid rgba(17, 17, 17, 0.1);
+  background: rgba(255, 255, 255, 0.94);
+  content: "";
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.narration-voice-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: auto;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #555;
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.narration-voice-option:hover {
+  background: #f0f0f0;
+  color: #111;
+}
+
+.narration-voice-option.active {
+  background: #111;
+  color: #fff;
+}
+
+.narration-voice-flag {
+  flex-shrink: 0;
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
+.narration-voice-label {
+  line-height: 1.3;
+}
+
 .font-mode-toggle {
   justify-self: start;
   display: inline-flex;
@@ -3196,13 +3300,14 @@ button:disabled {
 .transport {
   --transport-gap: 22px;
   --speed-trigger-width: 44px;
+  --voice-trigger-width: 34px;
   grid-column: 2;
   display: grid;
-  grid-template-columns: 34px 46px 34px var(--speed-trigger-width);
+  grid-template-columns: 34px 46px 34px var(--speed-trigger-width) var(--voice-trigger-width);
   align-items: center;
   justify-content: center;
   gap: var(--transport-gap);
-  transform: translateX(calc((var(--speed-trigger-width) + var(--transport-gap)) / 2));
+  transform: translateX(calc((var(--speed-trigger-width) + var(--transport-gap) + var(--voice-trigger-width) + var(--transport-gap)) / 2));
 }
 
 .image-mode-control {
@@ -4044,6 +4149,15 @@ button:disabled {
 .reader-themed-shell .narration-speed-trigger:hover {
   background: transparent;
   color: var(--reader-theme-muted);
+}
+
+.reader-themed-shell .narration-voice-trigger {
+  color: var(--reader-theme-text);
+}
+
+.reader-themed-shell .narration-voice-trigger:hover {
+  background: transparent;
+  filter: brightness(0.6);
 }
 
 .reader-themed-shell .reader-frame,

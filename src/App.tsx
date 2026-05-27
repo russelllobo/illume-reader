@@ -36,7 +36,7 @@ import {
 import { ChangeEvent, Component, CSSProperties, DragEvent, FormEvent, Fragment, KeyboardEvent, MouseEvent, PointerEvent, ReactNode, RefObject, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
 import { pdfPreviewToBook, pdfjsLib, readPdfPreview, type PdfPreview, type StoredPdfPage } from "./pdf";
-import { createEdgeTtsPlayer, EdgeTtsPlayer } from "./edgeTts";
+import { createEdgeTtsPlayer, DEFAULT_EDGE_TTS_VOICE, EdgeTtsPlayer } from "./edgeTts";
 import { supabase } from "./supabase";
 import { LandingPage } from "./LandingPage";
 
@@ -191,6 +191,13 @@ type CachedReaderImage = {
 const NARRATION_RATE_MIN = 0.7;
 const NARRATION_RATE_MAX = 2;
 const NARRATION_RATE_PRESETS = [1, 1.25, 1.5, 2];
+
+const VOICE_OPTIONS = [
+  { id: "en-US-AndrewMultilingualNeural", label: "American Man", flag: "🇺🇸" },
+  { id: "en-US-AvaMultilingualNeural", label: "American Woman", flag: "🇺🇸" },
+  { id: "en-GB-RyanNeural", label: "British Man", flag: "🇬🇧" },
+  { id: "en-GB-SoniaNeural", label: "British Woman", flag: "🇬🇧" }
+] as const;
 const READER_TEXT_SCALE_MIN = 9 / 16;
 const READER_TEXT_SCALE_MAX = 1.5;
 const READER_LINE_HEIGHT_MIN = 1.1;
@@ -2502,6 +2509,14 @@ const initialNarrationRate = () => {
   return Number.isFinite(value) ? clampNarrationRate(value) : DEFAULT_READER_PREFERENCES.narrationRate;
 };
 
+const VOICE_STORAGE_KEY = "reader-narration-voice";
+
+const initialNarrationVoice = () => {
+  const saved = window.localStorage.getItem(VOICE_STORAGE_KEY);
+  if (saved && VOICE_OPTIONS.some((v) => v.id === saved)) return saved;
+  return DEFAULT_EDGE_TTS_VOICE;
+};
+
 const readBookReaderPreferences = () => {
   const raw = window.localStorage.getItem(BOOK_READER_PREFERENCES_KEY);
   if (!raw) return {};
@@ -2856,8 +2871,10 @@ function App() {
   const [readerLineHeight, setReaderLineHeight] = useState(initialReaderLineHeight);
   const [readerLineWidth, setReaderLineWidth] = useState(initialReaderLineWidth);
   const [narrationRate, setNarrationRate] = useState(initialNarrationRate);
+  const [narrationVoice, setNarrationVoice] = useState(initialNarrationVoice);
   const [speedPreviewRate, setSpeedPreviewRate] = useState<number | null>(null);
   const [speedPopoverOpen, setSpeedPopoverOpen] = useState(false);
+  const [voicePopoverOpen, setVoicePopoverOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [pendingDeleteExiting, setPendingDeleteExiting] = useState(false);
@@ -2889,6 +2906,7 @@ function App() {
   const edgeTtsPlayerRef = useRef<EdgeTtsPlayer | null>(null);
   const suppressNextPlaybackStartRef = useRef(false);
   const speedControlRef = useRef<HTMLDivElement | null>(null);
+  const voiceControlRef = useRef<HTMLDivElement | null>(null);
   const imageStyleMenuRef = useRef<HTMLDivElement | null>(null);
   const textReaderActionsRef = useRef<TextReaderActions>({
     moveTo: () => undefined,
@@ -3381,6 +3399,27 @@ function App() {
       window.removeEventListener("keydown", closeOnEscape);
     };
   }, [speedPopoverOpen]);
+
+  useEffect(() => {
+    if (!voicePopoverOpen) return;
+
+    const closeOnOutsidePointer = (event: globalThis.PointerEvent) => {
+      if (event.target instanceof Node && voiceControlRef.current?.contains(event.target)) return;
+      setVoicePopoverOpen(false);
+    };
+
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setVoicePopoverOpen(false);
+    };
+
+    window.addEventListener("pointerdown", closeOnOutsidePointer);
+    window.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      window.removeEventListener("pointerdown", closeOnOutsidePointer);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [voicePopoverOpen]);
 
   useEffect(() => {
     if (!readerImageStyleOpen) return;
@@ -4241,6 +4280,15 @@ function App() {
     setNarrationRate(clampNarrationRate(value));
   };
 
+  const chooseNarrationVoice = (voiceId: string) => {
+    setNarrationVoice(voiceId);
+    window.localStorage.setItem(VOICE_STORAGE_KEY, voiceId);
+    setVoicePopoverOpen(false);
+    if (playback !== "idle") {
+      edgeTtsPlayerRef.current?.setRate(narrationRate);
+    }
+  };
+
   const speedRateFromPointer = (event: PointerEvent<HTMLDivElement>) => {
     const bounds = event.currentTarget.getBoundingClientRect();
     const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / Math.max(1, bounds.width)));
@@ -4306,6 +4354,7 @@ function App() {
       },
       text: paragraph.text,
       rate: narrationRate,
+      voice: narrationVoice,
       wordRanges
     });
   };
@@ -4358,6 +4407,7 @@ function App() {
       },
       text: slicedText,
       rate: narrationRate,
+      voice: narrationVoice,
       wordRanges: slicedRanges
     });
   };
@@ -4406,6 +4456,7 @@ function App() {
       },
       text: slicedText,
       rate: narrationRate,
+      voice: narrationVoice,
       wordRanges: slicedRanges
     });
   };
@@ -7316,11 +7367,15 @@ function App() {
               aria-haspopup="dialog"
               className="narration-speed-trigger"
               onClick={(event) => {
-                if (event.detail === 0) setSpeedPopoverOpen((open) => !open);
+                if (event.detail === 0) {
+                  setSpeedPopoverOpen((open) => !open);
+                  setVoicePopoverOpen(false);
+                }
               }}
               onPointerDown={(event) => {
                 event.preventDefault();
                 setSpeedPopoverOpen((open) => !open);
+                setVoicePopoverOpen(false);
               }}
               title="Narration speed"
               type="button"
@@ -7383,6 +7438,43 @@ function App() {
                     </button>
                   ))}
                 </div>
+              </div>
+            )}
+          </div>
+          <div className="narration-voice-control" ref={voiceControlRef}>
+            <button
+              aria-expanded={voicePopoverOpen}
+              aria-haspopup="dialog"
+              className="narration-voice-trigger"
+              onClick={(event) => {
+                if (event.detail === 0) {
+                  setVoicePopoverOpen((open) => !open);
+                  setSpeedPopoverOpen(false);
+                }
+              }}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                setVoicePopoverOpen((open) => !open);
+                setSpeedPopoverOpen(false);
+              }}
+              title="Narration voice"
+              type="button"
+            >
+              {VOICE_OPTIONS.find((v) => v.id === narrationVoice)?.flag ?? "🇺🇸"}
+            </button>
+            {voicePopoverOpen && (
+              <div className="narration-voice-popover" role="dialog" aria-label="Choose narration voice">
+                {VOICE_OPTIONS.map((option) => (
+                  <button
+                    className={narrationVoice === option.id ? "narration-voice-option active" : "narration-voice-option"}
+                    key={option.id}
+                    onClick={() => chooseNarrationVoice(option.id)}
+                    type="button"
+                  >
+                    <span className="narration-voice-flag">{option.flag}</span>
+                    <span className="narration-voice-label">{option.label}</span>
+                  </button>
+                ))}
               </div>
             )}
           </div>

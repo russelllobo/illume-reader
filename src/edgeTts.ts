@@ -26,7 +26,7 @@ type TimedWordRange = WordRange & {
   startsAt: number;
 };
 
-const EDGE_TTS_VOICE = "en-US-AvaMultilingualNeural";
+export const DEFAULT_EDGE_TTS_VOICE = "en-US-AvaMultilingualNeural";
 const STREAMING_MIME = "audio/mpeg";
 
 const clampSpeechRate = (rate: number | undefined) =>
@@ -101,7 +101,7 @@ export const createEdgeTtsPlayer = ({
   onError,
   rate,
   text,
-  voice = EDGE_TTS_VOICE,
+  voice = DEFAULT_EDGE_TTS_VOICE,
   wordRanges
 }: EdgeTtsPlayerOptions): EdgeTtsPlayer => {
   const audio = new Audio();
