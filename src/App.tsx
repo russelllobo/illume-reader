@@ -2866,7 +2866,6 @@ function App() {
   const [speechHighlight, setSpeechHighlight] = useState<SpeechHighlight | null>(null);
   const [readerImageMode, setReaderImageMode] = useState(false);
   const [readerImages, setReaderImages] = useState<Record<number, ReaderImageState>>({});
-  const [readerImageStartOffset, setReaderImageStartOffset] = useState(0);
   const [visibleReaderImageChunkIndex, setVisibleReaderImageChunkIndex] = useState<number | null>(null);
   const [displayedReaderImageChunkIndex, setDisplayedReaderImageChunkIndex] = useState<number | null>(null);
   const [generatingReaderImageChunkIndex, setGeneratingReaderImageChunkIndex] = useState<number | null>(null);
@@ -3018,8 +3017,8 @@ function App() {
     [currentIndex, paragraphWordMetrics]
   );
   const readerImageChunks = useMemo(
-    () => (book ? (book.format === "pdf" ? buildPdfReaderImageChunks(book) : buildReaderImageChunks(book, readerImageStartOffset)) : []),
-    [book, readerImageStartOffset]
+    () => (book ? (book.format === "pdf" ? buildPdfReaderImageChunks(book) : buildReaderImageChunks(book)) : []),
+    [book]
   );
   const readerImageChunkByIndex = useMemo(
     () => new Map(readerImageChunks.map((chunk) => [chunk.index, chunk])),
@@ -3035,9 +3034,8 @@ function App() {
     ) {
       return visibleReaderImageChunkIndex;
     }
-    const relativeWordOffset = Math.max(0, currentReaderWordOffset - readerImageStartOffset);
-    return Math.min(readerImageChunks.length - 1, Math.floor(relativeWordOffset / READER_IMAGE_CHUNK_WORDS));
-  }, [book, currentPage, currentReaderWordOffset, readerImageChunkByIndex, readerImageChunks.length, readerImageStartOffset, visibleReaderImageChunkIndex]);
+    return Math.min(readerImageChunks.length - 1, Math.floor(currentReaderWordOffset / READER_IMAGE_CHUNK_WORDS));
+  }, [book, currentPage, currentReaderWordOffset, readerImageChunkByIndex, readerImageChunks.length, visibleReaderImageChunkIndex]);
   const activeReaderImageChunk =
     activeReaderImageChunkIndex >= 0 ? readerImageChunkByIndex.get(activeReaderImageChunkIndex) ?? null : null;
   const generatingReaderImageChunk =
@@ -4959,11 +4957,11 @@ function App() {
     const chunks =
       parsed.format === "pdf"
         ? buildPdfReaderImageChunks(parsed)
-        : buildReaderImageChunks(parsed, startOffset);
+        : buildReaderImageChunks(parsed);
     const firstChunk =
       parsed.format === "pdf"
         ? chunks.find((chunk) => chunk.index >= initialPage - 1) ?? chunks[0]
-        : chunks[0];
+        : chunks[Math.min(chunks.length - 1, Math.floor(startOffset / READER_IMAGE_CHUNK_WORDS))] ?? chunks[0];
 
     return { chunks, firstChunk, initialPage, safeIndex, start, startOffset };
   };
@@ -5147,7 +5145,6 @@ function App() {
     setNotice("");
     readerImageRunRef.current += 1;
     setReaderImages(initialReaderImage && imageContext.firstChunk ? { [imageContext.firstChunk.index]: initialReaderImage } : {});
-    setReaderImageStartOffset(defaultImageMode && imageContext.firstChunk ? imageContext.startOffset : 0);
     setVisibleReaderImageChunkIndex(null);
     setDisplayedReaderImageChunkIndex(initialReaderImage && imageContext.firstChunk ? imageContext.firstChunk.index : null);
     setGeneratingReaderImageChunkIndex(null);
@@ -5209,7 +5206,6 @@ function App() {
     readerImageModeRef.current = false;
     setReaderImageMode(false);
     setReaderImages({});
-    setReaderImageStartOffset(0);
     setVisibleReaderImageChunkIndex(null);
     setDisplayedReaderImageChunkIndex(null);
     setGeneratingReaderImageChunkIndex(null);
@@ -5779,10 +5775,9 @@ function App() {
 
       if (closestIndex !== currentIndex) setCurrentIndex(closestIndex);
       if (readerImageMode && !isPdfBook && readerImageChunks.length) {
-        const relativeVisibleWordOffset = Math.max(0, anchorVisibleWordOffset - readerImageStartOffset);
         const nextVisibleChunkIndex = Math.min(
           readerImageChunks.length - 1,
-          Math.floor(relativeVisibleWordOffset / READER_IMAGE_CHUNK_WORDS)
+          Math.floor(Math.max(0, anchorVisibleWordOffset) / READER_IMAGE_CHUNK_WORDS)
         );
         setVisibleReaderImageChunkIndex((current) =>
           current === nextVisibleChunkIndex ? current : nextVisibleChunkIndex
@@ -5830,6 +5825,7 @@ function App() {
         {image?.status === "ready" && image.src ? (
           <img
             alt={chunk.pageNumber ? `Generated visual for page ${chunk.pageNumber}` : `Generated visual for words ${chunk.startWord} to ${chunk.endWord}`}
+            key={`ready-${chunk.index}-${image.src}`}
             src={image.src}
           />
         ) : checkingImageSrc ? (
@@ -5939,7 +5935,11 @@ function App() {
       <aside className="reader-image-stage" aria-label="Current generated image">
         <div className="reader-image-hero">
           {isReady ? (
-            <img alt={`Generated visual for words ${chunk?.startWord} to ${chunk?.endWord}`} src={image.src} />
+            <img
+              alt={`Generated visual for words ${chunk?.startWord} to ${chunk?.endWord}`}
+              key={`stage-ready-${chunk.index}-${image.src}`}
+              src={image.src}
+            />
           ) : checkingImageSrc ? (
             <div className="reader-image-hero-checking">
               <img alt="" aria-hidden="true" src={checkingImageSrc} />
