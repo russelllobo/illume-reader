@@ -137,7 +137,7 @@ type ReaderImageState = {
   plan?: "free" | "pro";
   prompt?: string;
   src?: string;
-  status: "loading" | "ready" | "error";
+  status: "checking" | "loading" | "ready" | "error";
   style?: ReaderImageStyle;
 };
 type CachedReaderImage = {
@@ -206,6 +206,11 @@ const clampPdfPageScale = (value: number) =>
 
 const formatNarrationRate = (value: number) =>
   Number.isInteger(value) ? `${value.toFixed(0)}x` : `${value.toFixed(2).replace(/0$/, "")}x`;
+
+const waitForNextPaint = () =>
+  new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => resolve());
+  });
 
 const isEditableKeyboardTarget = (target: EventTarget | null) => {
   if (!(target instanceof HTMLElement)) return false;
@@ -3537,6 +3542,11 @@ function App() {
         return;
       }
 
+      setReaderImages((items) => ({
+        ...items,
+        [chunk.index]: { status: "checking", style }
+      }));
+
       const { data: storedData, error: storedError } = await supabase.functions.invoke("generate-reader-image", {
         method: "POST",
         body: {
@@ -3578,6 +3588,8 @@ function App() {
         ...items,
         [chunk.index]: { status: "loading", style }
       }));
+      await waitForNextPaint();
+      if (!readerImageModeRef.current || runId !== readerImageRunRef.current) return;
 
       const { data, error } = await supabase.functions.invoke("generate-reader-image", {
         method: "POST",
@@ -3659,7 +3671,7 @@ function App() {
     if (!chunk) return;
 
     const existing = readerImages[chunk.index];
-    if (existing?.style === readerImageStyle && (existing?.status === "ready" || existing?.status === "loading")) return;
+    if (existing?.style === readerImageStyle && (existing?.status === "ready" || existing?.status === "checking" || existing?.status === "loading")) return;
     await generateReaderImage(chunk, runId);
   };
 
