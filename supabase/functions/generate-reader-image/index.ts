@@ -235,21 +235,22 @@ const getStoredReaderImage = async (
   startWord: number,
   endWord: number
 ) => {
-  const downloadStoredImage = async (image: { prompt: string | null; storage_path: string | null }) => {
-    if (!image.storage_path) return null;
+  const downloadStoredImage = async (storagePath: string | null, prompt: string | null) => {
+    if (!storagePath) return null;
 
     const { data: blob, error: downloadError } = await adminClient.storage
       .from(READER_IMAGE_BUCKET)
-      .download(image.storage_path);
+      .download(storagePath);
 
     if (downloadError || !blob) return null;
 
     const bytes = new Uint8Array(await blob.arrayBuffer());
     return {
       imageUrl: imageDataUrl(bytesToBase64(bytes)),
-      prompt: image.prompt ?? undefined
+      prompt: prompt ?? undefined
     };
   };
+  const expectedStoragePath = imagePathFor(userId, bookId, style, startWord, endWord);
 
   const { data: exactImage, error: exactError } = await adminClient
     .from("reader_images")
@@ -262,7 +263,33 @@ const getStoredReaderImage = async (
     .maybeSingle();
 
   if (exactError) throw exactError;
-  if (exactImage?.storage_path) return downloadStoredImage(exactImage);
+  if (exactImage?.storage_path) {
+    const storedImage = await downloadStoredImage(exactImage.storage_path, exactImage.prompt);
+    if (storedImage) return storedImage;
+  }
+
+  const imageAtExpectedPath = await downloadStoredImage(expectedStoragePath, exactImage?.prompt ?? null);
+  if (imageAtExpectedPath) {
+    const { error: upsertError } = await adminClient.from("reader_images").upsert(
+      {
+        book_id: bookId,
+        end_word: endWord,
+        prompt: exactImage?.prompt ?? null,
+        start_word: startWord,
+        storage_path: expectedStoragePath,
+        style,
+        user_id: userId
+      },
+      { onConflict: "book_id,start_word,end_word,style" }
+    );
+
+    if (upsertError) {
+      console.warn("Found reader image in storage but could not repair metadata", upsertError);
+    }
+
+    return imageAtExpectedPath;
+  }
+
   return null;
 };
 

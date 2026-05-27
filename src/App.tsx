@@ -5984,10 +5984,10 @@ function App() {
       activeImage?.status === "loading" ||
       activeImage?.status === "checking";
     const chunk =
-      generatingImage?.status === "loading"
-        ? generatingReaderImageChunk
-        : shouldShowActiveChunk
+      shouldShowActiveChunk
         ? activeReaderImageChunk
+        : generatingImage?.status === "loading"
+        ? generatingReaderImageChunk
         : displayedReaderImageChunk;
     const image = chunk ? readerImages[chunk.index] : undefined;
     if (!chunk) return null;
