@@ -141,6 +141,26 @@ const errorMessage = (error: unknown, fallback = "Could not generate image.") =>
   return fallback;
 };
 
+const openAiImageErrorMessage = (status: number, result: unknown) => {
+  const rawMessage =
+    result && typeof result === "object" && "error" in result
+      ? (result.error as { message?: unknown }).message
+      : undefined;
+  const message = typeof rawMessage === "string" ? rawMessage : "";
+  const normalized = message.toLowerCase();
+
+  if (
+    status === 429 ||
+    normalized.includes("rate limit reached") ||
+    normalized.includes("rate_limit") ||
+    normalized.includes("platform.openai.com/account/rate-limits")
+  ) {
+    return "Image generation is busy. Please try again in a moment.";
+  }
+
+  return message || "OpenAI image generation failed.";
+};
+
 const readerImageRowCount = async (adminClient: any, userId: string, periodStart?: string) => {
   let query = adminClient
     .from("reader_images")
@@ -407,7 +427,7 @@ Deno.serve(async (req) => {
 
       const result = await response.json();
       if (!response.ok) {
-        throw new Error(result?.error?.message ?? "OpenAI image generation failed.");
+        throw new Error(openAiImageErrorMessage(response.status, result));
       }
 
       const base64Image = result?.data?.[0]?.b64_json;
