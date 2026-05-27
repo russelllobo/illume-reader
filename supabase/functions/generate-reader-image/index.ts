@@ -263,33 +263,7 @@ const getStoredReaderImage = async (
 
   if (exactError) throw exactError;
   if (exactImage?.storage_path) return downloadStoredImage(exactImage);
-
-  const { data: overlappingImages, error: overlapError } = await adminClient
-    .from("reader_images")
-    .select("end_word, prompt, start_word, storage_path")
-    .eq("user_id", userId)
-    .eq("book_id", bookId)
-    .eq("style", style)
-    .lte("start_word", endWord)
-    .gte("end_word", startWord);
-
-  if (overlapError) throw overlapError;
-
-  const closestImage = (overlappingImages ?? [])
-    .filter((image: { storage_path: string | null }) => image.storage_path)
-    .sort(
-      (
-        left: { end_word: number; start_word: number },
-        right: { end_word: number; start_word: number }
-      ) => {
-        const leftOverlap = Math.min(left.end_word, endWord) - Math.max(left.start_word, startWord);
-        const rightOverlap = Math.min(right.end_word, endWord) - Math.max(right.start_word, startWord);
-        if (rightOverlap !== leftOverlap) return rightOverlap - leftOverlap;
-        return Math.abs(left.start_word - startWord) - Math.abs(right.start_word - startWord);
-      }
-    )[0];
-
-  return closestImage ? downloadStoredImage(closestImage) : null;
+  return null;
 };
 
 Deno.serve(async (req) => {

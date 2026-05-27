@@ -3,6 +3,15 @@ import IllumeCore
 import SwiftUI
 import UIKit
 
+private let readerImageChunkWords = 750
+
+private struct ReaderImageChunk {
+    let endWord: Int
+    let index: Int
+    let startWord: Int
+    let text: String
+}
+
 struct ReaderView: View {
     @EnvironmentObject private var app: IllumeAppModel
     @Environment(\.dismiss) private var dismiss
@@ -14,6 +23,7 @@ struct ReaderView: View {
     @State private var currentIndex = 0
     @State private var imageModeEnabled = false
     @State private var imageModeTask: Task<Void, Never>?
+    @State private var scheduledImageChunkIndex: Int?
 
     var body: some View {
         let theme = app.readerSettings.theme
@@ -149,6 +159,7 @@ struct ReaderView: View {
         }
         .onChange(of: app.readerSettings.imageStyle) {
             guard imageModeEnabled, let book = app.activeBook else { return }
+            scheduledImageChunkIndex = nil
             scheduleImageGeneration(for: book, delay: .zero)
         }
         .onDisappear {
@@ -161,6 +172,7 @@ struct ReaderView: View {
         imageModeEnabled.toggle()
         if !imageModeEnabled {
             app.readerImageResponse = nil
+            scheduledImageChunkIndex = nil
         }
 
         if imageModeEnabled {
@@ -172,14 +184,16 @@ struct ReaderView: View {
     }
 
     private func scheduleImageGeneration(for book: ReaderBook, delay: Duration = .milliseconds(520)) {
-        guard let paragraph = imageParagraph(in: book) else { return }
+        guard let chunk = imageChunk(in: book) else { return }
+        guard scheduledImageChunkIndex != chunk.index else { return }
+        scheduledImageChunkIndex = chunk.index
         imageModeTask?.cancel()
         imageModeTask = Task {
             if delay > .zero {
                 try? await Task.sleep(for: delay)
             }
             guard !Task.isCancelled else { return }
-            await app.generateImage(for: paragraph)
+            await app.generateImage(text: chunk.text, startWord: chunk.startWord, endWord: chunk.endWord)
         }
     }
 
@@ -196,6 +210,35 @@ struct ReaderView: View {
         }
         let previous = book.paragraphs.indices.prefix(start).reversed().first { book.paragraphs[$0].kind != .heading }
         return previous.map { book.paragraphs[$0] }
+    }
+
+    private func imageChunk(in book: ReaderBook) -> ReaderImageChunk? {
+        guard !book.paragraphs.isEmpty else { return nil }
+        let target = min(max(currentIndex, 0), book.paragraphs.count - 1)
+        var wordsBeforeTarget = 0
+        var allWords: [String] = []
+
+        for (index, paragraph) in book.paragraphs.enumerated() {
+            if paragraph.kind == .heading { continue }
+            let paragraphWords = paragraph.text.split(whereSeparator: \.isWhitespace).map(String.init)
+            if index < target {
+                wordsBeforeTarget += paragraphWords.count
+            }
+            allWords.append(contentsOf: paragraphWords)
+        }
+
+        guard !allWords.isEmpty else { return nil }
+        let chunkIndex = wordsBeforeTarget / readerImageChunkWords
+        let startOffset = min(chunkIndex * readerImageChunkWords, allWords.count - 1)
+        let endOffset = min(startOffset + readerImageChunkWords, allWords.count)
+        guard startOffset < endOffset else { return nil }
+
+        return ReaderImageChunk(
+            endWord: endOffset,
+            index: chunkIndex,
+            startWord: startOffset + 1,
+            text: allWords[startOffset..<endOffset].joined(separator: " ")
+        )
     }
 
     private func tableOfContentsEntries(for book: ReaderBook) -> [TableOfContentsEntry] {

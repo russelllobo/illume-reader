@@ -588,17 +588,15 @@ final class IllumeAppModel: NSObject, ObservableObject {
         return Float(AVSpeechUtteranceMinimumSpeechRate + normalizedValue * (AVSpeechUtteranceMaximumSpeechRate - AVSpeechUtteranceMinimumSpeechRate))
     }
 
-    func generateImage(for paragraph: ReaderParagraph) async {
+    func generateImage(text: String, startWord: Int, endWord: Int) async {
         guard let row = activeBookRow, let accessToken = session?.accessToken else { return }
-        let words = paragraph.text.split(separator: " ")
-        let endWord = max(1, min(words.count, 500))
         await runBusy { [self] in
             let response = try await backend.invokeReaderImage(
                 ReaderImageFunctionRequest(
                     bookId: row.id,
-                    startWord: 1,
+                    startWord: startWord,
                     endWord: endWord,
-                    text: String(words.prefix(endWord).joined(separator: " ")),
+                    text: text,
                     style: readerSettings.imageStyle
                 ),
                 accessToken: accessToken

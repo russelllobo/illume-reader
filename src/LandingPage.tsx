@@ -3,7 +3,9 @@ import {
   BookOpenText,
   Loader2,
   Mail,
+  Moon,
   Star,
+  Sun,
   X
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -161,6 +163,8 @@ interface LandingPageProps {
   setAuthMode: (mode: "sign-in" | "sign-up") => void;
   busy: boolean;
   notice: string;
+  colorScheme: "light" | "dark";
+  onToggleColorScheme: () => void;
 }
 
 const LANDING_READER_IMAGES = [
@@ -360,7 +364,9 @@ export function LandingPage({
   authMode,
   setAuthMode,
   busy,
-  notice
+  notice,
+  colorScheme,
+  onToggleColorScheme
 }: LandingPageProps) {
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [currentWordIndex, setCurrentWordIndex] = useState(0);
@@ -492,17 +498,27 @@ export function LandingPage({
   };
 
   return (
-    <div className="illume-theme">
-      <header className={`illume-header${isHeaderCondensed ? " is-condensed" : ""}`}>
-        <a href="#" className="illume-brand" aria-label="illume home">
-          <img src="/landing/logo.webp" alt="" className="illume-brand-mark" />
-          <span>illume</span>
-        </a>
-        <button onClick={() => handleOpenAuth("sign-in")} className="illume-sign-in-button" type="button">
-          <BookOpenText size={15} />
-          <span>Read now</span>
-        </button>
-      </header>
+<div className="illume-theme">
+        <header className={`illume-header${isHeaderCondensed ? " is-condensed" : ""}`}>
+          <a href="#" className="illume-brand" aria-label="illume home">
+            <img src="/landing/logo.webp" alt="" className="illume-brand-mark" />
+            <span>illume</span>
+          </a>
+          <div className="illume-header-actions">
+            <button
+              className="illume-color-toggle"
+              onClick={onToggleColorScheme}
+              type="button"
+              aria-label={colorScheme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            >
+              {colorScheme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
+            <button onClick={() => handleOpenAuth("sign-in")} className="illume-sign-in-button" type="button">
+              <BookOpenText size={15} />
+              <span>Read now</span>
+            </button>
+          </div>
+        </header>
 
       <main>
         <section id="product" className={isHeroReady ? "illume-hero is-ready" : "illume-hero"}>

@@ -25,6 +25,13 @@
     />
     <meta name="twitter:image" content="/landing/logo.webp" />
     <title>Illume Reader | Make reading more immersive</title>
+    <script>
+      (function(){
+        var m=localStorage.getItem("reader-theme-mode");
+        var d=m==="dark"||(!m&&matchMedia("(prefers-color-scheme:dark)").matches)?"dark":"light";
+        document.documentElement.dataset.colorScheme=d;
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

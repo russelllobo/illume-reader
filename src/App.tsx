@@ -24,6 +24,7 @@ import {
   RefreshCw,
   RotateCcw,
   RotateCw,
+  Sun,
   Trash2,
   Upload,
   MoveHorizontal,
@@ -247,6 +248,9 @@ const clampReaderLineWidth = (value: number) =>
 
 const clampPdfPageScale = (value: number) =>
   Math.min(PDF_PAGE_SCALE_MAX, Math.max(PDF_PAGE_SCALE_MIN, value));
+
+const clampUnit = (value: number) =>
+  Math.min(1, Math.max(0, value));
 
 const formatNarrationRate = (value: number) =>
   Number.isInteger(value) ? `${value.toFixed(0)}x` : `${value.toFixed(2).replace(/0$/, "")}x`;
@@ -512,7 +516,7 @@ const DOCUMENT_UPLOAD_ACCEPT = ".epub,application/epub+zip,.pdf,application/pdf"
 const BOOK_CACHE_NAME = "epub-vision-reader-books-v1";
 const READER_IMAGE_DB_NAME = "epub-vision-reader-images";
 const READER_IMAGE_STORE_NAME = "images";
-const READER_IMAGE_CHUNK_WORDS = 500;
+const READER_IMAGE_CHUNK_WORDS = 750;
 const READER_IMAGE_CHECK_FEEDBACK_MS = 420;
 const READER_IMAGE_GENERATION_FEEDBACK_MS = 760;
 const READER_IMAGE_SETTLE_DELAY_MS = 900;
@@ -973,9 +977,25 @@ const buildReaderImageChunks = (book: ReaderBook, startOffset = 0, chunkSize = R
   return chunks;
 };
 
-const buildPdfReaderImageChunks = (book: ReaderBook): ReaderImageChunk[] => {
+const buildPdfReaderImageChunks = (book: ReaderBook, chunkSize = READER_IMAGE_CHUNK_WORDS): ReaderImageChunk[] => {
   const chunks: ReaderImageChunk[] = [];
+  let chunkStartPage = 1;
+  let chunkStartWord = 1;
+  let chunkWords: string[] = [];
   let wordOffset = 0;
+
+  const pushChunk = () => {
+    if (!chunkWords.length) return;
+    chunks.push({
+      endWord: wordOffset,
+      index: chunks.length,
+      pageNumber: chunkStartPage,
+      startWord: chunkStartWord,
+      text: chunkWords.join(" ")
+    });
+    chunkWords = [];
+    chunkStartWord = wordOffset + 1;
+  };
 
   for (let pageNumber = 1; pageNumber <= (book.pageCount ?? 0); pageNumber += 1) {
     const pageWords: string[] = [];
@@ -986,20 +1006,30 @@ const buildPdfReaderImageChunks = (book: ReaderBook): ReaderImageChunk[] => {
       pageWords.push(...wordsFromText(paragraph.text));
     }
 
-    if (pageWords.length) {
-      chunks.push({
-        endWord: wordOffset + pageWords.length,
-        index: pageNumber - 1,
-        pageNumber,
-        startWord: wordOffset + 1,
-        text: pageWords.join(" ")
-      });
+    for (const word of pageWords) {
+      if (!chunkWords.length) {
+        chunkStartPage = pageNumber;
+        chunkStartWord = wordOffset + 1;
+      }
+      chunkWords.push(word);
+      wordOffset += 1;
+      if (chunkWords.length >= chunkSize) pushChunk();
     }
-
-    wordOffset += pageWords.length;
   }
 
+  pushChunk();
   return chunks;
+};
+
+const pdfWordOffsetBeforePage = (book: ReaderBook, pageNumber: number) => {
+  let wordOffset = 0;
+  for (const paragraph of book.paragraphs) {
+    if (paragraph.kind === "image") continue;
+    const paragraphPage = paragraph.pageNumber ?? 1;
+    if (paragraphPage >= pageNumber) continue;
+    wordOffset += wordsFromText(paragraph.text).length;
+  }
+  return wordOffset;
 };
 
 const buildParagraphWordMetrics = (book: ReaderBook) => {
@@ -1015,6 +1045,14 @@ const buildParagraphWordMetrics = (book: ReaderBook) => {
   }
 
   return { counts, offsets, total };
+};
+
+const readerImageChunkIndexForWordOffset = (chunks: ReaderImageChunk[], wordOffset: number) => {
+  if (!chunks.length) return -1;
+
+  const safeOffset = Math.max(0, wordOffset);
+  const chunk = chunks.find((item) => item.startWord - 1 <= safeOffset && item.endWord > safeOffset);
+  return chunk?.index ?? chunks[chunks.length - 1].index;
 };
 
 const formatBytes = (bytes: number) => {
@@ -2474,8 +2512,11 @@ const authRedirectUrl = () => {
 const initialReaderFontMode = (): ReaderFontMode =>
   window.localStorage.getItem("reader-font-mode") === "sans" ? "sans" : DEFAULT_READER_PREFERENCES.fontMode;
 
-const initialReaderThemeMode = (): ReaderThemeMode =>
-  window.localStorage.getItem("reader-theme-mode") === "dark" ? "dark" : DEFAULT_READER_PREFERENCES.themeMode;
+const initialReaderThemeMode = (): ReaderThemeMode => {
+  const savedThemeMode = window.localStorage.getItem("reader-theme-mode");
+  if (savedThemeMode === "dark" || savedThemeMode === "light") return savedThemeMode;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : DEFAULT_READER_PREFERENCES.themeMode;
+};
 
 const initialReaderTheme = (): ReaderTheme => {
   const value = window.localStorage.getItem("reader-theme");
@@ -2529,9 +2570,9 @@ const readBookReaderPreferences = () => {
   }
 };
 
-const normalizeReaderPreferences = (value: Partial<ReaderPreferences> | undefined): ReaderPreferences => {
+const normalizeReaderPreferences = (value: Partial<ReaderPreferences> | undefined, currentThemeMode?: ReaderThemeMode): ReaderPreferences => {
   const fontMode = value?.fontMode === "sans" ? "sans" : DEFAULT_READER_PREFERENCES.fontMode;
-  const themeMode = value?.themeMode === "dark" ? "dark" : DEFAULT_READER_PREFERENCES.themeMode;
+  const themeMode = currentThemeMode ?? DEFAULT_READER_PREFERENCES.themeMode;
   const rawTheme = value?.theme;
   const theme = READER_THEMES.some((item) => item.value === rawTheme) ? rawTheme as ReaderTheme : DEFAULT_READER_PREFERENCES.theme;
   const textScale = typeof value?.textScale === "number" && Number.isFinite(value.textScale)
@@ -2558,12 +2599,13 @@ const normalizeReaderPreferences = (value: Partial<ReaderPreferences> | undefine
   };
 };
 
-const readerPreferencesForBook = (bookId: string) =>
-  normalizeReaderPreferences(readBookReaderPreferences()[bookId]);
+const readerPreferencesForBook = (bookId: string, currentThemeMode?: ReaderThemeMode) =>
+  normalizeReaderPreferences(readBookReaderPreferences()[bookId], currentThemeMode);
 
 const writeBookReaderPreferences = (bookId: string, preferences: ReaderPreferences) => {
   const items = readBookReaderPreferences();
-  items[bookId] = normalizeReaderPreferences(preferences);
+  const { themeMode: _themeMode, ...bookPreferences } = normalizeReaderPreferences(preferences, preferences.themeMode);
+  items[bookId] = bookPreferences;
   window.localStorage.setItem(BOOK_READER_PREFERENCES_KEY, JSON.stringify(items));
 };
 
@@ -3042,9 +3084,15 @@ function App() {
     () => new Map(readerImageChunks.map((chunk) => [chunk.index, chunk])),
     [readerImageChunks]
   );
+  const readerImageChunkByPageNumber = useMemo(
+    () => new Map(readerImageChunks.flatMap((chunk) => chunk.pageNumber ? [[chunk.pageNumber, chunk] as const] : [])),
+    [readerImageChunks]
+  );
   const activeReaderImageChunkIndex = useMemo(() => {
     if (!book || !readerImageChunks.length) return -1;
-    if (book.format === "pdf") return readerImageChunkByIndex.has(currentPage - 1) ? currentPage - 1 : -1;
+    if (book.format === "pdf") {
+      return readerImageChunkIndexForWordOffset(readerImageChunks, pdfWordOffsetBeforePage(book, currentPage));
+    }
     if (
       visibleReaderImageChunkIndex !== null &&
       visibleReaderImageChunkIndex >= 0 &&
@@ -3052,8 +3100,8 @@ function App() {
     ) {
       return visibleReaderImageChunkIndex;
     }
-    return Math.min(readerImageChunks.length - 1, Math.floor(currentReaderWordOffset / READER_IMAGE_CHUNK_WORDS));
-  }, [book, currentPage, currentReaderWordOffset, readerImageChunkByIndex, readerImageChunks.length, visibleReaderImageChunkIndex]);
+    return readerImageChunkIndexForWordOffset(readerImageChunks, currentReaderWordOffset);
+  }, [book, currentPage, currentReaderWordOffset, readerImageChunks, visibleReaderImageChunkIndex]);
   const activeReaderImageChunk =
     activeReaderImageChunkIndex >= 0 ? readerImageChunkByIndex.get(activeReaderImageChunkIndex) ?? null : null;
   const generatingReaderImageChunk =
@@ -3332,6 +3380,20 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem("reader-theme-mode", readerThemeMode);
   }, [readerThemeMode]);
+
+  useEffect(() => {
+    document.documentElement.dataset.colorScheme = readerThemeMode;
+  }, [readerThemeMode]);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const handler = (e: MediaQueryListEvent) => {
+      const explicit = window.localStorage.getItem("reader-theme-mode");
+      if (!explicit) setReaderThemeMode(e.matches ? "dark" : "light");
+    };
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
 
   useEffect(() => {
     window.localStorage.setItem("reader-theme", readerTheme);
@@ -5009,9 +5071,10 @@ function App() {
       parsed.format === "pdf"
         ? buildPdfReaderImageChunks(parsed)
         : buildReaderImageChunks(parsed);
+    const pdfStartOffset = parsed.format === "pdf" ? pdfWordOffsetBeforePage(parsed, initialPage) : 0;
     const firstChunk =
       parsed.format === "pdf"
-        ? chunks.find((chunk) => chunk.index >= initialPage - 1) ?? chunks[0]
+        ? chunks.find((chunk) => chunk.startWord - 1 <= pdfStartOffset && chunk.endWord > pdfStartOffset) ?? chunks[0]
         : chunks[Math.min(chunks.length - 1, Math.floor(startOffset / READER_IMAGE_CHUNK_WORDS))] ?? chunks[0];
 
     return { chunks, firstChunk, initialPage, safeIndex, start, startOffset };
@@ -5063,23 +5126,20 @@ function App() {
     parsed: ReaderBook,
     chunk: ReaderImageChunk,
     style = readerImageStyle
-  ): Promise<ReaderImageState> => {
-    const readyState = async (src: string, prompt?: string, counts?: Pick<ReaderImageState, "imageCount" | "imageLimit">) => {
-      await preloadReaderImage(src);
-      return {
+  ): Promise<ReaderImageState | null> => {
+    const readyState = (src: string, prompt?: string, counts?: Pick<ReaderImageState, "imageCount" | "imageLimit">) => ({
         ...counts,
         prompt,
         src,
         status: "ready" as const,
         style
-      };
-    };
+    });
 
     try {
       const cachedImage = await getCachedReaderImage(row.id, chunk, style);
       if (cachedImage?.src) {
         void loadReaderImageUsage();
-        return await readyState(cachedImage.src, cachedImage.prompt);
+        return readyState(cachedImage.src, cachedImage.prompt);
       }
 
       const requestBody = {
@@ -5116,58 +5176,13 @@ function App() {
           startWord: chunk.startWord,
           style
         });
-        return await readyState(storedData.imageUrl, prompt, {
+        return readyState(storedData.imageUrl, prompt, {
           imageCount: typeof storedData.imageCount === "number" ? storedData.imageCount : undefined,
           imageLimit: typeof storedData.imageLimit === "number" ? storedData.imageLimit : undefined
         });
       }
 
-      const { data, error } = await supabase.functions.invoke("generate-reader-image", {
-        method: "POST",
-        body: requestBody
-      });
-
-      if (error) throw error;
-      if (data?.limitReached) {
-        const imageLimit = typeof data.imageLimit === "number" ? data.imageLimit : readerImageLimit;
-        const imageCount = typeof data.imageCount === "number" ? data.imageCount : imageLimit;
-        const plan = data.plan === "pro" ? "pro" : "free";
-        const message =
-          plan === "free"
-            ? `You have used all ${imageLimit} free lifetime images.`
-            : `You have reached your ${imageLimit}-image Pro monthly limit.`;
-
-        setReaderImageCount(imageCount);
-        return {
-          error: message,
-          imageCount,
-          imageLimit,
-          limitReached: true,
-          plan,
-          status: "error",
-          style
-        };
-      }
-      if (!data?.imageUrl) throw new Error("Image generation returned no image.");
-
-      const prompt = typeof data.prompt === "string" ? data.prompt : undefined;
-      if (typeof data.imageCount === "number") setReaderImageCount(data.imageCount);
-      else void loadReaderImageUsage();
-      void cacheReaderImage({
-        bookId: row.id,
-        createdAt: new Date().toISOString(),
-        endWord: chunk.endWord,
-        key: readerImageCacheKey(row.id, chunk, style),
-        prompt,
-        src: data.imageUrl,
-        startWord: chunk.startWord,
-        style
-      });
-
-      return await readyState(data.imageUrl, prompt, {
-        imageCount: typeof data.imageCount === "number" ? data.imageCount : undefined,
-        imageLimit: typeof data.imageLimit === "number" ? data.imageLimit : undefined
-      });
+      return null;
     } catch (error) {
       const message = readerImageErrorMessage(await edgeFunctionErrorMessage(error));
       return {
@@ -5207,7 +5222,7 @@ function App() {
       readerImageModeRef.current = false;
       setReaderImageMode(false);
     }
-    const readerPreferences = readerPreferencesForBook(row.id);
+    const readerPreferences = readerPreferencesForBook(row.id, readerThemeMode);
     setReaderFontMode(readerPreferences.fontMode);
     setReaderThemeMode(readerPreferences.themeMode);
     setReaderTheme(readerPreferences.theme);
@@ -5261,7 +5276,7 @@ function App() {
     setDisplayedReaderImageChunkIndex(null);
     setGeneratingReaderImageChunkIndex(null);
     imageRequestsRef.current.clear();
-    const readerPreferences = readerPreferencesForBook(row.id);
+    const readerPreferences = readerPreferencesForBook(row.id, readerThemeMode);
     setReaderFontMode(readerPreferences.fontMode);
     setReaderThemeMode(readerPreferences.themeMode);
     setReaderTheme(readerPreferences.theme);
@@ -5791,6 +5806,7 @@ function App() {
       const scanStart = Math.max(0, currentIndex - 80);
       const scanEnd = Math.min(nextBook.paragraphs.length - 1, currentIndex + 160);
       let anchorVisibleWordOffset = currentReaderWordOffset;
+      let anchorWordDistance = Number.POSITIVE_INFINITY;
 
       const scoreParagraph = (index: number) => {
         const paragraph = nextBook.paragraphs[index];
@@ -5806,9 +5822,28 @@ function App() {
         if (distance < closestDistance) {
           closestDistance = distance;
           closestIndex = index;
-          anchorVisibleWordOffset =
-            (paragraphWordMetrics.offsets[index] ?? 0) +
-            Math.floor((paragraphWordMetrics.counts[index] ?? 0) / 2);
+        }
+
+        if (paragraph.kind !== "image") {
+          const wordCount = paragraphWordMetrics.counts[index] ?? 0;
+          const wordOffset = paragraphWordMetrics.offsets[index] ?? 0;
+          const anchorDistance =
+            anchorTop < rect.top
+              ? rect.top - anchorTop
+              : anchorTop > rect.bottom
+              ? anchorTop - rect.bottom
+              : 0;
+
+          if (wordCount > 0 && anchorDistance < anchorWordDistance) {
+            const positionRatio =
+              anchorTop < rect.top
+                ? 0
+                : anchorTop > rect.bottom
+                ? 1
+                : clampUnit((anchorTop - rect.top) / Math.max(1, rect.height));
+            anchorWordDistance = anchorDistance;
+            anchorVisibleWordOffset = wordOffset + Math.floor(wordCount * positionRatio);
+          }
         }
 
         return true;
@@ -5826,10 +5861,7 @@ function App() {
 
       if (closestIndex !== currentIndex) setCurrentIndex(closestIndex);
       if (readerImageMode && !isPdfBook && readerImageChunks.length) {
-        const nextVisibleChunkIndex = Math.min(
-          readerImageChunks.length - 1,
-          Math.floor(Math.max(0, anchorVisibleWordOffset) / READER_IMAGE_CHUNK_WORDS)
-        );
+        const nextVisibleChunkIndex = readerImageChunkIndexForWordOffset(readerImageChunks, anchorVisibleWordOffset);
         setVisibleReaderImageChunkIndex((current) =>
           current === nextVisibleChunkIndex ? current : nextVisibleChunkIndex
         );
@@ -5879,9 +5911,9 @@ function App() {
             key={`ready-${chunk.index}-${image.src}`}
             src={image.src}
           />
-        ) : checkingImageSrc ? (
+        ) : image?.status === "checking" ? (
           <div className="reader-generated-placeholder checking">
-            <img alt="" aria-hidden="true" src={checkingImageSrc} />
+            {checkingImageSrc && <img alt="" aria-hidden="true" src={checkingImageSrc} />}
           </div>
         ) : (
           <div
@@ -5889,13 +5921,14 @@ function App() {
               "reader-generated-placeholder",
               image?.status === "error" ? "error" : "",
               image?.status !== "error" ? "generating" : "",
-              isFreshGeneration ? "fresh-generation" : generatingImageSrc ? "from-blur" : "",
+              isFreshGeneration ? "fresh-generation" : "",
+              generatingImageSrc ? "from-blur" : "",
               isLimit ? "limit" : ""
             ]
               .filter(Boolean)
               .join(" ")}
           >
-            {generatingImageSrc && !isFreshGeneration && <img className="reader-image-generating-backdrop" alt="" aria-hidden="true" src={generatingImageSrc} />}
+            {generatingImageSrc && <img className="reader-image-generating-backdrop" alt="" aria-hidden="true" src={generatingImageSrc} />}
             {image?.status !== "error" && (
               <div className="reader-image-generating-lights" aria-hidden="true">
                 <span className="reader-image-generating-light aurora" />
@@ -5903,20 +5936,6 @@ function App() {
                 <span className="reader-image-generating-light ember" />
               </div>
             )}
-            {image?.status === "loading" && (
-              <div className="reader-image-generating-badge" aria-hidden="true">
-                <span />
-                <strong>Generating</strong>
-              </div>
-            )}
-            {image?.status === "loading" ? (
-              <Loader2 className="spin" size={22} aria-hidden="true" />
-            ) : image?.status === "error" ? (
-              <Crown size={22} aria-hidden="true" />
-            ) : (
-              <ImageIcon size={22} aria-hidden="true" />
-            )}
-            <span>{image?.status === "error" ? image.error ?? "Image failed" : "Generating image"}</span>
             {isLimit && image.plan === "free" && (
               <button className="text-upgrade-button" onClick={() => setReaderImageUpgradeOpen(true)} type="button">
                 Upgrade to Pro
@@ -5934,7 +5953,7 @@ function App() {
   const renderPdfPageReaderImage = useCallback((pageNumber: number) => {
     if (!readerImageMode || !isPdfBook) return null;
 
-    const chunk = readerImageChunkByIndex.get(pageNumber - 1);
+    const chunk = readerImageChunkByPageNumber.get(pageNumber);
     if (!chunk) return null;
     if (
       !isReaderImageDisplayable(chunk.index) &&
@@ -5949,7 +5968,7 @@ function App() {
     activeReaderImageChunkIndex,
     isPdfBook,
     isReaderImageDisplayable,
-    readerImageChunkByIndex,
+    readerImageChunkByPageNumber,
     readerImages,
     readerImageMode,
     renderGeneratedReaderImage
@@ -5991,22 +6010,23 @@ function App() {
               key={`stage-ready-${chunk.index}-${image.src}`}
               src={image.src}
             />
-          ) : checkingImageSrc ? (
+          ) : image?.status === "checking" ? (
             <div className="reader-image-hero-checking">
-              <img alt="" aria-hidden="true" src={checkingImageSrc} />
+              {checkingImageSrc && <img alt="" aria-hidden="true" src={checkingImageSrc} />}
             </div>
           ) : (
             <div
               className={[
                 "reader-image-hero-placeholder",
                 isError ? "error" : "generating",
-                isFreshGeneration ? "fresh-generation" : generatingImageSrc ? "from-blur" : "",
+                isFreshGeneration ? "fresh-generation" : "",
+                generatingImageSrc ? "from-blur" : "",
                 isLimit ? "limit" : ""
               ]
                 .filter(Boolean)
                 .join(" ")}
             >
-              {generatingImageSrc && !isFreshGeneration && <img className="reader-image-generating-backdrop" alt="" aria-hidden="true" src={generatingImageSrc} />}
+              {generatingImageSrc && <img className="reader-image-generating-backdrop" alt="" aria-hidden="true" src={generatingImageSrc} />}
               {!isError && (
                 <div className="reader-image-generating-lights" aria-hidden="true">
                   <span className="reader-image-generating-light aurora" />
@@ -6014,20 +6034,6 @@ function App() {
                   <span className="reader-image-generating-light ember" />
                 </div>
               )}
-              {image?.status === "loading" && (
-                <div className="reader-image-generating-badge" aria-hidden="true">
-                  <span />
-                  <strong>Generating</strong>
-                </div>
-              )}
-              {isError ? (
-                <Crown size={34} aria-hidden="true" />
-              ) : image?.status === "loading" ? (
-                <Loader2 className="spin" size={34} aria-hidden="true" />
-              ) : (
-                <ImageIcon size={34} aria-hidden="true" />
-              )}
-              <span>{isError ? image.error ?? "Image failed" : "Generating image"}</span>
               {isLimit && image?.plan === "free" && (
                 <button className="reader-image-upgrade-inline" onClick={() => setReaderImageUpgradeOpen(true)} type="button">
                   Upgrade to Pro
@@ -6483,13 +6489,15 @@ function App() {
         setAuthMode={setAuthMode}
         busy={busy}
         notice={notice}
+        colorScheme={readerThemeMode}
+        onToggleColorScheme={() => setReaderThemeMode(readerThemeMode === "dark" ? "light" : "dark")}
       />
     );
   }
 
   if (view === "catalog") {
     return (
-      <main className="app-shell catalog-shell">
+      <main className="app-shell catalog-shell" data-reader-mode={readerThemeMode} data-reader-theme={readerTheme}>
         <header className="topbar catalog-topbar" style={{ position: "relative" }}>
           <div className="catalog-storage-summary">
             <div className="library-brand-mark" aria-label={`illume ${isPro ? "Pro" : "Free"}`}>
@@ -6584,6 +6592,28 @@ function App() {
                               style={{ width: `${Math.min(100, (readerImageCount / readerImageLimit) * 100)}%` }} 
                             />
                           </div>
+                        </div>
+                      </div>
+
+                      <div className="profile-section">
+                        <span className="profile-section-label">Appearance</span>
+                        <div className="profile-appearance-row">
+                          <button
+                            className={`profile-appearance-btn ${readerThemeMode === "light" ? "active" : ""}`}
+                            onClick={() => setReaderThemeMode("light")}
+                            type="button"
+                          >
+                            <Sun size={13} aria-hidden="true" />
+                            <span>Light</span>
+                          </button>
+                          <button
+                            className={`profile-appearance-btn ${readerThemeMode === "dark" ? "active" : ""}`}
+                            onClick={() => setReaderThemeMode("dark")}
+                            type="button"
+                          >
+                            <Moon size={13} aria-hidden="true" />
+                            <span>Dark</span>
+                          </button>
                         </div>
                       </div>
 
@@ -7336,6 +7366,43 @@ function App() {
       <footer className="control-rail">
         <div className="control-rail-left" aria-hidden="true" />
         <div className="transport">
+          <div className="narration-voice-control" ref={voiceControlRef}>
+            <button
+              aria-expanded={voicePopoverOpen}
+              aria-haspopup="dialog"
+              className="narration-voice-trigger"
+              onClick={(event) => {
+                if (event.detail === 0) {
+                  setVoicePopoverOpen((open) => !open);
+                  setSpeedPopoverOpen(false);
+                }
+              }}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                setVoicePopoverOpen((open) => !open);
+                setSpeedPopoverOpen(false);
+              }}
+              title="Narration voice"
+              type="button"
+            >
+              {VOICE_OPTIONS.find((v) => v.id === narrationVoice)?.flag ?? "🇺🇸"}
+            </button>
+            {voicePopoverOpen && (
+              <div className="narration-voice-popover" role="dialog" aria-label="Choose narration voice">
+                {VOICE_OPTIONS.map((option) => (
+                  <button
+                    className={narrationVoice === option.id ? "narration-voice-option active" : "narration-voice-option"}
+                    key={option.id}
+                    onClick={() => chooseNarrationVoice(option.id)}
+                    type="button"
+                  >
+                    <span className="narration-voice-flag">{option.flag}</span>
+                    <span className="narration-voice-label">{option.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <button
             className="rail-icon"
             type="button"
@@ -7438,43 +7505,6 @@ function App() {
                     </button>
                   ))}
                 </div>
-              </div>
-            )}
-          </div>
-          <div className="narration-voice-control" ref={voiceControlRef}>
-            <button
-              aria-expanded={voicePopoverOpen}
-              aria-haspopup="dialog"
-              className="narration-voice-trigger"
-              onClick={(event) => {
-                if (event.detail === 0) {
-                  setVoicePopoverOpen((open) => !open);
-                  setSpeedPopoverOpen(false);
-                }
-              }}
-              onPointerDown={(event) => {
-                event.preventDefault();
-                setVoicePopoverOpen((open) => !open);
-                setSpeedPopoverOpen(false);
-              }}
-              title="Narration voice"
-              type="button"
-            >
-              {VOICE_OPTIONS.find((v) => v.id === narrationVoice)?.flag ?? "🇺🇸"}
-            </button>
-            {voicePopoverOpen && (
-              <div className="narration-voice-popover" role="dialog" aria-label="Choose narration voice">
-                {VOICE_OPTIONS.map((option) => (
-                  <button
-                    className={narrationVoice === option.id ? "narration-voice-option active" : "narration-voice-option"}
-                    key={option.id}
-                    onClick={() => chooseNarrationVoice(option.id)}
-                    type="button"
-                  >
-                    <span className="narration-voice-flag">{option.flag}</span>
-                    <span className="narration-voice-label">{option.label}</span>
-                  </button>
-                ))}
               </div>
             )}
           </div>
