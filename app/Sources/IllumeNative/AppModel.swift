@@ -591,7 +591,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
     func generateImage(for paragraph: ReaderParagraph) async {
         guard let row = activeBookRow, let accessToken = session?.accessToken else { return }
         let words = paragraph.text.split(separator: " ")
-        let endWord = max(1, min(words.count, 130))
+        let endWord = max(1, min(words.count, 500))
         await runBusy { [self] in
             let response = try await backend.invokeReaderImage(
                 ReaderImageFunctionRequest(

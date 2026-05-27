@@ -456,8 +456,9 @@ const DOCUMENT_UPLOAD_ACCEPT = ".epub,application/epub+zip,.pdf,application/pdf"
 const BOOK_CACHE_NAME = "epub-vision-reader-books-v1";
 const READER_IMAGE_DB_NAME = "epub-vision-reader-images";
 const READER_IMAGE_STORE_NAME = "images";
-const READER_IMAGE_CHUNK_WORDS = 1000;
+const READER_IMAGE_CHUNK_WORDS = 500;
 const READER_IMAGE_SETTLE_DELAY_MS = 900;
+const LIBRARY_LOAD_TIMEOUT_MS = 12_000;
 const FREE_READER_IMAGE_LIFETIME_LIMIT = 25;
 const PRO_READER_IMAGE_MONTHLY_LIMIT = 1000;
 const FREE_USER_STORAGE_QUOTA_BYTES = Number(
@@ -2735,6 +2736,14 @@ const waitForLibraryCovers = (rows: BookRow[], timeoutMs = 620) => {
   ]);
 };
 
+const libraryAbortSignal = () => {
+  if ("timeout" in AbortSignal) return AbortSignal.timeout(LIBRARY_LOAD_TIMEOUT_MS);
+
+  const controller = new AbortController();
+  window.setTimeout(() => controller.abort(), LIBRARY_LOAD_TIMEOUT_MS);
+  return controller.signal;
+};
+
 function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -2807,6 +2816,7 @@ function App() {
   const pendingDeleteExitTimer = useRef<number | null>(null);
   const uploadedBookNoticeTimer = useRef<number | null>(null);
   const uploadedBookNoticeExitTimer = useRef<number | null>(null);
+  const libraryLoadRunRef = useRef(0);
   const catalogActionMenuRef = useRef<HTMLDivElement | null>(null);
   const catalogDropDepth = useRef(0);
   const readingScrollFrame = useRef<number | null>(null);
@@ -3500,6 +3510,17 @@ function App() {
     imageRequestsRef.current.add(chunk.index);
 
     try {
+      const requestBody = {
+        author: book.author,
+        bookId: activeBookId,
+        bookTitle: book.title,
+        chunkIndex: chunk.index,
+        endWord: chunk.endWord,
+        imageStyle: style,
+        style,
+        startWord: chunk.startWord,
+        text: chunk.text
+      };
       const cachedImage = await getCachedReaderImage(activeBookId, chunk, style);
       if (!readerImageModeRef.current || runId !== readerImageRunRef.current) return;
       if (cachedImage?.src) {
@@ -3516,6 +3537,43 @@ function App() {
         return;
       }
 
+      const { data: storedData, error: storedError } = await supabase.functions.invoke("generate-reader-image", {
+        method: "POST",
+        body: {
+          ...requestBody,
+          checkOnly: true
+        }
+      });
+
+      if (!readerImageModeRef.current || runId !== readerImageRunRef.current) return;
+      if (storedError) throw storedError;
+      if (typeof storedData?.imageCount === "number") setReaderImageCount(storedData.imageCount);
+      if (storedData?.imageUrl) {
+        const prompt = typeof storedData.prompt === "string" ? storedData.prompt : undefined;
+        void cacheReaderImage({
+          bookId: activeBookId,
+          createdAt: new Date().toISOString(),
+          endWord: chunk.endWord,
+          key: readerImageCacheKey(activeBookId, chunk, style),
+          prompt,
+          src: storedData.imageUrl,
+          startWord: chunk.startWord,
+          style
+        });
+        setReaderImages((items) => ({
+          ...items,
+          [chunk.index]: {
+            prompt,
+            imageCount: typeof storedData.imageCount === "number" ? storedData.imageCount : undefined,
+            imageLimit: typeof storedData.imageLimit === "number" ? storedData.imageLimit : undefined,
+            src: storedData.imageUrl,
+            status: "ready",
+            style
+          }
+        }));
+        return;
+      }
+
       setReaderImages((items) => ({
         ...items,
         [chunk.index]: { status: "loading", style }
@@ -3523,17 +3581,7 @@ function App() {
 
       const { data, error } = await supabase.functions.invoke("generate-reader-image", {
         method: "POST",
-        body: {
-          author: book.author,
-          bookId: activeBookId,
-          bookTitle: book.title,
-          chunkIndex: chunk.index,
-          endWord: chunk.endWord,
-          imageStyle: style,
-          style,
-          startWord: chunk.startWord,
-          text: chunk.text
-        }
+        body: requestBody
       });
 
       if (!readerImageModeRef.current || runId !== readerImageRunRef.current) return;
@@ -3675,6 +3723,8 @@ function App() {
   };
 
   const loadLibrary = async (_user: User) => {
+    const runId = libraryLoadRunRef.current + 1;
+    libraryLoadRunRef.current = runId;
     setBusy(true);
     setCatalogReady(false);
     setNotice("");
@@ -3684,10 +3734,13 @@ function App() {
         .from("books")
         .select("*")
         .order("last_opened_at", { ascending: false, nullsFirst: false })
-        .order("created_at", { ascending: false });
+        .order("created_at", { ascending: false })
+        .abortSignal(libraryAbortSignal());
+
+      if (runId !== libraryLoadRunRef.current) return;
 
       if (error) {
-        setNotice(error.message);
+        setNotice(error.message.includes("AbortError") ? "Could not load your library. Please check your connection and try again." : error.message);
         setCatalogBooks([]);
       } else {
         const rows = (data ?? []) as BookRow[];
@@ -3695,7 +3748,8 @@ function App() {
         const visibleRows = sortBooksByRecentActivity(pending ? rows.filter((row) => row.id !== pending.row.id) : rows);
 
         setCatalogBooks(visibleRows);
-        await waitForLibraryCovers(visibleRows);
+        setCatalogReady(true);
+        void waitForLibraryCovers(visibleRows);
 
         if (pending) {
           if (Date.now() >= pending.deadline) {
@@ -3747,11 +3801,12 @@ function App() {
 
       setCatalogReady(true);
     } catch (error) {
+      if (runId !== libraryLoadRunRef.current) return;
       setNotice(error instanceof Error ? error.message : "Could not load your library.");
       setCatalogBooks([]);
       setCatalogReady(true);
     } finally {
-      setBusy(false);
+      if (runId === libraryLoadRunRef.current) setBusy(false);
     }
   };
 
@@ -5258,7 +5313,7 @@ function App() {
   const handleReadingScroll = () => {
     if (!book) return;
     const surface = readingSurfaceRef.current;
-    if (playback === "playing" || playback === "paused") return;
+    if (playback === "playing") return;
     if (!surface) return;
     if (readingScrollFrame.current !== null) return;
 
@@ -5266,49 +5321,41 @@ function App() {
       readingScrollFrame.current = null;
 
       const nextBook = book;
-      const surfaceTop = surface.scrollTop;
-      const viewportTop = surfaceTop + 72;
-      const viewportBottom = surfaceTop + surface.clientHeight + 320;
+      const surfaceRect = surface.getBoundingClientRect();
+      const anchorTop = surfaceRect.top + 72;
+      const viewportBottom = surfaceRect.bottom + 320;
       let closestIndex = currentIndex;
       let closestDistance = Number.POSITIVE_INFINITY;
       let foundVisibleParagraph = false;
       const scanStart = Math.max(0, currentIndex - 80);
       const scanEnd = Math.min(nextBook.paragraphs.length - 1, currentIndex + 160);
 
-      for (let index = scanStart; index <= scanEnd; index++) {
+      const scoreParagraph = (index: number) => {
         const paragraph = nextBook.paragraphs[index];
         const node = paragraphRefs.current.get(paragraph.id);
-        if (!node) continue;
+        if (!node) return false;
 
-        const top = node.offsetTop;
-        const bottom = top + node.offsetHeight;
-        if (bottom < viewportTop - 320) continue;
-        if (top > viewportBottom) break;
+        const rect = node.getBoundingClientRect();
+        if (rect.bottom < surfaceRect.top - 320) return false;
+        if (rect.top > viewportBottom) return false;
 
         foundVisibleParagraph = true;
-        const distance = Math.abs(top - viewportTop);
+        const distance = Math.abs(rect.top - anchorTop);
         if (distance < closestDistance) {
           closestDistance = distance;
           closestIndex = index;
         }
+
+        return true;
+      };
+
+      for (let index = scanStart; index <= scanEnd; index++) {
+        if (!scoreParagraph(index)) continue;
       }
 
       if (!foundVisibleParagraph) {
         for (let index = 0; index < nextBook.paragraphs.length; index++) {
-          const paragraph = nextBook.paragraphs[index];
-          const node = paragraphRefs.current.get(paragraph.id);
-          if (!node) continue;
-
-          const top = node.offsetTop;
-          const bottom = top + node.offsetHeight;
-          if (bottom < viewportTop - 320) continue;
-          if (top > viewportBottom) break;
-
-          const distance = Math.abs(top - viewportTop);
-          if (distance < closestDistance) {
-            closestDistance = distance;
-            closestIndex = index;
-          }
+          scoreParagraph(index);
         }
       }
 
@@ -5357,11 +5404,17 @@ function App() {
             className={[
               "reader-generated-placeholder",
               image?.status === "error" ? "error" : "",
+              image?.status !== "error" ? "generating" : "",
               isLimit ? "limit" : ""
             ]
               .filter(Boolean)
               .join(" ")}
           >
+            <div className="reader-image-generation-field" aria-hidden="true">
+              <span className="reader-image-generation-glow primary" />
+              <span className="reader-image-generation-glow secondary" />
+              <span className="reader-image-generation-disc" />
+            </div>
             {image?.status === "loading" ? (
               <Loader2 className="spin" size={22} aria-hidden="true" />
             ) : image?.status === "error" ? (
@@ -5388,43 +5441,64 @@ function App() {
     if (!readerImageMode || !isPdfBook) return null;
 
     const chunk = readerImageChunkByIndex.get(pageNumber - 1);
-    if (!chunk || !isReaderImageDisplayable(chunk.index)) return null;
+    if (!chunk) return null;
+    if (
+      !isReaderImageDisplayable(chunk.index) &&
+      (chunk.index !== activeReaderImageChunkIndex || readerImages[chunk.index]?.status !== "loading")
+    ) return null;
 
     return renderGeneratedReaderImage(chunk);
-  }, [isPdfBook, isReaderImageDisplayable, readerImageChunkByIndex, readerImageMode, renderGeneratedReaderImage]);
+  }, [
+    activeReaderImageChunkIndex,
+    isPdfBook,
+    isReaderImageDisplayable,
+    readerImageChunkByIndex,
+    readerImages,
+    readerImageMode,
+    renderGeneratedReaderImage
+  ]);
 
   const renderReaderImageStage = () => {
     const activeImage = activeReaderImageChunkIndex >= 0 ? readerImages[activeReaderImageChunkIndex] : undefined;
     const chunk =
-      activeImage?.status === "ready" || activeImage?.status === "error"
+      activeImage?.status === "ready" || activeImage?.status === "error" || activeImage?.status === "loading"
         ? activeReaderImageChunk
         : displayedReaderImageChunk;
     const image = chunk ? readerImages[chunk.index] : undefined;
-    if (!chunk || !image || (image.status !== "ready" && image.status !== "error")) return null;
+    if (!chunk) return null;
 
     const isLimit = Boolean(image?.limitReached);
+    const isError = image?.status === "error";
+    const isReady = image?.status === "ready" && image.src;
 
     return (
       <aside className="reader-image-stage" aria-label="Current generated image">
-        <div className="reader-image-hero" key={chunk?.index ?? "empty"}>
-          {image?.status === "ready" && image.src ? (
+        <div className="reader-image-hero">
+          {isReady ? (
             <img alt={`Generated visual for words ${chunk?.startWord} to ${chunk?.endWord}`} src={image.src} />
           ) : (
             <div
               className={[
                 "reader-image-hero-placeholder",
-                image?.status === "error" ? "error" : "",
+                isError ? "error" : "generating",
                 isLimit ? "limit" : ""
               ]
                 .filter(Boolean)
                 .join(" ")}
             >
-              {image?.status === "error" ? (
+              <div className="reader-image-generation-field" aria-hidden="true">
+                <span className="reader-image-generation-glow primary" />
+                <span className="reader-image-generation-glow secondary" />
+                <span className="reader-image-generation-disc" />
+              </div>
+              {isError ? (
                 <Crown size={34} aria-hidden="true" />
+              ) : image?.status === "loading" ? (
+                <Loader2 className="spin" size={34} aria-hidden="true" />
               ) : (
                 <ImageIcon size={34} aria-hidden="true" />
               )}
-              <span>{image?.status === "error" ? image.error ?? "Image failed" : "Image unavailable"}</span>
+              <span>{isError ? image.error ?? "Image failed" : "Generating image"}</span>
               {isLimit && image?.plan === "free" && (
                 <button className="reader-image-upgrade-inline" onClick={() => setReaderImageUpgradeOpen(true)} type="button">
                   Upgrade to Pro

@@ -22,6 +22,7 @@
         "npm:pdfjs-dist@^5.7.284",
         "npm:react-dom@^19.2.1",
         "npm:react@^19.2.1",
+        "npm:supabase@^2.101.0",
         "npm:typescript@^5.9.3",
         "npm:vite@^7.2.7"
       ]

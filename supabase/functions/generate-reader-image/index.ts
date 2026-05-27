@@ -305,6 +305,7 @@ Deno.serve(async (req) => {
     const text = cleanText(payload.text, 7_500);
     const startWord = Number(payload.startWord);
     const endWord = Number(payload.endWord);
+    const checkOnly = payload.checkOnly === true;
 
     if (!bookId) throw new Error("No book was provided for image generation.");
     if (!text) throw new Error("No reading text was provided for image generation.");
@@ -344,6 +345,19 @@ Deno.serve(async (req) => {
         JSON.stringify({
           ...storedImage,
           cached: true,
+          imageCount: await readerImageUsageSnapshot(adminClient, userData.user.id, activePlan),
+          imageLimit,
+          plan: activePlan
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    if (checkOnly) {
+      return new Response(
+        JSON.stringify({
+          cached: false,
+          exists: false,
           imageCount: await readerImageUsageSnapshot(adminClient, userData.user.id, activePlan),
           imageLimit,
           plan: activePlan
