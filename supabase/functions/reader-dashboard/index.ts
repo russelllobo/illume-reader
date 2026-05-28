@@ -126,7 +126,7 @@ const createSignedUrlMap = async (adminClient: any, bucket: string, paths: strin
 };
 
 const listAllUsers = async (adminClient: any) => {
-  const users: Array<{ id: string; email?: string; created_at?: string }> = [];
+  const users: Array<{ id: string; email?: string; created_at?: string; last_sign_in_at?: string | null }> = [];
   const perPage = 1000;
 
   for (let page = 1; page < 1000; page += 1) {
@@ -139,6 +139,48 @@ const listAllUsers = async (adminClient: any) => {
 
   return users;
 };
+
+const buildUserJourney = ({
+  books,
+  images,
+  user
+}: {
+  books: BookRow[];
+  images: ReaderImageRow[];
+  user: { created_at?: string; last_sign_in_at?: string | null };
+}) =>
+  [
+    user.created_at
+      ? {
+          at: user.created_at,
+          detail: "Account created",
+          label: "Signed up",
+          type: "sign_up"
+        }
+      : null,
+    user.last_sign_in_at
+      ? {
+          at: user.last_sign_in_at,
+          detail: "Latest Supabase Auth sign-in",
+          label: "Signed in",
+          type: "sign_in"
+        }
+      : null,
+    ...books.map((book) => ({
+      at: book.created_at,
+      detail: `${book.title || book.file_name} · ${(book.document_type ?? (book.file_name.toLowerCase().endsWith(".pdf") ? "pdf" : "epub")).toUpperCase()}`,
+      label: "Uploaded book",
+      type: "book_upload"
+    })),
+    ...images.map((image) => ({
+      at: image.created_at,
+      detail: `${image.style ?? "cartoon"} image · words ${image.start_word}-${image.end_word}`,
+      label: "Generated image",
+      type: "image_generated"
+    }))
+  ]
+    .filter((event): event is { at: string; detail: string; label: string; type: string } => Boolean(event?.at))
+    .sort((left, right) => right.at.localeCompare(left.at));
 
 const buildTimeline = ({
   books,
@@ -351,6 +393,8 @@ Deno.serve(async (req) => {
             style: image.style ?? "cartoon"
           })),
         imagesGenerated: userImages.length,
+        journey: buildUserJourney({ books: userBooks, images: userImages, user }),
+        lastSignInAt: user.last_sign_in_at ?? null,
         timeline: buildUserTimeline({
           books: userBooks,
           bookSizes: bookSizeByPath,

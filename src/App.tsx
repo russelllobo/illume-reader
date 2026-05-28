@@ -8,7 +8,6 @@ import {
   ChevronRight,
   CreditCard,
   Crown,
-  Database,
   FileText,
   HardDrive,
   Image as ImageIcon,
@@ -475,6 +474,12 @@ type ReaderDashboardImage = {
   startWord: number;
   style: string;
 };
+type ReaderDashboardJourneyEvent = {
+  at: string;
+  detail: string;
+  label: string;
+  type: "sign_up" | "sign_in" | "book_upload" | "image_generated" | string;
+};
 type ReaderDashboardUser = {
   bookStorageBytes: number;
   books: ReaderDashboardBook[];
@@ -484,6 +489,8 @@ type ReaderDashboardUser = {
   imageStorageBytes: number;
   images: ReaderDashboardImage[];
   imagesGenerated: number;
+  journey?: ReaderDashboardJourneyEvent[];
+  lastSignInAt?: string | null;
   timeline?: ReaderDashboardTimelinePoint[];
 };
 type ReaderDashboardTimelinePoint = {
@@ -1117,6 +1124,18 @@ const formatShortDate = (value: string | null) => {
   }).format(new Date(value));
 };
 
+const formatShortDateTime = (value: string | null) => {
+  if (!value) return "Unknown";
+
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "short",
+    year: "numeric"
+  }).format(new Date(value));
+};
+
 const formatCompactDate = (value: string) =>
   new Intl.DateTimeFormat("en-GB", {
     day: "2-digit",
@@ -1336,6 +1355,44 @@ const buildUserTimelineFromData = (user: ReaderDashboardUser | null): ReaderDash
   }
 
   return timeline;
+};
+
+const buildUserJourneyFromData = (user: ReaderDashboardUser | null): ReaderDashboardJourneyEvent[] => {
+  if (!user) return [];
+  if (user.journey?.length) return user.journey;
+
+  return [
+    user.createdAt
+      ? {
+          at: user.createdAt,
+          detail: "Account created",
+          label: "Signed up",
+          type: "sign_up"
+        }
+      : null,
+    user.lastSignInAt
+      ? {
+          at: user.lastSignInAt,
+          detail: "Latest Supabase Auth sign-in",
+          label: "Signed in",
+          type: "sign_in"
+        }
+      : null,
+    ...(user.books ?? []).map((book) => ({
+      at: book.createdAt,
+      detail: `${book.title || book.fileName} · ${(book.documentType || "book").toUpperCase()}`,
+      label: "Uploaded book",
+      type: "book_upload"
+    })),
+    ...(user.images ?? []).map((image) => ({
+      at: image.createdAt,
+      detail: `${image.style || "image"} image · words ${image.startWord ?? "?"}-${image.endWord ?? "?"}`,
+      label: "Generated image",
+      type: "image_generated"
+    }))
+  ]
+    .filter((event): event is ReaderDashboardJourneyEvent => Boolean(event?.at))
+    .sort((left, right) => right.at.localeCompare(left.at));
 };
 
 const toastTitle = (title: string) => {
@@ -2201,26 +2258,996 @@ class DashboardErrorBoundary extends Component<{ children: ReactNode }, { error:
   }
 }
 
+// Helper components for inline SVGs:
+const YouTubeIcon = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
+    <path d="M23.498 6.163a3.003 3.003 0 0 0-2.11-2.11C19.517 3.545 12 3.545 12 3.545s-7.517 0-9.388.508a3.003 3.003 0 0 0-2.11 2.11C0 8.033 0 12 0 12s0 3.967.502 5.837a3.003 3.003 0 0 0 2.11 2.11c1.871.508 9.388.508 9.388.508s7.517 0 9.388-.508a3.003 3.003 0 0 0 2.11-2.11C24 15.967 24 12 24 12s0-3.967-.502-5.837zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+  </svg>
+);
+
+const InstagramIcon = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0 }}>
+    <rect x="2" y="2" width="20" height="20" rx="5" ry="5"></rect>
+    <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"></path>
+    <line x1="17.5" y1="6.5" x2="17.51" y2="6.5"></line>
+  </svg>
+);
+
+const ExternalLinkIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ display: 'inline-block', verticalAlign: 'middle', marginLeft: 4 }}>
+    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+    <polyline points="15 3 21 3 21 9"></polyline>
+    <line x1="10" y1="14" x2="21" y2="3"></line>
+  </svg>
+);
+
+const CopyIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+  </svg>
+);
+
+const CheckIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ color: '#16a34a' }}>
+    <polyline points="20 6 9 17 4 12"></polyline>
+  </svg>
+);
+
+const KeyIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ color: '#64748b' }}>
+    <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+  </svg>
+);
+
+const ChevronDownIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="6 9 12 15 18 9"></polyline>
+  </svg>
+);
+
+const ChevronUpIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="18 15 12 9 6 15"></polyline>
+  </svg>
+);
+
+const InfoIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="10"></circle>
+    <line x1="12" y1="16" x2="12" y2="12"></line>
+    <line x1="12" y1="8" x2="12.01" y2="8"></line>
+  </svg>
+);
+
+type ServiceConnectionStatus = "disconnected" | "connected" | "simulated";
+type YouTubeVideoPreview = {
+  duration: string;
+  id: string;
+  imageUrl: string;
+  published: string;
+  title: string;
+  views: string;
+};
+type YouTubeAnalyticsSummary = {
+  averageViewDuration: number;
+  averageViewPercentage: number;
+  estimatedMinutesWatched: number;
+  subscribersGained: number;
+  subscribersLost: number;
+  views: number;
+};
+
+const YOUTUBE_OAUTH_SCOPES = [
+  "https://www.googleapis.com/auth/youtube.readonly",
+  "https://www.googleapis.com/auth/yt-analytics.readonly"
+];
+const YOUTUBE_OAUTH_SCOPE = YOUTUBE_OAUTH_SCOPES.join(" ");
+const LEGACY_YOUTUBE_CLIENT_ID = "1013878176385-hhhdtg9kim3g6gencok1ka058osc25q1.apps.googleusercontent.com";
+const YOUTUBE_DEFAULT_CLIENT_ID =
+  (import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined) ??
+  "1013878176385-hhhdtg9kim3g6gencok1ka058osc25q1.apps.googleusercontent.com";
+
+const storedYouTubeAccessToken = () =>
+  localStorage.getItem("reader-yt-access-token") ??
+  (localStorage.getItem("reader-yt-api-key")?.startsWith("AIzaSy") ? null : localStorage.getItem("reader-yt-api-key")) ??
+  "";
+
+const initialYouTubeStatus = (): ServiceConnectionStatus => {
+  const savedStatus = localStorage.getItem("reader-yt-status") as ServiceConnectionStatus | null;
+  if (savedStatus === "simulated") return "simulated";
+  if (storedYouTubeAccessToken()) return "connected";
+  return "connected";
+};
+
+function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }) {
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [youtubeGuideOpen, setYoutubeGuideOpen] = useState(false);
+  const [instagramGuideOpen, setInstagramGuideOpen] = useState(false);
+  const [youtubeAnalytics, setYoutubeAnalytics] = useState<YouTubeAnalyticsSummary | null>(null);
+  const [youtubeVideos, setYoutubeVideos] = useState<YouTubeVideoPreview[]>([]);
+  const [fetchError, setFetchError] = useState("");
+
+  // YouTube Credentials States
+  const [ytAccessToken, setYtAccessToken] = useState(storedYouTubeAccessToken);
+  const [ytChannel, setYtChannel] = useState(() => localStorage.getItem("reader-yt-channel") ?? "@ilumereader");
+  const [ytClientId, setYtClientId] = useState(() => {
+    const savedClientId = localStorage.getItem("reader-yt-client-id") ?? "";
+    if (savedClientId && savedClientId !== LEGACY_YOUTUBE_CLIENT_ID) return savedClientId;
+    return YOUTUBE_DEFAULT_CLIENT_ID;
+  });
+  const [ytRedirectUri, setYtRedirectUri] = useState(() => localStorage.getItem("reader-yt-redirect-uri") ?? window.location.origin + "/auth/youtube/callback");
+  const [ytStatus, setYtStatus] = useState<ServiceConnectionStatus>(initialYouTubeStatus);
+
+  // Instagram Credentials States
+  const [igAppId, setIgAppId] = useState(() => localStorage.getItem("reader-ig-app-id") ?? "");
+  const [igAppSecret, setIgAppSecret] = useState(() => localStorage.getItem("reader-ig-app-secret") ?? "");
+  const [igAccessToken, setIgAccessToken] = useState(() => localStorage.getItem("reader-ig-access-token") ?? "");
+  const [igRedirectUri, setIgRedirectUri] = useState(() => localStorage.getItem("reader-ig-redirect-uri") ?? window.location.origin + "/auth/instagram/callback");
+  const [igStatus, setIgStatus] = useState<ServiceConnectionStatus>(() => (localStorage.getItem("reader-ig-status") as ServiceConnectionStatus) ?? "disconnected");
+
+  // Simulated OAuth Modal States
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authModalType, setAuthModalType] = useState<"youtube" | "instagram">("youtube");
+  const [authModalStep, setAuthModalStep] = useState(0);
+
+  // Simulated Content Feed States
+  const [activeFeedTab, setActiveFeedTab] = useState<"youtube" | "instagram">("youtube");
+  const [feedLoading, setFeedLoading] = useState(false);
+  const [feedFetched, setFeedFetched] = useState(false);
+
+  const copyToClipboard = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const formatAnalyticsNumber = (value: number) =>
+    new Intl.NumberFormat("en-GB", { maximumFractionDigits: value >= 100 ? 0 : 1 }).format(value || 0);
+
+  const formatDurationSeconds = (value: number) => {
+    const seconds = Math.round(value || 0);
+    const minutes = Math.floor(seconds / 60);
+    const remainder = seconds % 60;
+    return `${minutes}:${String(remainder).padStart(2, "0")}`;
+  };
+
+  const handleYtOAuth = () => {
+    const clientId = ytClientId.trim();
+    const redirectUri = ytRedirectUri.trim();
+
+    if (!clientId) {
+      alert("Please configure a Client ID first!");
+      return;
+    }
+
+    localStorage.setItem("reader-yt-channel", ytChannel.trim() || "@ilumereader");
+    localStorage.setItem("reader-yt-client-id", clientId);
+    localStorage.setItem("reader-yt-redirect-uri", redirectUri);
+    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(YOUTUBE_OAUTH_SCOPE)}&access_type=offline&prompt=consent`;
+    window.location.href = authUrl;
+  };
+
+  const handleSaveYtCreds = () => {
+    localStorage.setItem("reader-yt-channel", ytChannel.trim());
+    localStorage.setItem("reader-yt-client-id", ytClientId.trim());
+    localStorage.setItem("reader-yt-redirect-uri", ytRedirectUri.trim());
+    localStorage.removeItem("reader-yt-api-key");
+    if (ytChannel.trim() || ytAccessToken) {
+      setYtStatus("connected");
+      localStorage.setItem("reader-yt-status", "connected");
+    } else {
+      setYtStatus("disconnected");
+      localStorage.setItem("reader-yt-status", "disconnected");
+    }
+  };
+
+  const handleSaveIgCreds = () => {
+    localStorage.setItem("reader-ig-app-id", igAppId);
+    localStorage.setItem("reader-ig-app-secret", igAppSecret);
+    localStorage.setItem("reader-ig-access-token", igAccessToken);
+    localStorage.setItem("reader-ig-redirect-uri", igRedirectUri);
+    if (igAccessToken || (igAppId && igAppSecret)) {
+      setIgStatus("connected");
+      localStorage.setItem("reader-ig-status", "connected");
+    } else {
+      setIgStatus("disconnected");
+      localStorage.setItem("reader-ig-status", "disconnected");
+    }
+  };
+
+  const handleSimulateConnection = (type: "youtube" | "instagram") => {
+    setAuthModalType(type);
+    setAuthModalStep(0);
+    setAuthModalOpen(true);
+
+    const stepIntervals = [1200, 2400, 3600, 4800];
+    stepIntervals.forEach((time, index) => {
+      setTimeout(() => {
+        setAuthModalStep(index + 1);
+        if (index === 3) {
+          // Success
+          if (type === "youtube") {
+            setYtStatus("simulated");
+            localStorage.setItem("reader-yt-status", "simulated");
+            setYtChannel("@youtube");
+            setYtAccessToken("");
+            setYtClientId(YOUTUBE_DEFAULT_CLIENT_ID || LEGACY_YOUTUBE_CLIENT_ID);
+            localStorage.setItem("reader-yt-channel", "@youtube");
+            localStorage.setItem("reader-yt-client-id", YOUTUBE_DEFAULT_CLIENT_ID || LEGACY_YOUTUBE_CLIENT_ID);
+            localStorage.removeItem("reader-yt-api-key");
+            localStorage.removeItem("reader-yt-access-token");
+          } else {
+            setIgStatus("simulated");
+            localStorage.setItem("reader-ig-status", "simulated");
+            setIgAppId("1928374928374");
+            setIgAppSecret("fakeinstagramappsecret_928374928374");
+            setIgAccessToken("IGQVJFakeInstagramToken_102938401928340918230918230912");
+            localStorage.setItem("reader-ig-app-id", "1928374928374");
+            localStorage.setItem("reader-ig-app-secret", "fakeinstagramappsecret_928374928374");
+            localStorage.setItem("reader-ig-access-token", "IGQVJFakeInstagramToken_102938401928340918230918230912");
+          }
+        }
+      }, time);
+    });
+  };
+
+  const handleDisconnect = (type: "youtube" | "instagram") => {
+    if (type === "youtube") {
+      setYtStatus("disconnected");
+      localStorage.setItem("reader-yt-status", "disconnected");
+      setYtChannel("");
+      setYtAccessToken("");
+      localStorage.removeItem("reader-yt-api-key");
+      localStorage.removeItem("reader-yt-channel");
+      localStorage.removeItem("reader-yt-access-token");
+      localStorage.removeItem("reader-yt-refresh-token");
+    } else {
+      setIgStatus("disconnected");
+      localStorage.setItem("reader-ig-status", "disconnected");
+      setIgAppId("");
+      setIgAppSecret("");
+      setIgAccessToken("");
+      localStorage.removeItem("reader-ig-app-id");
+      localStorage.removeItem("reader-ig-app-secret");
+      localStorage.removeItem("reader-ig-access-token");
+    }
+    setFeedFetched(false);
+  };
+
+  const handleFetchFeed = async () => {
+    setFeedLoading(true);
+    setFetchError("");
+
+    const parseISO8601Duration = (duration: string) => {
+      if (!duration) return "10:00";
+      const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+      if (!match) return "10:00";
+      const hours = parseInt(match[1] ?? "0", 10);
+      const minutes = parseInt(match[2] ?? "0", 10);
+      const seconds = parseInt(match[3] ?? "0", 10);
+
+      if (hours > 0) {
+        return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+      }
+      return `${minutes}:${String(seconds).padStart(2, "0")}`;
+    };
+
+    const formatViews = (views: string | number) => {
+      const count = Number(views);
+      if (Number.isNaN(count) || count <= 0) return "No views";
+      if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M views`;
+      if (count >= 1000) return `${(count / 1000).toFixed(1)}K views`;
+      return `${count} views`;
+    };
+
+    const formatTimeAgo = (dateStr: string) => {
+      if (!dateStr) return "";
+      const date = new Date(dateStr);
+      const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
+
+      let interval = Math.floor(seconds / 31536000);
+      if (interval >= 1) return `${interval} year${interval > 1 ? "s" : ""} ago`;
+
+      interval = Math.floor(seconds / 2592000);
+      if (interval >= 1) return `${interval} month${interval > 1 ? "s" : ""} ago`;
+
+      interval = Math.floor(seconds / 604800);
+      if (interval >= 1) return `${interval} week${interval > 1 ? "s" : ""} ago`;
+
+      interval = Math.floor(seconds / 86400);
+      if (interval >= 1) return `${interval} day${interval > 1 ? "s" : ""} ago`;
+
+      interval = Math.floor(seconds / 3600);
+      if (interval >= 1) return `${interval} hour${interval > 1 ? "s" : ""} ago`;
+
+      interval = Math.floor(seconds / 60);
+      if (interval >= 1) return `${interval} minute${interval > 1 ? "s" : ""} ago`;
+
+      return "just now";
+    };
+
+    if (activeFeedTab === "youtube") {
+      if (ytStatus === "simulated") {
+        setTimeout(() => {
+          setYoutubeVideos(youtubeMockVideos);
+          setFeedLoading(false);
+          setFeedFetched(true);
+        }, 1500);
+        return;
+      }
+
+      let token = ytAccessToken || storedYouTubeAccessToken();
+      const isOAuth = Boolean(token);
+
+      try {
+        const loadYouTubeAnalytics = async () => {
+          const { data, error } = await supabase.functions.invoke("youtube-analytics", {
+            body: { channel: ytChannel.trim() || "@ilumereader" }
+          });
+
+          if (error) throw new Error(await edgeFunctionErrorMessage(error));
+          setYoutubeAnalytics(data?.summary ?? null);
+        };
+
+        if (!token) {
+          const { data, error } = await supabase.functions.invoke("youtube-feed", {
+            body: { channel: ytChannel.trim() || "@ilumereader" }
+          });
+
+          if (error) throw new Error(await edgeFunctionErrorMessage(error));
+
+          setYoutubeVideos(data?.videos ?? []);
+          await loadYouTubeAnalytics();
+          setYtStatus("connected");
+          localStorage.setItem("reader-yt-status", "connected");
+          setFeedFetched(true);
+          return;
+        }
+
+        const refreshYouTubeAccessToken = async () => {
+          const refreshToken = localStorage.getItem("reader-yt-refresh-token");
+          if (!refreshToken) return "";
+
+          const { data, error } = await supabase.functions.invoke("youtube-token-exchange", {
+            body: { clientId: ytClientId.trim() || YOUTUBE_DEFAULT_CLIENT_ID, refreshToken }
+          });
+
+          if (error) throw new Error(await edgeFunctionErrorMessage(error));
+          if (!data?.access_token) throw new Error("Google did not return a refreshed YouTube access token.");
+
+          localStorage.setItem("reader-yt-access-token", data.access_token);
+          setYtAccessToken(data.access_token);
+          return data.access_token as string;
+        };
+
+        // 1. Fetch channel's content uploads playlist ID
+        // If OAuth, get the authenticated user's channel.
+        // If simple key, fall back to search or list channel by a default/preset ID.
+        const channelUrl = isOAuth
+          ? "https://youtube.googleapis.com/youtube/v3/channels?part=contentDetails&mine=true"
+          : "";
+
+        let channelRes = await fetch(channelUrl, {
+          headers: isOAuth ? { Authorization: `Bearer ${token}` } : {}
+        });
+
+        if (isOAuth && channelRes.status === 401) {
+          token = await refreshYouTubeAccessToken();
+          channelRes = await fetch(channelUrl, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+        }
+
+        if (!channelRes.ok) {
+          const errData = await channelRes.json().catch(() => ({}));
+          throw new Error(errData.error?.message || "Failed to retrieve channel uploads profile. Check your API credentials.");
+        }
+
+        const channelData = await channelRes.json();
+        const uploadsPlaylist = channelData.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+        if (!uploadsPlaylist) {
+          throw new Error("No uploads playlist associated with this YouTube channel.");
+        }
+
+        // 2. Fetch videos in that uploads playlist
+        const playlistUrl = `https://youtube.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${uploadsPlaylist}&maxResults=6`;
+        const playlistRes = await fetch(playlistUrl, {
+          headers: isOAuth ? { Authorization: `Bearer ${token}` } : {}
+        });
+
+        if (!playlistRes.ok) {
+          throw new Error("Failed to fetch upload playlist items.");
+        }
+
+        const playlistData = await playlistRes.json();
+        const items = playlistData.items ?? [];
+
+        if (items.length === 0) {
+          setYoutubeVideos([]);
+          setFeedFetched(true);
+          return;
+        }
+
+        // 3. Query video durations & view statistics
+        const videoIds = items.map((item: any) => item.contentDetails?.videoId).filter(Boolean).join(",");
+        const statsMap = new Map();
+
+        if (videoIds) {
+          const videosUrl = `https://youtube.googleapis.com/youtube/v3/videos?part=contentDetails,statistics&id=${videoIds}`;
+          const videosRes = await fetch(videosUrl, {
+            headers: isOAuth ? { Authorization: `Bearer ${token}` } : {}
+          });
+
+          if (videosRes.ok) {
+            const videosData = await videosRes.json();
+            (videosData.items ?? []).forEach((v: any) => {
+              statsMap.set(v.id, {
+                views: formatViews(v.statistics?.viewCount),
+                duration: parseISO8601Duration(v.contentDetails?.duration)
+              });
+            });
+          }
+        }
+
+        const parsedVideos = items.map((item: any) => {
+          const vId = item.contentDetails?.videoId;
+          const stats = statsMap.get(vId) ?? { views: "0 views", duration: "10:00" };
+          return {
+            id: item.id,
+            title: item.snippet?.title ?? "Untitled Video",
+            duration: stats.duration,
+            views: stats.views,
+            published: formatTimeAgo(item.snippet?.publishedAt),
+            imageUrl: item.snippet?.thumbnails?.high?.url ?? item.snippet?.thumbnails?.medium?.url ?? "https://images.unsplash.com/photo-1516979187457-637abb4f9353?w=600"
+          };
+        });
+
+        setYoutubeVideos(parsedVideos);
+        await loadYouTubeAnalytics();
+        setFeedFetched(true);
+      } catch (err) {
+        console.error("YouTube API retrieval failed:", err);
+        setFetchError(err instanceof Error ? err.message : "Failed to load real YouTube uploads.");
+      } finally {
+        setFeedLoading(false);
+      }
+    } else {
+      // Instagram feed mock
+      setTimeout(() => {
+        setFeedLoading(false);
+        setFeedFetched(true);
+      }, 1500);
+    }
+  };
+
+  useEffect(() => {
+    void handleFetchFeed();
+  }, [refreshSignal]);
+
+  // Mock Data
+  const youtubeMockVideos = [
+    {
+      id: "yt-1",
+      title: "Building a modern PDF & ePub Reader with Supabase",
+      duration: "14:22",
+      views: "12.4K views",
+      published: "3 days ago",
+      imageUrl: "https://images.unsplash.com/photo-1516979187457-637abb4f9353?w=600&auto=format&fit=crop&q=60"
+    },
+    {
+      id: "yt-2",
+      title: "How to deploy Supabase Edge Functions in 5 minutes",
+      duration: "8:05",
+      views: "8.2K views",
+      published: "1 week ago",
+      imageUrl: "https://images.unsplash.com/photo-1555066931-4365d14bab8c?w=600&auto=format&fit=crop&q=60"
+    },
+    {
+      id: "yt-3",
+      title: "Aesthetic Web Design: HSL gradients & glassmorphism",
+      duration: "22:40",
+      views: "24.5K views",
+      published: "2 weeks ago",
+      imageUrl: "https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?w=600&auto=format&fit=crop&q=60"
+    },
+    {
+      id: "yt-4",
+      title: "Next.js 15 vs. Vanilla React: The complete performance audit",
+      duration: "18:15",
+      views: "15.9K views",
+      published: "1 month ago",
+      imageUrl: "https://images.unsplash.com/photo-1633356122544-f134324a6cee?w=600&auto=format&fit=crop&q=60"
+    }
+  ];
+
+  const instagramMockPosts = [
+    {
+      id: "ig-1",
+      caption: "Developing our next-gen reading environment. The details make all the difference. ✨📚 #webdev #design #javascript #supabase",
+      likes: 482,
+      comments: 38,
+      imageUrl: "https://images.unsplash.com/photo-1531403009284-440f080d1e12?w=600&auto=format&fit=crop&q=60"
+    },
+    {
+      id: "ig-2",
+      caption: "Dark mode is finally complete! Soft contrasts, gold brand accents, and customizable line lengths. Which themes do you read with? 🌙",
+      likes: 591,
+      comments: 47,
+      imageUrl: "https://images.unsplash.com/photo-1542744094-3a31f103e35f?w=600&auto=format&fit=crop&q=60"
+    },
+    {
+      id: "ig-3",
+      caption: "Supabase database migrations and storage structures scaling flawlessly to 10k monthly active readers. Real-time metrics are now live. 🚀",
+      likes: 320,
+      comments: 19,
+      imageUrl: "https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=600&auto=format&fit=crop&q=60"
+    },
+    {
+      id: "ig-4",
+      caption: "A visual showcase of generated imagery inline with ePub paragraphs. Read your stories with automatic context-aware painting. 🎨🤖",
+      likes: 643,
+      comments: 52,
+      imageUrl: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600&auto=format&fit=crop&q=60"
+    }
+  ];
+
+  return (
+    <div className="content-integrations-section">
+      {false && (
+      <>
+      <div className="integrations-grid">
+        {/* YOUTUBE CARD */}
+        <div className="integration-card youtube">
+          <div className="integration-header">
+            <div className="integration-brand">
+              <div className="integration-brand-icon youtube">
+                <YouTubeIcon />
+              </div>
+              <div className="integration-brand-info">
+                <h2>YouTube API</h2>
+                <p>Sync video content & statistics</p>
+              </div>
+            </div>
+            {ytStatus === "connected" && <span className="status-badge connected">Connected</span>}
+            {ytStatus === "simulated" && <span className="status-badge simulated">Demo Connected</span>}
+            {ytStatus === "disconnected" && <span className="status-badge disconnected">Disconnected</span>}
+          </div>
+
+          <div className="credentials-form">
+            <div className="form-group">
+              <label>YouTube channel URL, handle, or ID</label>
+              <input
+                type="text"
+                placeholder="@yourhandle or https://youtube.com/@yourhandle"
+                value={ytChannel}
+                onChange={(e) => setYtChannel(e.target.value)}
+              />
+            </div>
+            <div className="form-group">
+              <label>OAuth 2.0 Client ID</label>
+              <input
+                type="text"
+                placeholder="Google Client ID..."
+                value={ytClientId}
+                onChange={(e) => setYtClientId(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="integration-actions" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <>
+              <button className="dashboard-secondary-button" onClick={() => handleSaveYtCreds()} type="button" style={{ flexGrow: 1 }}>
+                Save Settings
+              </button>
+              <button className="dashboard-toggle active" onClick={() => handleYtOAuth()} type="button" style={{ flexGrow: 2, background: '#2563eb', borderColor: '#2563eb', color: '#fff' }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }}>
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                  <polyline points="15 3 21 3 21 9"></polyline>
+                  <line x1="10" y1="14" x2="21" y2="3"></line>
+                </svg>
+                <span>Link Live Google Account</span>
+              </button>
+              {ytStatus !== "disconnected" && (
+                <button className="dashboard-secondary-button" onClick={() => handleDisconnect("youtube")} type="button" style={{ flexGrow: 1, borderColor: '#fecaca', color: '#991b1b' }}>
+                  Disconnect API Link
+                </button>
+              )}
+              <button className="dashboard-secondary-button" onClick={() => handleSimulateConnection("youtube")} type="button" style={{ flexGrow: 1, width: '100%' }}>
+                Simulate OAuth Demo
+              </button>
+            </>
+          </div>
+        </div>
+
+        {/* INSTAGRAM CARD */}
+        <div className="integration-card instagram">
+          <div className="integration-header">
+            <div className="integration-brand">
+              <div className="integration-brand-icon instagram">
+                <InstagramIcon />
+              </div>
+              <div className="integration-brand-info">
+                <h2>Instagram API</h2>
+                <p>Sync photo feeds & social metrics</p>
+              </div>
+            </div>
+            {igStatus === "connected" && <span className="status-badge connected">Connected</span>}
+            {igStatus === "simulated" && <span className="status-badge simulated">Demo Connected</span>}
+            {igStatus === "disconnected" && <span className="status-badge disconnected">Disconnected</span>}
+          </div>
+
+          <div className="credentials-form">
+            <div className="form-group">
+              <label>App ID (Meta App ID)</label>
+              <input
+                type="text"
+                placeholder="Meta App ID..."
+                value={igAppId}
+                onChange={(e) => setIgAppId(e.target.value)}
+              />
+            </div>
+            <div className="form-group">
+              <label>App Secret</label>
+              <input
+                type="password"
+                placeholder="Meta App Secret..."
+                value={igAppSecret}
+                onChange={(e) => setIgAppSecret(e.target.value)}
+              />
+            </div>
+            <div className="form-group">
+              <label>Long-Lived Access Token</label>
+              <input
+                type="password"
+                placeholder="IGQVJ..."
+                value={igAccessToken}
+                onChange={(e) => setIgAccessToken(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="integration-actions">
+            {igStatus === "disconnected" ? (
+              <>
+                <button className="dashboard-secondary-button" onClick={() => handleSaveIgCreds()} type="button">
+                  Save Credentials
+                </button>
+                <button className="dashboard-toggle active" onClick={() => handleSimulateConnection("instagram")} type="button">
+                  Simulate OAuth Connection
+                </button>
+              </>
+            ) : (
+              <button className="dashboard-secondary-button" onClick={() => handleDisconnect("instagram")} type="button" style={{ borderColor: '#fecaca', color: '#991b1b' }}>
+                Disconnect API Link
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* DOCUMENTATION SECTION ACCORDIONS */}
+      <div className="accordion-container">
+        {/* YOUTUBE GUIDE ACCORDION */}
+        <div className="accordion-item">
+          <div className="accordion-header" onClick={() => { setInstagramGuideOpen(false); setYoutubeGuideOpen(!youtubeGuideOpen); }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <YouTubeIcon />
+              <span>Step-by-Step: YouTube Data API v3 Auth Guide</span>
+            </div>
+            <div>{youtubeGuideOpen ? <ChevronUpIcon /> : <ChevronDownIcon />}</div>
+          </div>
+          {youtubeGuideOpen && (
+            <div className="accordion-content">
+              <div className="accordion-step">
+                <div className="step-number">1</div>
+                <div className="step-details">
+                  <h3>Create a Google Cloud Project</h3>
+                  <p>Go to the Google Cloud Console, click the project selector, and select "New Project". Give your project a descriptive name (e.g. <code>illume-reader-api</code>) and choose an organization if required.</p>
+                  <a href="https://console.cloud.google.com/" target="_blank" rel="noopener noreferrer" className="dashboard-kicker" style={{ display: 'inline-flex', alignItems: 'center', marginTop: 6, color: '#2563eb' }}>
+                    <span>Open Google Cloud Console</span>
+                    <ExternalLinkIcon />
+                  </a>
+                </div>
+              </div>
+
+              <div className="accordion-step">
+                <div className="step-number">2</div>
+                <div className="step-details">
+                  <h3>Enable the YouTube Data API v3</h3>
+                  <p>In your Google Cloud Project dashboard, click the navigation menu and head to **APIs & Services &gt; Library**. Search for **YouTube Data API v3**, select it, and click **Enable**.</p>
+                </div>
+              </div>
+
+              <div className="accordion-step">
+                <div className="step-number">3</div>
+                <div className="step-details">
+                  <h3>Configure OAuth Consent Screen</h3>
+                  <p>Navigate to **APIs & Services &gt; OAuth consent screen**. Select **External** as user type, fill out the required App details (App Name, Support email). In the **Scopes** section, add the following scope required to read a user's content feed:</p>
+                  <div className="copy-snippet">
+                    <span>{YOUTUBE_OAUTH_SCOPE}</span>
+                    <button onClick={() => copyToClipboard(YOUTUBE_OAUTH_SCOPE, "yt-scope")} type="button">
+                      {copiedId === "yt-scope" ? <CheckIcon /> : <CopyIcon />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="accordion-step">
+                <div className="step-number">4</div>
+                <div className="step-details">
+                  <h3>Create OAuth Client Credentials</h3>
+                  <p>Go to **APIs & Services &gt; Credentials**. Click **+ Create Credentials** and select **OAuth client ID**. Choose **Web application** as application type. Under **Authorized redirect URIs**, add your application's callback URI:</p>
+                  <div className="copy-snippet">
+                    <span>{ytRedirectUri}</span>
+                    <button onClick={() => copyToClipboard(ytRedirectUri, "yt-redirect")} type="button">
+                      {copiedId === "yt-redirect" ? <CheckIcon /> : <CopyIcon />}
+                    </button>
+                  </div>
+                  <p style={{ marginTop: 8 }}>Copy the generated <strong>Client ID</strong> and <strong>Client Secret</strong> into the YouTube configuration panel above, or click "Simulate Connection" to automatically configure a demo account.</p>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* INSTAGRAM GUIDE ACCORDION */}
+        <div className="accordion-item">
+          <div className="accordion-header" onClick={() => { setYoutubeGuideOpen(false); setInstagramGuideOpen(!instagramGuideOpen); }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <InstagramIcon />
+              <span>Step-by-Step: Instagram Graph API Auth Guide</span>
+            </div>
+            <div>{instagramGuideOpen ? <ChevronUpIcon /> : <ChevronDownIcon />}</div>
+          </div>
+          {instagramGuideOpen && (
+            <div className="accordion-content">
+              <div className="accordion-step">
+                <div className="step-number">1</div>
+                <div className="step-details">
+                  <h3>Register a Meta for Developers Account</h3>
+                  <p>Head to the Meta Developer Portal and register as a developer. Click **My Apps** and select **Create App**. Select **Business** or **Consumer** as your use case depending on whether you are integrating an Instagram Business account or Consumer display account.</p>
+                  <a href="https://developers.facebook.com/" target="_blank" rel="noopener noreferrer" className="dashboard-kicker" style={{ display: 'inline-flex', alignItems: 'center', marginTop: 6, color: '#2563eb' }}>
+                    <span>Open Meta for Developers</span>
+                    <ExternalLinkIcon />
+                  </a>
+                </div>
+              </div>
+
+              <div className="accordion-step">
+                <div className="step-number">2</div>
+                <div className="step-details">
+                  <h3>Add Facebook Login & Instagram Graph API</h3>
+                  <p>In your App dashboard, locate **Add Products**. Click **Set Up** on **Facebook Login** and **Instagram Graph API**. Ensure your Instagram Professional/Business account is fully linked to an active Facebook Page that you own.</p>
+                </div>
+              </div>
+
+              <div className="accordion-step">
+                <div className="step-number">3</div>
+                <div className="step-details">
+                  <h3>Configure OAuth redirect URIs</h3>
+                  <p>Go to **Facebook Login &gt; Settings**. In **Valid OAuth Redirect URIs**, insert your application callback redirect route:</p>
+                  <div className="copy-snippet">
+                    <span>{igRedirectUri}</span>
+                    <button onClick={() => copyToClipboard(igRedirectUri, "ig-redirect")} type="button">
+                      {copiedId === "ig-redirect" ? <CheckIcon /> : <CopyIcon />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="accordion-step">
+                <div className="step-number">4</div>
+                <div className="step-details">
+                  <h3>Generate Instagram User Access Token</h3>
+                  <p>In Meta Developer Tools, use the **Graph API Explorer** to select your linked Facebook Page. Request permissions <code>instagram_basic</code> and <code>pages_show_list</code>. Swap the short-lived user token for a **Long-Lived Access Token** (valid for 60 days) using the access token tool, and paste it into the Instagram configuration panel above.</p>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      </>
+      )}
+
+      {/* FEED TESTING / PREVIEW SECTION */}
+      <div className="preview-feed-section">
+        <div className="preview-feed-header">
+          <div>
+            <h2>Interactive Media Feed</h2>
+            <p>Latest content is fetched automatically when this tab opens.</p>
+          </div>
+          <button className="dashboard-primary-button" onClick={() => handleFetchFeed()} disabled={feedLoading} type="button" style={{ width: 'auto', margin: 0, padding: '0 16px' }}>
+            {feedLoading ? (
+              <>
+                <Loader2 className="spin" size={16} aria-hidden="true" />
+                <span>Pulling API Content...</span>
+              </>
+            ) : (
+                <span>Refresh Content</span>
+            )}
+          </button>
+        </div>
+
+        {fetchError && (
+          <div className="dashboard-error" style={{ margin: '0 0 18px 0' }}>
+            {fetchError}
+          </div>
+        )}
+
+        {ytStatus === "disconnected" && igStatus === "disconnected" ? (
+          <div className="dashboard-sparkline-empty" style={{ minHeight: 140 }}>
+            <InfoIcon />
+            <span style={{ marginTop: 8, fontWeight: 700 }}>No content source is connected.</span>
+            <small style={{ color: '#64748b', marginTop: 4 }}>Connect an API credential server-side, then reopen this tab to pull the latest items.</small>
+          </div>
+        ) : !feedFetched ? (
+          <div className="dashboard-sparkline-empty" style={{ minHeight: 140 }}>
+            <InfoIcon />
+            <span style={{ marginTop: 8, fontWeight: 700, color: '#1e293b' }}>Credentials Configured!</span>
+            <small style={{ color: '#64748b', marginTop: 4 }}>Fetching starts automatically when the content tab opens.</small>
+          </div>
+        ) : (
+          <>
+            {youtubeAnalytics && (
+              <div className="youtube-analytics-grid">
+                <article className="youtube-analytics-card">
+                  <span>Views</span>
+                  <strong>{formatAnalyticsNumber(youtubeAnalytics.views)}</strong>
+                </article>
+                <article className="youtube-analytics-card">
+                  <span>Watch time</span>
+                  <strong>{formatAnalyticsNumber(youtubeAnalytics.estimatedMinutesWatched)} min</strong>
+                </article>
+                <article className="youtube-analytics-card">
+                  <span>Avg view duration</span>
+                  <strong>{formatDurationSeconds(youtubeAnalytics.averageViewDuration)}</strong>
+                </article>
+                <article className="youtube-analytics-card">
+                  <span>Avg viewed</span>
+                  <strong>{formatAnalyticsNumber(youtubeAnalytics.averageViewPercentage)}%</strong>
+                </article>
+                <article className="youtube-analytics-card">
+                  <span>Subscribers</span>
+                  <strong>{formatAnalyticsNumber(youtubeAnalytics.subscribersGained - youtubeAnalytics.subscribersLost)}</strong>
+                </article>
+              </div>
+            )}
+
+            <div className="preview-tabs">
+              <button
+                className={`preview-tab-btn ${activeFeedTab === "youtube" ? "active" : ""}`}
+                onClick={() => setActiveFeedTab("youtube")}
+                disabled={ytStatus === "disconnected"}
+                type="button"
+                style={{ opacity: ytStatus === "disconnected" ? 0.4 : 1 }}
+              >
+                YouTube Uploads ({youtubeVideos.length || youtubeMockVideos.length})
+              </button>
+            </div>
+
+            {activeFeedTab === "youtube" && ytStatus !== "disconnected" && (
+              <div className="media-feed-grid">
+                {(youtubeVideos.length ? youtubeVideos : youtubeMockVideos).map((video) => (
+                  <article className="youtube-video-card" key={video.id}>
+                    <div className="video-thumbnail-container">
+                      <img src={video.imageUrl} alt={video.title} />
+                      <span className="video-duration">{video.duration}</span>
+                    </div>
+                    <div className="video-details">
+                      <h4>{video.title}</h4>
+                      <div className="video-stats">
+                        <span>{video.views}</span>
+                        <span>{video.published}</span>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+
+          </>
+        )}
+      </div>
+
+      {/* SIMULATED OAUTH MODAL BACKDROP */}
+      {false && authModalOpen && (
+        <div className="auth-modal-backdrop" onClick={() => setAuthModalOpen(false)}>
+          <div className="auth-modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <h3>
+              {authModalType === "youtube" ? "Connect Google & YouTube API" : "Connect Meta & Instagram API"}
+            </h3>
+
+            <div className="auth-modal-body">
+              <p>Simulating standard OAuth 2.0 Web Authorization callback flow redirecting to secure Consent server...</p>
+
+              <div className="oauth-simulation-steps">
+                <div className={`simulation-step ${authModalStep >= 1 ? "completed" : "active"}`}>
+                  <div className="simulation-indicator">
+                    {authModalStep >= 1 ? <CheckIcon /> : <Loader2 className="spin" size={14} />}
+                  </div>
+                  <span>Contacting authorization authorization callback handlers...</span>
+                </div>
+
+                <div className={`simulation-step ${authModalStep >= 2 ? "completed" : authModalStep === 1 ? "active" : ""}`}>
+                  <div className="simulation-indicator">
+                    {authModalStep >= 2 ? <CheckIcon /> : authModalStep === 1 ? <Loader2 className="spin" size={14} /> : <KeyIcon />}
+                  </div>
+                  <span>
+                    {authModalType === "youtube"
+                      ? "Requesting scope: youtube.readonly..."
+                      : "Requesting permissions: instagram_basic, instagram_manage_insights..."}
+                  </span>
+                </div>
+
+                <div className={`simulation-step ${authModalStep >= 3 ? "completed" : authModalStep === 2 ? "active" : ""}`}>
+                  <div className="simulation-indicator">
+                    {authModalStep >= 3 ? <CheckIcon /> : authModalStep === 2 ? <Loader2 className="spin" size={14} /> : <KeyIcon />}
+                  </div>
+                  <span>Exchanging authorization code for long-lived OAuth token...</span>
+                </div>
+
+                <div className={`simulation-step ${authModalStep >= 4 ? "completed" : authModalStep === 3 ? "active" : ""}`}>
+                  <div className="simulation-indicator">
+                    {authModalStep >= 4 ? <CheckIcon /> : authModalStep === 3 ? <Loader2 className="spin" size={14} /> : <KeyIcon />}
+                  </div>
+                  <span>Validating connection credentials & loading sandbox data...</span>
+                </div>
+              </div>
+
+              {authModalStep >= 4 && (
+                <div style={{ color: '#16a34a', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, margin: '14px 0 6px 0' }}>
+                  <CheckIcon />
+                  <span>Link Established successfully! Credentials saved.</span>
+                </div>
+              )}
+            </div>
+
+            <div className="auth-modal-footer">
+              <button
+                className="dashboard-secondary-button"
+                onClick={() => setAuthModalOpen(false)}
+                type="button"
+                disabled={authModalStep < 4}
+              >
+                Close Consent Panel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ReaderDashboard({
   busy,
   data,
   error,
   onNavigate,
   onRefresh,
+  onContentTabClick,
   onSignInWithGoogle,
   onSignOut,
   selectedUserId,
-  session
+  session,
+  activeTab,
+  contentRefreshSignal,
+  setActiveTab
 }: {
   busy: boolean;
   data: ReaderDashboardData | null;
   error: string;
   onNavigate: (path: string) => void;
   onRefresh: () => void;
+  onContentTabClick: () => void;
   onSignInWithGoogle: () => void;
   onSignOut: () => void;
   selectedUserId: string | null;
   session: Session | null;
+  activeTab: "users" | "content";
+  contentRefreshSignal: number;
+  setActiveTab: (tab: "users" | "content") => void;
 }) {
   const email = session?.user.email ?? "";
   const isOwner = email.toLowerCase() === "r.lobo2003@gmail.com";
@@ -2231,6 +3258,7 @@ function ReaderDashboard({
   const selectedImages = selectedUser?.images ?? [];
   const selectedBookStorageBytes = selectedUser?.bookStorageBytes ?? 0;
   const selectedImageStorageBytes = selectedUser?.imageStorageBytes ?? 0;
+  const selectedJourney = buildUserJourneyFromData(selectedUser);
   const selectedUserTimeline = selectedUser?.timeline?.length ? selectedUser.timeline : buildUserTimelineFromData(selectedUser);
   const timeline = data?.timeline?.length ? data.timeline : buildDashboardTimelineFromUsers(data);
 
@@ -2238,11 +3266,6 @@ function ReaderDashboard({
     return (
       <main className="dashboard-shell auth-dashboard-shell">
         <section className="dashboard-auth-panel">
-          <div className="dashboard-mark">
-            <Database size={24} aria-hidden="true" />
-          </div>
-          <h1>Reader dashboard</h1>
-          <p>Sign in with Google to view project storage, users, books, and generated images.</p>
           <button className="dashboard-primary-button" disabled={busy} onClick={onSignInWithGoogle} type="button">
             {busy ? <Loader2 className="spin" size={18} aria-hidden="true" /> : <Users size={18} aria-hidden="true" />}
             <span>Sign in with Google</span>
@@ -2256,15 +3279,7 @@ function ReaderDashboard({
     return (
       <main className="dashboard-shell auth-dashboard-shell">
         <section className="dashboard-auth-panel">
-          <div className="dashboard-mark blocked">
-            <X size={24} aria-hidden="true" />
-          </div>
-          <h1>No access</h1>
-          <p>This dashboard is restricted to r.lobo2003@gmail.com.</p>
-          <button className="dashboard-secondary-button" onClick={onSignOut} type="button">
-            <LogOut size={17} aria-hidden="true" />
-            <span>Sign out</span>
-          </button>
+          <p className="dashboard-access-message">You do not have access</p>
         </section>
       </main>
     );
@@ -2328,6 +3343,7 @@ function ReaderDashboard({
                 <span>{selectedBooks.length} books</span>
                 <span>{selectedUser.imagesGenerated ?? selectedImages.length} images</span>
                 <span>{formatBytes(selectedBookStorageBytes + selectedImageStorageBytes)}</span>
+                <span>Last sign in {formatShortDate(selectedUser.lastSignInAt ?? null)}</span>
               </div>
             </section>
 
@@ -2349,6 +3365,31 @@ function ReaderDashboard({
             </section>
 
             <section className="dashboard-detail-grid">
+              <div className="dashboard-user-section dashboard-journey-section">
+                <div className="dashboard-section-heading">
+                  <div>
+                    <h2>User journey</h2>
+                    <p>Sign-ins, uploads, and generated images with time.</p>
+                  </div>
+                </div>
+                {selectedJourney.length ? (
+                  <ol className="dashboard-journey-list">
+                    {selectedJourney.map((event, index) => (
+                      <li className="dashboard-journey-item" key={`${event.type}-${event.at}-${index}`}>
+                        <div className="dashboard-journey-dot" aria-hidden="true" />
+                        <div>
+                          <strong>{event.label}</strong>
+                          <span>{event.detail}</span>
+                        </div>
+                        <time dateTime={event.at}>{formatShortDateTime(event.at)}</time>
+                      </li>
+                    ))}
+                  </ol>
+                ) : (
+                  <p className="dashboard-empty-detail">No journey events yet.</p>
+                )}
+              </div>
+
               <div className="dashboard-user-section">
                 <div className="dashboard-section-heading">
                   <div>
@@ -2429,69 +3470,97 @@ function ReaderDashboard({
 
       {error && <div className="dashboard-error">{error}</div>}
 
-      <section className="dashboard-metrics" aria-label="Reader project metrics">
-        <article className="dashboard-metric">
-          <HardDrive size={20} aria-hidden="true" />
-          <span>Supabase storage</span>
-          <strong>{formatBytes(storageTotal)}</strong>
-          <DashboardSparkline label="Supabase storage over time" points={timeline} valueKey="storageBytes" />
-        </article>
-        <article className="dashboard-metric">
-          <BookOpen size={20} aria-hidden="true" />
-          <span>Books</span>
-          <strong>{formatBytes(data?.storage.booksBytes ?? 0)}</strong>
-          <small>{data?.totals.books ?? 0} uploaded</small>
-          <DashboardSparkline label="Book storage over time" points={timeline} valueKey="booksBytes" />
-        </article>
-        <article className="dashboard-metric">
-          <ImageIcon size={20} aria-hidden="true" />
-          <span>Images</span>
-          <strong>{formatBytes(data?.storage.imagesBytes ?? 0)}</strong>
-          <small>{data?.totals.imagesGenerated ?? 0} generated</small>
-          <DashboardSparkline label="Image storage over time" points={timeline} valueKey="imagesBytes" />
-        </article>
-        <article className="dashboard-metric">
-          <Users size={20} aria-hidden="true" />
-          <span>Users</span>
-          <strong>{data?.totals.users ?? 0}</strong>
-          <DashboardSparkline label="Users over time" points={timeline} valueKey="usersCount" />
-        </article>
-      </section>
+      <div className="dashboard-tabs">
+        <button
+          className={`dashboard-tab-btn ${activeTab === "users" ? "active" : ""}`}
+          onClick={() => setActiveTab("users")}
+          type="button"
+        >
+          <Users size={16} aria-hidden="true" />
+          <span>Users & Analytics</span>
+        </button>
+        <button
+          className={`dashboard-tab-btn ${activeTab === "content" ? "active" : ""}`}
+          onClick={() => {
+            setActiveTab("content");
+            onContentTabClick();
+          }}
+          type="button"
+        >
+          <InstagramIcon />
+          <span>Content Integrations</span>
+        </button>
+      </div>
 
-      <section className="dashboard-user-section">
-        <div className="dashboard-section-heading">
-          <div>
-            <h2>Users</h2>
-            <p>{data ? `Updated ${formatShortDate(data.generatedAt)}` : "Loading project data"}</p>
-          </div>
-        </div>
+      {activeTab === "users" ? (
+        <>
+          <section className="dashboard-metrics" aria-label="Reader project metrics">
+            <article className="dashboard-metric">
+              <HardDrive size={20} aria-hidden="true" />
+              <span>Supabase storage</span>
+              <strong>{formatBytes(storageTotal)}</strong>
+              <DashboardSparkline label="Supabase storage over time" points={timeline} valueKey="storageBytes" />
+            </article>
+            <article className="dashboard-metric">
+              <BookOpen size={20} aria-hidden="true" />
+              <span>Books</span>
+              <strong>{formatBytes(data?.storage.booksBytes ?? 0)}</strong>
+              <small>{data?.totals.books ?? 0} uploaded</small>
+              <DashboardSparkline label="Book storage over time" points={timeline} valueKey="booksBytes" />
+            </article>
+            <article className="dashboard-metric">
+              <ImageIcon size={20} aria-hidden="true" />
+              <span>Images</span>
+              <strong>{formatBytes(data?.storage.imagesBytes ?? 0)}</strong>
+              <small>{data?.totals.imagesGenerated ?? 0} generated</small>
+              <DashboardSparkline label="Image storage over time" points={timeline} valueKey="imagesBytes" />
+            </article>
+            <article className="dashboard-metric">
+              <Users size={20} aria-hidden="true" />
+              <span>Users</span>
+              <strong>{data?.totals.users ?? 0}</strong>
+              <DashboardSparkline label="Users over time" points={timeline} valueKey="usersCount" />
+            </article>
+          </section>
 
-        <div className="dashboard-user-list">
-          {dashboardUsers.map((item) => (
-            <button className="dashboard-user-row dashboard-user-button" key={item.id} onClick={() => onNavigate(`/dashboard/users/${item.id}`)} type="button">
-              <div className="dashboard-user-main">
-                <div className="dashboard-avatar">{item.email[0]?.toUpperCase() ?? "U"}</div>
-                <div>
-                  <h3>{item.email}</h3>
-                  <p>Joined {formatShortDate(item.createdAt)}</p>
-                </div>
+          <section className="dashboard-user-section">
+            <div className="dashboard-section-heading">
+              <div>
+                <h2>Users</h2>
+                <p>{data ? `Updated ${formatShortDate(data.generatedAt)}` : "Loading project data"}</p>
               </div>
-              <div className="dashboard-user-stats">
-                <span>{(item.books ?? []).length} books</span>
-                <span>{item.imagesGenerated ?? (item.images ?? []).length} images</span>
-                <span>{formatBytes((item.bookStorageBytes ?? 0) + (item.imageStorageBytes ?? 0))}</span>
-              </div>
-              <ChevronRight className="dashboard-row-arrow" size={18} aria-hidden="true" />
-            </button>
-          ))}
-          {!data && !error && (
-            <div className="dashboard-loading">
-              <Loader2 className="spin" size={22} aria-hidden="true" />
-              <span>Loading dashboard</span>
             </div>
-          )}
-        </div>
-      </section>
+
+            <div className="dashboard-user-list">
+              {dashboardUsers.map((item) => (
+                <button className="dashboard-user-row dashboard-user-button" key={item.id} onClick={() => onNavigate(`/dashboard/users/${item.id}`)} type="button">
+                  <div className="dashboard-user-main">
+                    <div className="dashboard-avatar">{item.email[0]?.toUpperCase() ?? "U"}</div>
+                    <div>
+                      <h3>{item.email}</h3>
+                      <p>Joined {formatShortDate(item.createdAt)}</p>
+                    </div>
+                  </div>
+                  <div className="dashboard-user-stats">
+                    <span>{(item.books ?? []).length} books</span>
+                    <span>{item.imagesGenerated ?? (item.images ?? []).length} images</span>
+                    <span>{formatBytes((item.bookStorageBytes ?? 0) + (item.imageStorageBytes ?? 0))}</span>
+                  </div>
+                  <ChevronRight className="dashboard-row-arrow" size={18} aria-hidden="true" />
+                </button>
+              ))}
+              {!data && !error && (
+                <div className="dashboard-loading">
+                  <Loader2 className="spin" size={22} aria-hidden="true" />
+                  <span>Loading dashboard</span>
+                </div>
+              )}
+            </div>
+          </section>
+        </>
+      ) : (
+        <ContentIntegrationsSection refreshSignal={contentRefreshSignal} />
+      )}
     </main>
   );
 }
@@ -3024,6 +4093,12 @@ function App() {
   const [dashboardError, setDashboardError] = useState("");
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [dashboardPath, setDashboardPath] = useState(() => window.location.pathname);
+  const [dashboardTab, setDashboardTab] = useState<"users" | "content">(() => {
+    const tab = new URL(window.location.href).searchParams.get("tab");
+    return tab === "content" ? "content" : "users";
+  });
+  const [contentRefreshSignal, setContentRefreshSignal] = useState(0);
+
 
   const user = session?.user ?? null;
   const isReaderDashboard = window.location.pathname.startsWith("/dashboard");
@@ -3183,6 +4258,57 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const url = new URL(window.location.href);
+    const code = url.searchParams.get("code");
+
+    if (window.location.pathname === "/auth/youtube/callback" && code) {
+      const exchangeToken = async () => {
+        try {
+          const clientId = localStorage.getItem("reader-yt-client-id") || YOUTUBE_DEFAULT_CLIENT_ID;
+          const redirectUri = localStorage.getItem("reader-yt-redirect-uri") || `${window.location.origin}/auth/youtube/callback`;
+
+          const { data, error } = await supabase.functions.invoke("youtube-token-exchange", {
+            body: { code, redirectUri, clientId }
+          });
+
+          if (error) throw new Error(await edgeFunctionErrorMessage(error));
+
+          if (data?.access_token) {
+            localStorage.setItem("reader-yt-access-token", data.access_token);
+            localStorage.removeItem("reader-yt-api-key");
+            localStorage.setItem("reader-yt-status", "connected");
+            if (data.refresh_token) {
+              localStorage.setItem("reader-yt-refresh-token", data.refresh_token);
+              const { data: sessionData } = await supabase.auth.getSession();
+              const { error: storeError } = await supabase.functions.invoke("youtube-analytics", {
+                body: {
+                  action: "store",
+                  channel: localStorage.getItem("reader-yt-channel") || "@ilumereader",
+                  refreshToken: data.refresh_token
+                },
+                headers: sessionData.session?.access_token
+                  ? { Authorization: `Bearer ${sessionData.session.access_token}` }
+                  : undefined
+              });
+              if (storeError) throw new Error(await edgeFunctionErrorMessage(storeError));
+            }
+            alert("Successfully connected your YouTube channel!");
+          } else {
+            throw new Error("No access token returned from exchange");
+          }
+        } catch (err) {
+          console.error("YouTube authentication failed:", err);
+          alert("Failed to connect YouTube account: " + (err instanceof Error ? err.message : String(err)));
+        } finally {
+          window.location.href = `${window.location.origin}/dashboard?tab=content`;
+        }
+      };
+
+      void exchangeToken();
+    }
+  }, []);
+
+  useEffect(() => {
     if (!session) return;
 
     const url = new URL(window.location.href);
@@ -3191,6 +4317,7 @@ function App() {
 
     window.history.replaceState({}, "", redirectPath);
     setDashboardPath(window.location.pathname);
+    setDashboardTab(new URL(window.location.href).searchParams.get("tab") === "content" ? "content" : "users");
   }, [session?.user?.id]);
 
   useEffect(() => {
@@ -6467,10 +7594,14 @@ function App() {
           error={dashboardError}
           onNavigate={navigateDashboard}
           onRefresh={() => void loadReaderDashboard()}
+          onContentTabClick={() => setContentRefreshSignal((value) => value + 1)}
           onSignInWithGoogle={() => void signInWithGoogle()}
           onSignOut={() => void signOut()}
           selectedUserId={selectedDashboardUserId}
           session={session}
+          activeTab={dashboardTab}
+          contentRefreshSignal={contentRefreshSignal}
+          setActiveTab={setDashboardTab}
         />
       </DashboardErrorBoundary>
     );
@@ -6521,10 +7652,10 @@ function App() {
               <span>Upload</span>
               <input disabled={isBookImporting} type="file" accept={DOCUMENT_UPLOAD_ACCEPT} multiple onChange={handleCatalogUpload} />
             </label>
-            
+
             <div className="profile-button-wrapper" style={{ position: "relative", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <button 
-                className="profile-avatar-btn" 
+              <button
+                className="profile-avatar-btn"
                 onClick={(event) => {
                   if (event.detail === 0) setProfileOpen((isOpen) => !isOpen);
                 }}
@@ -6532,13 +7663,13 @@ function App() {
                   event.preventDefault();
                   setProfileOpen((isOpen) => !isOpen);
                 }}
-                title="Account Settings" 
+                title="Account Settings"
                 type="button"
               >
                 {user?.user_metadata?.avatar_url || user?.user_metadata?.picture ? (
-                  <img 
-                    src={user.user_metadata.avatar_url || user.user_metadata.picture} 
-                    alt="Profile" 
+                  <img
+                    src={user.user_metadata.avatar_url || user.user_metadata.picture}
+                    alt="Profile"
                     className="profile-avatar-img"
                   />
                 ) : (
@@ -6547,7 +7678,7 @@ function App() {
                   </span>
                 )}
               </button>
-              
+
               {profileOpen && (
                 <>
                   <div className="profile-popover-overlay" onClick={() => setProfileOpen(false)} />
@@ -6565,7 +7696,7 @@ function App() {
                         <span className="profile-email">{user?.email}</span>
                       </div>
                     </div>
-                    
+
                     <div className="profile-popover-body">
                       <div className="profile-section">
                         <div className="profile-usage-item">
@@ -6574,9 +7705,9 @@ function App() {
                             <span>{formatBytes(storageUsed)} / {formatBytes(storageQuotaBytes)}</span>
                           </div>
                           <div className="profile-progress-bar">
-                            <div 
-                              className="profile-progress-fill" 
-                              style={{ width: `${Math.min(100, (storageUsed / storageQuotaBytes) * 100)}%` }} 
+                            <div
+                              className="profile-progress-fill"
+                              style={{ width: `${Math.min(100, (storageUsed / storageQuotaBytes) * 100)}%` }}
                             />
                           </div>
                         </div>
@@ -6587,9 +7718,9 @@ function App() {
                             <span>{readerImageUsageLabel}{isPro ? " / mo" : " total"}</span>
                           </div>
                           <div className="profile-progress-bar">
-                            <div 
-                              className="profile-progress-fill" 
-                              style={{ width: `${Math.min(100, (readerImageCount / readerImageLimit) * 100)}%` }} 
+                            <div
+                              className="profile-progress-fill"
+                              style={{ width: `${Math.min(100, (readerImageCount / readerImageLimit) * 100)}%` }}
                             />
                           </div>
                         </div>
@@ -6912,10 +8043,10 @@ function App() {
                     return (
                       <div className="explore-card" key={classicBook.id}>
                         <div className="explore-cover-container">
-                          <img 
-                            className="explore-cover" 
-                            src={classicBook.coverUrl} 
-                            alt={classicBook.title} 
+                          <img
+                            className="explore-cover"
+                            src={classicBook.coverUrl}
+                            alt={classicBook.title}
                             loading="lazy"
                           />
                           <div className="explore-cover-overlay">
@@ -6948,7 +8079,7 @@ function App() {
                             </button>
                           </div>
                         </div>
-                        
+
                         <div className="explore-meta">
                           <h3 className="explore-title" title={classicBook.title}>{classicBook.title}</h3>
                           <p className="explore-author">{classicBook.author}</p>
@@ -7023,7 +8154,7 @@ function App() {
           >
             <CaseSensitive size={18} aria-hidden="true" />
           </button>
-          
+
           {settingsOpen && (
             <>
               <div

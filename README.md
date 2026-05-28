@@ -38,6 +38,9 @@ Deploy the reader Edge Functions:
 supabase functions deploy generate-reader-image
 supabase functions deploy delete-reader-book
 supabase functions deploy reader-dashboard
+supabase functions deploy youtube-token-exchange --no-verify-jwt
+supabase functions deploy youtube-feed
+supabase functions deploy youtube-analytics
 ```
 
 ## Owner dashboard
@@ -46,6 +49,16 @@ The owner dashboard is available at `/dashboard`.
 It requires Google authentication and only allows `r.lobo2003@gmail.com`. The dashboard uses the
 `reader-dashboard` Edge Function to read aggregate user, book, generated image, and Supabase Storage usage
 without exposing privileged database access to the browser.
+
+The Content Integrations tab can connect YouTube through Google OAuth. Set the OAuth client secret as a
+Supabase Edge Function secret before deploying the token exchange function:
+
+```bash
+supabase secrets set GOOGLE_CLIENT_SECRET=...
+supabase secrets set GOOGLE_CLIENT_ID=...
+supabase secrets set YOUTUBE_API_KEY=...
+supabase secrets set YOUTUBE_CHANNEL_ID=@ilumereader
+```
 
 The database migrations create:
 

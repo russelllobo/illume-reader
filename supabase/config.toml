@@ -138,6 +138,9 @@ enabled = true
 policy = "oneshot"
 inspector_port = 8083
 
+[functions.youtube-token-exchange]
+verify_jwt = false
+
 [analytics]
 enabled = true
 port = 54327
