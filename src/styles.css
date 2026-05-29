@@ -642,6 +642,7 @@ button:disabled {
 }
 
 .main-spread {
+  position: relative;
   min-width: 0;
   min-height: 0;
   display: grid;
@@ -652,6 +653,23 @@ button:disabled {
   background: #fbfbfb;
 }
 
+.main-spread.reader-image-resizing {
+  overflow: hidden;
+}
+
+.main-spread.reader-image-resizing > :not(.reader-image-resize-veil) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.reader-image-resize-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  background: var(--reader-theme-bg, #fbfbfb);
+  pointer-events: auto;
+}
+
 .main-spread.reader-only {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -660,17 +678,19 @@ button:disabled {
   overflow: hidden;
 }
 
-.reader-cover-loading-shell {
-  grid-template-rows: minmax(0, 1fr);
+.app-shell.reader-cover-loading-shell {
+  grid-template-rows: minmax(0, 1fr) 0 0 0;
   animation: none;
   filter: none;
 }
 
 .reader-opening-overlay {
-  position: absolute;
+  position: fixed;
   inset: 0;
   z-index: 240;
-  display: grid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: var(--reader-theme-bg);
   will-change: opacity, filter;
 }
@@ -680,24 +700,47 @@ button:disabled {
   animation: readerOpeningOverlayOut 0.2s cubic-bezier(0.16, 1, 0.3, 1) 0.06s both;
 }
 
+.reader-opening-wait-overlay {
+  pointer-events: auto;
+  opacity: 1;
+  filter: none;
+  animation: none;
+}
+
 .reader-cover-loading-stage {
+  --reader-opening-cover-width: min(330px, 72vw, calc((100dvh - 176px) * 0.6667));
+  min-width: 0;
   min-height: 0;
-  display: grid;
-  place-items: center;
-  align-content: center;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   gap: 22px;
-  padding: clamp(28px, 7vw, 72px);
+  padding: clamp(16px, 4vmin, 44px);
   background: var(--reader-theme-bg);
   filter: none;
   text-align: center;
+  overflow: hidden;
 }
 
 .reader-cover-loading-stage .reader-loading-cover-page {
+  width: var(--reader-opening-cover-width);
+  aspect-ratio: 2 / 3;
   min-height: 0;
-  animation: coverOnlyIn 0.16s cubic-bezier(0.16, 1, 0.3, 1) both;
+  flex: 0 0 auto;
+  animation: none;
+}
+
+.reader-opening-overlay .reader-cover-loading-stage .reader-loading-cover-page,
+.reader-opening-overlay .reader-cover-loading-copy {
+  animation: none;
 }
 
 .reader-cover-loading-stage .reader-loading-cover-page .catalog-cover-art {
+  width: 100%;
+  height: 100%;
   filter: none;
   opacity: 1;
   transform: translateZ(0);
@@ -990,27 +1033,27 @@ button:disabled {
 @keyframes readerOpeningOverlayOut {
   from {
     opacity: 1;
-    filter: blur(0);
   }
 
   to {
     opacity: 0;
-    filter: blur(8px);
   }
 }
 
 .main-spread.reader-only.image-mode {
+  --pdf-image-mode-bg: var(--reader-theme-bg, #fbfbfb);
   grid-template-columns: minmax(0, 1fr);
   grid-template-areas: "reader";
   gap: 0;
-  background: #fbfbfb;
+  background: var(--pdf-image-mode-bg);
   transition: grid-template-columns 0.42s ease, gap 0.42s ease, padding 0.42s ease;
 }
 
 .main-spread.reader-only.image-mode.has-reader-image {
-  grid-template-columns: minmax(0, 1fr) minmax(360px, min(46vw, 620px));
+  grid-template-columns: minmax(0, min(62vw, 760px)) minmax(320px, min(32vw, 460px));
   grid-template-areas: "reader image";
-  gap: clamp(14px, 2vw, 24px);
+  justify-content: center;
+  gap: clamp(8px, 1.2vw, 14px);
 }
 
 .image-reader-shell {
@@ -2475,6 +2518,7 @@ button:disabled {
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   justify-items: center;
+  background: var(--pdf-image-mode-bg, var(--reader-theme-bg));
   color: #111;
   animation: readerImagePanelIn 0.42s ease both;
 }
@@ -2539,7 +2583,7 @@ button:disabled {
   overflow: hidden;
   border: 0;
   border-radius: 14px;
-  background: var(--reader-theme-bg);
+  background: var(--pdf-image-mode-bg, var(--reader-theme-bg));
   box-shadow: none;
   animation: imageStageIn 0.42s ease both;
 }
@@ -2665,7 +2709,7 @@ button:disabled {
 }
 
 .pdf-reader-main.image-mode {
-  background: #050607;
+  background: var(--pdf-image-mode-bg, #050607);
 }
 
 .pdf-reader-pdf,
@@ -2674,6 +2718,7 @@ button:disabled {
 }
 
 .pdf-surface {
+  position: relative;
   min-width: 0;
   min-height: 0;
   height: 100%;
@@ -2683,9 +2728,40 @@ button:disabled {
   align-items: center;
   gap: 22px;
   overflow: auto;
+  overflow-anchor: none;
   background: #ecebea;
   scrollbar-width: thin;
   scrollbar-color: #999 transparent;
+}
+
+.pdf-reader-main.image-mode.has-reader-image .pdf-surface {
+  padding-inline: clamp(8px, 1.4vw, 18px);
+}
+
+.pdf-surface > :not(.pdf-resize-veil) {
+  transition: filter 0.16s ease, opacity 0.16s ease;
+}
+
+.pdf-surface-resizing {
+  overflow: hidden;
+}
+
+.pdf-surface-resizing > :not(.pdf-resize-veil) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pdf-surface-initial-loading > :not(.pdf-resize-veil) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pdf-resize-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  background: var(--reader-theme-bg, #ecebea);
+  pointer-events: auto;
 }
 
 .pdf-page-row {
@@ -2737,13 +2813,32 @@ button:disabled {
   font-size: 0.68rem;
 }
 
+.pdf-reader-main.image-mode .pdf-page-image-slot {
+  display: none;
+}
+
 .image-mode .pdf-surface {
-  background: #101214;
+  background: var(--pdf-image-mode-bg, #101214);
   scrollbar-color: #5f6870 transparent;
 }
 
+@media (max-width: 970px) {
+  .main-spread.pdf-reader-main {
+    padding: 0;
+    background: var(--reader-theme-bg, #ecebea);
+  }
+
+  .pdf-surface {
+    padding: 12px 4px 36px;
+  }
+
+  .pdf-reader-main.image-mode.has-reader-image .pdf-surface {
+    padding-inline: 4px;
+  }
+}
+
 .pdf-page {
-  --pdf-page-padding: 4px;
+  --pdf-page-padding: 0px;
   position: relative;
   flex: 0 0 auto;
   width: 100%;
@@ -2752,7 +2847,7 @@ button:disabled {
   display: grid;
   place-items: center;
   padding: var(--pdf-page-padding);
-  border-radius: 7px;
+  border-radius: 3px;
   background: transparent;
   transition: background 0.18s ease, box-shadow 0.18s ease;
 }
@@ -2766,9 +2861,13 @@ button:disabled {
   width: 100%;
   height: 100%;
   max-width: 100%;
-  border-radius: 3px;
+  border-radius: 0;
   background: #fff;
   box-shadow: 0 18px 46px rgba(20, 20, 20, 0.18);
+}
+
+.pdf-reader-main.image-mode .pdf-page canvas {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--reader-theme-border, #d8d8d8) 70%, transparent);
 }
 
 .pdf-page-placeholder {
@@ -4290,8 +4389,28 @@ button:disabled {
 
 .reader-themed-shell .reader-frame,
 .reader-themed-shell .main-spread,
-.reader-themed-shell .reading-surface {
+.reader-themed-shell .reading-surface,
+.reader-themed-shell .pdf-reader-main,
+.reader-themed-shell .pdf-surface,
+.reader-themed-shell .pdf-reader-main.image-mode,
+.reader-themed-shell .image-mode .pdf-surface {
   background: var(--reader-theme-bg);
+}
+
+.reader-themed-shell .main-spread.reader-only.image-mode {
+  --pdf-image-mode-bg: var(--reader-theme-bg);
+}
+
+.reader-themed-shell .pdf-surface {
+  scrollbar-color: var(--reader-theme-faint) transparent;
+}
+
+.reader-themed-shell .pdf-split-layout .pdf-surface {
+  border-right-color: var(--reader-theme-border);
+}
+
+.reader-themed-shell .pdf-text-pane {
+  background: var(--reader-theme-bg-alt);
 }
 
 .reader-themed-shell .main-spread.reader-only.image-mode,
@@ -4413,29 +4532,35 @@ button:disabled {
 }
 
 .reader-themed-shell .typography-button-group,
-.reader-themed-shell .typography-font-group {
+.reader-themed-shell .typography-font-group,
+.reader-themed-shell .typography-mode-toggle {
   border-color: var(--reader-theme-border);
   background: var(--reader-theme-panel);
 }
 
 .reader-themed-shell .typography-button-group button,
-.reader-themed-shell .typography-font-group button {
+.reader-themed-shell .typography-font-group button,
+.reader-themed-shell .typography-mode-toggle button {
   color: var(--reader-theme-muted);
 }
 
 .reader-themed-shell .typography-button-group button + button,
-.reader-themed-shell .typography-font-group button + button {
+.reader-themed-shell .typography-font-group button + button,
+.reader-themed-shell .typography-mode-toggle button + button {
   border-left-color: var(--reader-theme-border);
 }
 
 .reader-themed-shell .typography-button-group button:hover:not(:disabled),
-.reader-themed-shell .typography-font-group button:hover {
+.reader-themed-shell .typography-font-group button:hover,
+.reader-themed-shell .typography-mode-toggle button:hover {
   background: var(--reader-theme-accent-soft);
   color: var(--reader-theme-text);
 }
 
 .reader-themed-shell .typography-font-group button.active,
-.reader-themed-shell .typography-font-group button.active:hover {
+.reader-themed-shell .typography-font-group button.active:hover,
+.reader-themed-shell .typography-mode-toggle button.active,
+.reader-themed-shell .typography-mode-toggle button.active:hover {
   background: var(--reader-theme-text);
   color: var(--reader-theme-bg);
 }
@@ -4675,7 +4800,8 @@ button:disabled {
   .main-spread.reader-only.image-mode.has-reader-image {
     grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
     grid-template-areas: "reader image";
-    gap: 14px;
+    justify-content: center;
+    gap: 10px;
   }
 
   .pdf-split-layout {
@@ -4884,7 +5010,7 @@ button:disabled {
   }
 
   .pdf-page {
-    --pdf-page-padding: 8px;
+    --pdf-page-padding: 0px;
     min-height: 240px;
   }
 
@@ -5813,6 +5939,47 @@ button:disabled {
 
 .typography-font-group button:not(.active):focus-visible {
   color: #14100b;
+}
+
+.typography-mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  overflow: hidden;
+  border: 1px solid #dcd7cc;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.typography-mode-toggle button {
+  width: 100%;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: #57534a;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.typography-mode-toggle button + button {
+  border-left: 1px solid #dcd7cc;
+}
+
+.typography-mode-toggle button:hover {
+  background: #f4efe4;
+  color: #14100b;
+}
+
+.typography-mode-toggle button:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px rgba(17, 17, 17, 0.18);
+}
+
+.typography-mode-toggle button.active,
+.typography-mode-toggle button.active:hover {
+  background: #111;
+  color: #fff;
 }
 
 .typography-theme-menu {
@@ -8479,6 +8646,45 @@ html.landing-scroll {
   .image-mode.has-reader-image .reader-image-stage {
     display: none;
   }
+
+  .pdf-reader-main.image-mode .pdf-page-image-slot,
+  .pdf-reader-main.image-mode .pdf-page-image-slot.left,
+  .pdf-reader-main.image-mode .pdf-page-image-slot.right {
+    position: absolute;
+    top: auto;
+    left: auto;
+    right: clamp(10px, 3vw, 18px);
+    bottom: clamp(10px, 3vw, 18px);
+    display: block;
+    width: clamp(128px, 34vw, 220px);
+    padding-top: 0;
+    margin: 0;
+    opacity: 0.96;
+    transition: opacity 0.16s ease, transform 0.16s ease;
+  }
+
+  .pdf-reader-main.image-mode .pdf-page-image-slot .reader-generated-image,
+  .pdf-reader-main.image-mode .pdf-page-image-slot .reader-generated-image.left,
+  .pdf-reader-main.image-mode .pdf-page-image-slot .reader-generated-image.right {
+    width: 100%;
+    margin: 0;
+  }
+
+  .pdf-reader-main.image-mode .pdf-page-image-slot .reader-generated-image img,
+  .pdf-reader-main.image-mode .pdf-page-image-slot .reader-generated-placeholder {
+    border-radius: 6px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  }
+
+  .pdf-reader-main.image-mode .pdf-page-image-slot .reader-generated-image figcaption {
+    display: none;
+  }
+
+  .pdf-reader-main.image-mode .pdf-page-image-slot:hover,
+  .pdf-reader-main.image-mode .pdf-page-image-slot:focus-within {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
 }
 
 /* ==========================================================================
@@ -9024,6 +9230,17 @@ html[data-color-scheme="dark"] .main-spread {
   background: var(--ui-bg-surface);
 }
 
+html[data-color-scheme] .reader-themed-shell .main-spread.reader-only.image-mode {
+  --pdf-image-mode-bg: var(--reader-theme-bg);
+  background-color: var(--pdf-image-mode-bg) !important;
+}
+
+html[data-color-scheme] .reader-themed-shell .main-spread.reader-only.image-mode .pdf-surface,
+html[data-color-scheme] .reader-themed-shell .main-spread.reader-only.image-mode .reader-image-stage,
+html[data-color-scheme] .reader-themed-shell .main-spread.reader-only.image-mode .reader-image-hero {
+  background-color: var(--pdf-image-mode-bg) !important;
+}
+
 html[data-color-scheme="dark"] .reader-title-error {
   color: #f87171;
 }
@@ -9128,33 +9345,39 @@ html[data-color-scheme="dark"] .settings-popover-card {
 }
 
 html[data-color-scheme="dark"] .typography-button-group,
-html[data-color-scheme="dark"] .typography-font-group {
+html[data-color-scheme="dark"] .typography-font-group,
+html[data-color-scheme="dark"] .typography-mode-toggle {
   border-color: var(--ui-border);
   background: var(--ui-bg-rail);
 }
 
 html[data-color-scheme="dark"] .typography-button-group button,
-html[data-color-scheme="dark"] .typography-font-group button {
+html[data-color-scheme="dark"] .typography-font-group button,
+html[data-color-scheme="dark"] .typography-mode-toggle button {
   color: var(--ui-text-muted);
 }
 
 html[data-color-scheme="dark"] .typography-button-group button + button,
-html[data-color-scheme="dark"] .typography-font-group button + button {
+html[data-color-scheme="dark"] .typography-font-group button + button,
+html[data-color-scheme="dark"] .typography-mode-toggle button + button {
   border-left-color: var(--ui-border);
 }
 
 html[data-color-scheme="dark"] .typography-button-group button:hover:not(:disabled),
-html[data-color-scheme="dark"] .typography-font-group button:hover {
+html[data-color-scheme="dark"] .typography-font-group button:hover,
+html[data-color-scheme="dark"] .typography-mode-toggle button:hover {
   background: var(--ui-bg-hover);
   color: var(--ui-text);
 }
 
-html[data-color-scheme="dark"] .typography-font-group button.active {
+html[data-color-scheme="dark"] .typography-font-group button.active,
+html[data-color-scheme="dark"] .typography-mode-toggle button.active {
   background: var(--ui-text);
   color: var(--ui-bg);
 }
 
-html[data-color-scheme="dark"] .typography-font-group button.active:hover {
+html[data-color-scheme="dark"] .typography-font-group button.active:hover,
+html[data-color-scheme="dark"] .typography-mode-toggle button.active:hover {
   background: var(--ui-text);
   color: var(--ui-bg);
 }

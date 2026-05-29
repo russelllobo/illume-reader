@@ -39,7 +39,7 @@ import {
 } from "lucide-react";
 import { ChangeEvent, Component, CSSProperties, DragEvent, FormEvent, Fragment, KeyboardEvent, MouseEvent, PointerEvent, ReactNode, RefObject, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
-import { pdfPreviewToBook, pdfjsLib, readPdfPreview, type PdfPreview, type StoredPdfPage } from "./pdf";
+import { parsePdf, pdfPreviewToBook, pdfjsLib, readPdfPreview, type PdfPreview, type StoredPdfPage } from "./pdf";
 import { createEdgeTtsPlayer, DEFAULT_EDGE_TTS_VOICE, EdgeTtsPlayer } from "./edgeTts";
 import { supabase } from "./supabase";
 import { LandingPage } from "./LandingPage";
@@ -325,6 +325,8 @@ type MeaningfulStart = {
 
 const START_TITLE_PATTERNS = [
   /\bintroduction\b/i,
+  /\bpreface\b/i,
+  /\bforeword\b/i,
   /\bprologue\b/i,
   /\bchapter\s*(?:1|one|i)\b/i,
   /^i$/i,
@@ -355,7 +357,7 @@ const titleMatches = (title: string, patterns: RegExp[]) => {
 const isPreferredStartTitle = (title: string, bookTitle: string) => {
   const normalised = normaliseStartTitle(title);
   if (!normalised) return false;
-  if (normaliseStartTitle(bookTitle).toLowerCase() === normalised.toLowerCase()) return true;
+  if (normaliseStartTitle(bookTitle).toLowerCase() === normalised.toLowerCase()) return false;
   return titleMatches(normalised, START_TITLE_PATTERNS);
 };
 
@@ -1518,6 +1520,9 @@ function BookCover({ book }: { book: Pick<BookRow, "cover_url" | "document_type"
       ) : (
         <img
           alt={book.title}
+          decoding="sync"
+          draggable={false}
+          loading="eager"
           src={book.cover_url}
           onError={() => setHasError(true)}
         />
@@ -1536,6 +1541,8 @@ const PdfPageCanvas = memo(function PdfPageCanvas({
   sideImage,
   speechHighlight,
   paragraphs,
+  viewportSize,
+  onPageRendered,
   onWordClick
 }: {
   active: boolean;
@@ -1547,6 +1554,8 @@ const PdfPageCanvas = memo(function PdfPageCanvas({
   rootRef: RefObject<HTMLElement | null>;
   sideImage?: ReactNode;
   speechHighlight: SpeechHighlight | null;
+  viewportSize: { height: number; width: number };
+  onPageRendered?: (pageNumber: number) => void;
   onWordClick?: (pageNumber: number, pageWordIndex: number, word?: PdfTextLayerWord, pageText?: string) => void;
 }) {
   const pageRef = useRef<HTMLDivElement | null>(null);
@@ -1616,9 +1625,11 @@ const PdfPageCanvas = memo(function PdfPageCanvas({
       if (cancelled) return;
 
       const unscaledViewport = page.getViewport({ scale: 1 });
-      const surfaceWidth = rootRef.current?.clientWidth ?? holder.clientWidth;
+      const surfaceWidth = viewportSize.width || rootRef.current?.clientWidth || holder.clientWidth;
       const inSpread = Boolean(holder.closest(".pdf-page-spread"));
-      const baseAvailableWidth = Math.max(260, inSpread ? (surfaceWidth - 110) / 2 : surfaceWidth - 88);
+      const pageGutter = surfaceWidth < 970 ? 24 : 88;
+      const spreadGutter = surfaceWidth < 970 ? 44 : 110;
+      const baseAvailableWidth = Math.max(260, inSpread ? (surfaceWidth - spreadGutter) / 2 : surfaceWidth - pageGutter);
       const scale = Math.min(3, (baseAvailableWidth * pageScale) / unscaledViewport.width);
       const viewport = page.getViewport({ scale });
       const deviceScale = window.devicePixelRatio || 1;
@@ -1678,6 +1689,7 @@ const PdfPageCanvas = memo(function PdfPageCanvas({
       }
 
       setTextLayerWords(words);
+      onPageRendered?.(pageNumber);
     };
 
     void render();
@@ -1686,7 +1698,7 @@ const PdfPageCanvas = memo(function PdfPageCanvas({
       cancelled = true;
       task?.cancel();
     };
-  }, [pageNumber, pageScale, pdf, rootRef, shouldRender]);
+  }, [onPageRendered, pageNumber, pageScale, pdf, rootRef, shouldRender, viewportSize.height, viewportSize.width]);
 
   const imageSlot = sideImage ? (
     <div className={`pdf-page-image-slot ${pageNumber % 2 === 1 ? "left" : "right"}`}>
@@ -1783,19 +1795,50 @@ function PdfDocumentView({
   const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [error, setError] = useState("");
   const [pageMetrics, setPageMetrics] = useState<PdfPageMetrics[]>([]);
+  const [surfaceSize, setSurfaceSize] = useState({ height: 0, width: 0 });
+  const [isInitialPdfVisible, setIsInitialPdfVisible] = useState(false);
+  const [isPdfResizing, setIsPdfResizing] = useState(false);
   const surfaceRef = useRef<HTMLElement | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
+  const resizeDebounceRef = useRef<number | null>(null);
+  const resizeFallbackRef = useRef<number | null>(null);
+  const awaitingResizeRenderRef = useRef(false);
+  const frozenScrollTopRef = useRef(0);
+  const pendingSurfaceSizeRef = useRef({ height: 0, width: 0 });
+  const scrollAnchorRef = useRef({ offsetRatio: 0, page: currentPage });
+  const resizingRef = useRef(false);
+  const suppressScrollRef = useRef(false);
   const userScrolledRef = useRef(false);
   const onDocumentReadyRef = useRef(onDocumentReady);
+  const initialReadyFrameRef = useRef<number | null>(null);
+  const initialReadyTimerRef = useRef<number | null>(null);
+  const initialReadyReportedRef = useRef(false);
 
   useEffect(() => {
     onDocumentReadyRef.current = onDocumentReady;
   }, [onDocumentReady]);
 
   useEffect(() => {
+    scrollAnchorRef.current = {
+      offsetRatio: scrollAnchorRef.current.page === currentPage ? scrollAnchorRef.current.offsetRatio : 0,
+      page: currentPage
+    };
+  }, [currentPage]);
+
+  useEffect(() => {
+    if (scrollRequest <= 0) return;
+    scrollAnchorRef.current = {
+      offsetRatio: Math.max(0, Math.min(1, scrollOffsetRatio)),
+      page: scrollPage
+    };
+  }, [scrollOffsetRatio, scrollPage, scrollRequest]);
+
+  useEffect(() => {
     if (!file) {
       setPdf(null);
       setPageMetrics([]);
+      setIsInitialPdfVisible(false);
+      initialReadyReportedRef.current = false;
       return;
     }
 
@@ -1806,12 +1849,12 @@ function PdfDocumentView({
       setError("");
       setPdf(null);
       setPageMetrics([]);
+      setIsInitialPdfVisible(false);
+      initialReadyReportedRef.current = false;
       try {
         const bytes = await file.arrayBuffer();
         loadedPdf = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
         if (cancelled) return;
-        setPdf(loadedPdf);
-        onDocumentReadyRef.current?.();
 
         const firstPage = await loadedPdf.getPage(1).catch(() => null);
         if (cancelled) return;
@@ -1819,8 +1862,12 @@ function PdfDocumentView({
           const firstViewport = firstPage.getViewport({ scale: 1 });
           setPageMetrics(Array.from({ length: loadedPdf.numPages }, () => ({ height: firstViewport.height, width: firstViewport.width })));
         }
+        setPdf(loadedPdf);
       } catch (loadError) {
-        if (!cancelled) setError(loadError instanceof Error ? loadError.message : "Could not render this PDF.");
+        if (!cancelled) {
+          setError(loadError instanceof Error ? loadError.message : "Could not render this PDF.");
+          onDocumentReadyRef.current?.();
+        }
       }
     };
 
@@ -1831,6 +1878,19 @@ function PdfDocumentView({
       void loadedPdf?.destroy();
     };
   }, [file]);
+
+  useEffect(() => {
+    initialReadyReportedRef.current = false;
+    setIsInitialPdfVisible(false);
+    if (initialReadyFrameRef.current !== null) {
+      window.cancelAnimationFrame(initialReadyFrameRef.current);
+      initialReadyFrameRef.current = null;
+    }
+    if (initialReadyTimerRef.current !== null) {
+      window.clearTimeout(initialReadyTimerRef.current);
+      initialReadyTimerRef.current = null;
+    }
+  }, [file, pdfPageLayout, pdfPageScale]);
 
   const scrollToPageTarget = (page: number, offsetRatio = 0, behavior: ScrollBehavior = "auto") => {
     const surface = surfaceRef.current;
@@ -1846,6 +1906,112 @@ function PdfDocumentView({
       target.clientHeight * Math.max(0, Math.min(1, offsetRatio));
     surface.scrollTo({ top: Math.max(0, targetTop - 18), behavior });
   };
+
+  const restoreScrollAnchor = (settled = false) => {
+    const anchor = scrollAnchorRef.current;
+    suppressScrollRef.current = true;
+    scrollToPageTarget(anchor.page, anchor.offsetRatio);
+    window.requestAnimationFrame(() => {
+      if (settled || !resizingRef.current) suppressScrollRef.current = false;
+    });
+  };
+
+  useEffect(() => {
+    const surface = surfaceRef.current;
+    if (!surface) return;
+
+    const measureSurface = () => ({ height: surface.clientHeight, width: surface.clientWidth });
+    const applySurfaceSize = (next = measureSurface()) => {
+      setSurfaceSize((previous) => (
+        previous.height === next.height && previous.width === next.width ? previous : next
+      ));
+    };
+
+    const finishResize = () => {
+      awaitingResizeRenderRef.current = false;
+      restoreScrollAnchor(true);
+      window.requestAnimationFrame(() => {
+        resizingRef.current = false;
+        setIsPdfResizing(false);
+      });
+    };
+
+    const scheduleAnchorRestore = () => {
+      const wasResizing = resizingRef.current;
+      if (!wasResizing) frozenScrollTopRef.current = surface.scrollTop;
+      resizingRef.current = true;
+      awaitingResizeRenderRef.current = false;
+      suppressScrollRef.current = true;
+      setIsPdfResizing(true);
+      surface.scrollTop = frozenScrollTopRef.current;
+      pendingSurfaceSizeRef.current = measureSurface();
+
+      if (resizeDebounceRef.current !== null) window.clearTimeout(resizeDebounceRef.current);
+      if (resizeFallbackRef.current !== null) window.clearTimeout(resizeFallbackRef.current);
+
+      resizeDebounceRef.current = window.setTimeout(() => {
+        resizeDebounceRef.current = null;
+        awaitingResizeRenderRef.current = true;
+        applySurfaceSize(pendingSurfaceSizeRef.current);
+        resizeFallbackRef.current = window.setTimeout(() => {
+          resizeFallbackRef.current = null;
+          finishResize();
+        }, 220);
+      }, 160);
+    };
+
+    applySurfaceSize();
+    const observer = new ResizeObserver(scheduleAnchorRestore);
+    observer.observe(surface);
+    window.addEventListener("resize", scheduleAnchorRestore);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", scheduleAnchorRestore);
+      if (resizeDebounceRef.current !== null) window.clearTimeout(resizeDebounceRef.current);
+      if (resizeFallbackRef.current !== null) window.clearTimeout(resizeFallbackRef.current);
+    };
+  }, [pdf]);
+
+  const reportInitialReadyAfterSettledPaint = useCallback((pageNumber: number) => {
+    if (initialReadyReportedRef.current || pageNumber !== scrollAnchorRef.current.page) return;
+
+    if (initialReadyFrameRef.current !== null) window.cancelAnimationFrame(initialReadyFrameRef.current);
+    if (initialReadyTimerRef.current !== null) window.clearTimeout(initialReadyTimerRef.current);
+
+    initialReadyFrameRef.current = window.requestAnimationFrame(() => {
+      initialReadyFrameRef.current = window.requestAnimationFrame(() => {
+        initialReadyFrameRef.current = null;
+        initialReadyTimerRef.current = window.setTimeout(() => {
+          initialReadyTimerRef.current = null;
+
+          if (resizingRef.current || awaitingResizeRenderRef.current) {
+            reportInitialReadyAfterSettledPaint(pageNumber);
+            return;
+          }
+
+          initialReadyReportedRef.current = true;
+          setIsInitialPdfVisible(true);
+          onDocumentReadyRef.current?.();
+        }, 90);
+      });
+    });
+  }, []);
+
+  const handlePageRendered = useCallback((pageNumber: number) => {
+    reportInitialReadyAfterSettledPaint(pageNumber);
+    if (!resizingRef.current || !awaitingResizeRenderRef.current || pageNumber !== scrollAnchorRef.current.page) return;
+    if (resizeFallbackRef.current !== null) window.clearTimeout(resizeFallbackRef.current);
+    resizeFallbackRef.current = window.setTimeout(() => {
+      resizeFallbackRef.current = null;
+      awaitingResizeRenderRef.current = false;
+      restoreScrollAnchor(true);
+      window.requestAnimationFrame(() => {
+        resizingRef.current = false;
+        setIsPdfResizing(false);
+      });
+    }, 40);
+  }, [reportInitialReadyAfterSettledPaint]);
 
   useEffect(() => {
     const surface = surfaceRef.current;
@@ -1866,11 +2032,14 @@ function PdfDocumentView({
 
   useEffect(() => () => {
     if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
+    if (initialReadyFrameRef.current !== null) window.cancelAnimationFrame(initialReadyFrameRef.current);
+    if (initialReadyTimerRef.current !== null) window.clearTimeout(initialReadyTimerRef.current);
   }, []);
 
   const handleScroll = () => {
     const surface = surfaceRef.current;
     if (!surface) return;
+    if (suppressScrollRef.current || resizingRef.current) return;
     userScrolledRef.current = true;
     if (scrollFrameRef.current !== null) return;
 
@@ -1893,6 +2062,7 @@ function PdfDocumentView({
         }
       });
 
+      scrollAnchorRef.current = { offsetRatio: closestOffsetRatio, page: closestPage };
       onPageChange(closestPage, { offsetRatio: closestOffsetRatio, scroll: false });
     });
   };
@@ -1933,6 +2103,8 @@ function PdfDocumentView({
             rootRef={surfaceRef}
             sideImage={renderPageImage?.(page1)}
             speechHighlight={speechHighlight}
+            viewportSize={surfaceSize}
+            onPageRendered={handlePageRendered}
             onWordClick={onWordClick}
           />
           {page2 && (
@@ -1946,6 +2118,8 @@ function PdfDocumentView({
               rootRef={surfaceRef}
               sideImage={renderPageImage?.(page2)}
               speechHighlight={speechHighlight}
+              viewportSize={surfaceSize}
+              onPageRendered={handlePageRendered}
               onWordClick={onWordClick}
             />
           )}
@@ -1964,6 +2138,8 @@ function PdfDocumentView({
           rootRef={surfaceRef}
           sideImage={renderPageImage?.(index + 1)}
           speechHighlight={speechHighlight}
+          viewportSize={surfaceSize}
+          onPageRendered={handlePageRendered}
           onWordClick={onWordClick}
         />
       ));
@@ -1971,8 +2147,19 @@ function PdfDocumentView({
   };
 
   return (
-    <section className="pdf-surface" onScroll={handleScroll} ref={surfaceRef} aria-label="PDF pages">
+    <section
+      className={[
+        "pdf-surface",
+        isPdfResizing ? "pdf-surface-resizing" : "",
+        isInitialPdfVisible ? "pdf-surface-initial-ready" : "pdf-surface-initial-loading"
+      ].filter(Boolean).join(" ")}
+      onScroll={handleScroll}
+      ref={surfaceRef}
+      aria-busy={isPdfResizing}
+      aria-label="PDF pages"
+    >
       {renderPages()}
+      {isPdfResizing && <div className="pdf-resize-veil" aria-hidden="true" />}
     </section>
   );
 }
@@ -2351,6 +2538,11 @@ type YouTubeWeeklyViews = {
   views: number;
   engagedViews?: number;
 };
+type YouTubeAnalyticsRange = {
+  availableEndDate?: string;
+  endDate?: string;
+  startDate?: string;
+};
 type YouTubeTopVideoAnalytics = {
   averageViewDuration: number;
   averageViewPercentage: number;
@@ -2469,6 +2661,7 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
   const [youtubeGuideOpen, setYoutubeGuideOpen] = useState(false);
   const [instagramGuideOpen, setInstagramGuideOpen] = useState(false);
   const [youtubeAnalytics, setYoutubeAnalytics] = useState<YouTubeAnalyticsSummary | null>(null);
+  const [youtubeAnalyticsRange, setYoutubeAnalyticsRange] = useState<YouTubeAnalyticsRange | null>(null);
   const [youtubeWeeklyViews, setYoutubeWeeklyViews] = useState<YouTubeWeeklyViews[]>([]);
   const [youtubeTopVideos, setYoutubeTopVideos] = useState<YouTubeTopVideoAnalytics[]>([]);
   const [youtubeVideos, setYoutubeVideos] = useState<YouTubeVideoPreview[]>([]);
@@ -2535,11 +2728,11 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
     return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", year: "numeric" }).format(date);
   };
 
-  const formatShortDate = (value: string) => {
+  function formatShortDate(value: string) {
     const date = new Date(`${value}T00:00:00Z`);
     if (Number.isNaN(date.getTime())) return value;
     return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", timeZone: "UTC" }).format(date);
-  };
+  }
 
   const formatAnalyticsPercent = (value: number) =>
     `${new Intl.NumberFormat("en-GB", { maximumFractionDigits: 1 }).format(value || 0)}%`;
@@ -2926,11 +3119,13 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
 
             if (error) throw new Error(await edgeFunctionErrorMessage(error));
             setYoutubeAnalytics(data?.summary ?? null);
+            setYoutubeAnalyticsRange(data?.range ?? null);
             setYoutubeWeeklyViews(data?.weeklyViews ?? []);
             setYoutubeTopVideos(data?.topVideos ?? []);
           } catch (error) {
             console.info("YouTube Analytics unavailable:", error);
             setYoutubeAnalytics(null);
+            setYoutubeAnalyticsRange(null);
             setYoutubeWeeklyViews([]);
             setYoutubeTopVideos([]);
           }
@@ -3089,6 +3284,10 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
     ];
     localStorage.setItem("reader-yt-weekly-views-cache", JSON.stringify(listToCache));
   }, [youtubeWeeklyViews]);
+
+  useEffect(() => {
+    localStorage.setItem("reader-yt-analytics-range-cache", JSON.stringify(youtubeAnalyticsRange));
+  }, [youtubeAnalyticsRange]);
 
   useEffect(() => {
     localStorage.setItem("reader-yt-analytics-cache", JSON.stringify(youtubeTopVideos));
@@ -3933,6 +4132,14 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
     }
   }, [refreshSignal]);
 
+  const youtubeRange = useMemo((): YouTubeAnalyticsRange | null => {
+    try {
+      return JSON.parse(localStorage.getItem("reader-yt-analytics-range-cache") || "null");
+    } catch {
+      return null;
+    }
+  }, [refreshSignal]);
+
   // 2. Read cached YouTube videos
   const ytVideos = useMemo((): YouTubeVideoPreview[] => {
     try {
@@ -4064,6 +4271,12 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
     return accountViews >= 0 ? accountViews : 0;
   }, [getIgAccountViewsForWeek]);
 
+  const formatShortWeeklyDate = (value: string) => {
+    const date = new Date(`${value}T00:00:00Z`);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", timeZone: "UTC" }).format(date);
+  };
+
   // 6. Compute weekly combined analytics
   const weeklyViewsData = useMemo(() => {
     return weeklyViews.map((week) => {
@@ -4078,6 +4291,19 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
       };
     });
   }, [weeklyViews, getIgViewsForWeek]);
+
+  const weeklyViewsDateRange = useMemo(() => {
+    if (!weeklyViewsData.length) return "";
+    const firstWeek = weeklyViewsData[0];
+    const lastWeek = weeklyViewsData[weeklyViewsData.length - 1];
+    const actualEndDate = youtubeRange?.availableEndDate || lastWeek.endDate;
+    const requestedEndDate = youtubeRange?.endDate;
+    const label = `${formatShortWeeklyDate(firstWeek.startDate)} - ${formatShortWeeklyDate(actualEndDate)}`;
+
+    return requestedEndDate && actualEndDate < requestedEndDate
+      ? `${label} (YouTube available through ${formatShortWeeklyDate(actualEndDate)})`
+      : label;
+  }, [weeklyViewsData, youtubeRange]);
 
   const weeklyViewsMax = useMemo(() => {
     return Math.max(...weeklyViewsData.map((week) => week.totalViews), 1);
@@ -4334,19 +4560,16 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 		    return { averageViewPercentage, engagedViews, igAverageViewPercentage, igEngagedViews, igStayedToWatch, igViews, stayedToWatch, totalViews, watchHours, ytAverageViewPercentage, ytEngagedViews, ytStayedToWatch, ytViews };
 		  }, [combinedEntries]);
 
-  const formatShortDate = (value: string) => {
-    const date = new Date(`${value}T00:00:00Z`);
-    if (Number.isNaN(date.getTime())) return value;
-    return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", timeZone: "UTC" }).format(date);
-  };
-
   return (
     <div className="weekly-views-layout-container">
       {/* 1. WEEKLY VIEWS GRAPH & SUMMARY TABLE */}
       <div className="weekly-views-dashboard-block">
         <div className="weekly-views-block-header">
           <h2>Weekly Views Trend (Combined Platforms)</h2>
-          <p>Displays combined views over time for linked YouTube videos and Instagram Reels.</p>
+          <p>
+            Displays combined views over time for linked YouTube videos and Instagram Reels.
+            {weeklyViewsDateRange ? ` Date range: ${weeklyViewsDateRange}.` : ""}
+          </p>
         </div>
 
         {weeklyViewsData.length > 0 ? (
@@ -4461,7 +4684,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                           textAnchor="middle"
                           className="weekly-views-axis-label-x"
                         >
-                          {formatShortDate(p.week.startDate)}
+                          {formatShortWeeklyDate(p.week.startDate)}
                         </text>
                       ))}
 
@@ -4506,7 +4729,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                             <span>Instagram: {formatAnalyticsNumber(activeP.week.igViews)}</span>
                           </div>
                           <div className="tooltip-dates" style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: 4, marginTop: 4 }}>
-                            {formatShortDate(activeP.week.startDate)} - {formatShortDate(activeP.week.endDate)}
+                            {formatShortWeeklyDate(activeP.week.startDate)} - {formatShortWeeklyDate(activeP.week.endDate)}
                           </div>
                         </div>
                       );
@@ -4531,7 +4754,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                   {weeklyViewsData.map((week, index) => (
                     <tr key={week.startDate}>
                       <td>Week {index + 1}</td>
-                      <td>{formatShortDate(week.startDate)} - {formatShortDate(week.endDate)}</td>
+                      <td>{formatShortWeeklyDate(week.startDate)} - {formatShortWeeklyDate(week.endDate)}</td>
                       <td>{formatAnalyticsNumber(week.ytViews)}</td>
                       <td>{formatAnalyticsNumber(week.igViews)}</td>
                       <td><strong>{formatAnalyticsNumber(week.totalViews)}</strong></td>
@@ -5464,6 +5687,16 @@ const waitForOpeningPaint = () =>
     });
   });
 
+const waitForReaderFonts = (timeoutMs = 700) => {
+  const fonts = document.fonts;
+  if (!fonts) return Promise.resolve();
+
+  return Promise.race([
+    fonts.ready.then(() => undefined).catch(() => undefined),
+    new Promise<void>((resolve) => window.setTimeout(resolve, timeoutMs))
+  ]);
+};
+
 const preloadLibraryCover = (src: string) =>
   new Promise<void>((resolve) => {
     const image = new Image();
@@ -5527,6 +5760,8 @@ function App() {
   const [book, setBook] = useState<ReaderBook | null>(null);
   const [openingBook, setOpeningBook] = useState<BookRow | null>(null);
   const [openingBookProgress, setOpeningBookProgress] = useState(0);
+  const [openingPdfSettled, setOpeningPdfSettled] = useState(false);
+  const [openingTextSettled, setOpeningTextSettled] = useState(false);
   const [openingPdfPreview, setOpeningPdfPreview] = useState<PdfPreview | null>(null);
   const [activeBookFile, setActiveBookFile] = useState<File | null>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -5555,6 +5790,7 @@ function App() {
   const [checkoutResult, setCheckoutResult] = useState<"success" | "canceled" | "">("");
   const [speechHighlight, setSpeechHighlight] = useState<SpeechHighlight | null>(null);
   const [readerImageMode, setReaderImageMode] = useState(false);
+  const [readerImageResizeMasked, setReaderImageResizeMasked] = useState(false);
   const [readerImages, setReaderImages] = useState<Record<number, ReaderImageState>>({});
   const [visibleReaderImageChunkIndex, setVisibleReaderImageChunkIndex] = useState<number | null>(null);
   const [displayedReaderImageChunkIndex, setDisplayedReaderImageChunkIndex] = useState<number | null>(null);
@@ -5905,6 +6141,8 @@ function App() {
       setBook(null);
       setOpeningBook(null);
       setOpeningBookProgress(0);
+      setOpeningPdfSettled(false);
+      setOpeningTextSettled(false);
       setOpeningPdfPreview(null);
       setActiveBookFile(null);
       setView("catalog");
@@ -6057,13 +6295,20 @@ function App() {
   useEffect(() => {
     const desktopQuery = window.matchMedia(CHAPTER_SIDEBAR_DESKTOP_QUERY);
     const syncChapterSidebar = (event: MediaQueryListEvent | MediaQueryList) => {
+      const openingFormat = openingBook ? bookFormat(openingBook) : null;
+      const isOpeningPdf = openingFormat === "pdf";
+      if (isPdfBook || isOpeningPdf) {
+        setChapterDrawerOpen(false);
+        return;
+      }
+
       setChapterDrawerOpen(event.matches && hasChapterSidebarEntries);
     };
 
     syncChapterSidebar(desktopQuery);
     desktopQuery.addEventListener("change", syncChapterSidebar);
     return () => desktopQuery.removeEventListener("change", syncChapterSidebar);
-  }, [hasChapterSidebarEntries]);
+  }, [hasChapterSidebarEntries, isPdfBook, openingBook]);
 
   useEffect(() => {
     window.localStorage.setItem("reader-font-mode", readerFontMode);
@@ -6090,6 +6335,29 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem("reader-theme", readerTheme);
   }, [readerTheme]);
+
+  useEffect(() => {
+    if (view !== "reader" || !readerImageMode) {
+      setReaderImageResizeMasked(false);
+      return;
+    }
+
+    let resizeTimer: number | null = null;
+    const handleResize = () => {
+      setReaderImageResizeMasked(true);
+      if (resizeTimer !== null) window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => {
+        resizeTimer = null;
+        window.requestAnimationFrame(() => setReaderImageResizeMasked(false));
+      }, 240);
+    };
+
+    window.addEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      if (resizeTimer !== null) window.clearTimeout(resizeTimer);
+    };
+  }, [readerImageMode, view]);
 
   useEffect(() => {
     window.localStorage.setItem("reader-text-scale", readerTextScale.toFixed(2));
@@ -6261,10 +6529,10 @@ function App() {
     const targetIndex = pendingScrollIndex.current;
     if (targetIndex === null || !book) return;
 
-    pendingScrollIndex.current = null;
     const target = book.paragraphs[targetIndex];
     const node = target ? paragraphRefs.current.get(target.id) : null;
     if (node) {
+      pendingScrollIndex.current = null;
       if (isInitialOpenRef.current || isInstantScrollRef.current) {
         node.scrollIntoView({ block: "start", behavior: "auto" });
         isInitialOpenRef.current = false;
@@ -6274,6 +6542,52 @@ function App() {
       }
     }
   }, [book?.paragraphs, currentIndex]);
+
+  useEffect(() => {
+    if (view !== "reader" || !book || book.format === "pdf" || !openingBook || openingBook.id !== activeBookId) return;
+
+    let cancelled = false;
+    let frame = 0;
+    let settleTimer = 0;
+    const startedAt = performance.now();
+
+    const settleAfterPaint = () => {
+      frame = window.requestAnimationFrame(() => {
+        frame = window.requestAnimationFrame(() => {
+          settleTimer = window.setTimeout(() => {
+            if (!cancelled) setOpeningTextSettled(true);
+          }, 120);
+        });
+      });
+    };
+
+    const waitForTextLayout = () => {
+      if (cancelled) return;
+
+      const timedOut = performance.now() - startedAt > 1800;
+      const surfaceReady = Boolean(readingSurfaceRef.current);
+      const targetIndex = Math.max(0, Math.min(currentIndex, book.paragraphs.length - 1));
+      const target = book.paragraphs[targetIndex];
+      const targetReady = !target || paragraphRefs.current.has(target.id);
+
+      if ((!surfaceReady || !targetReady || pendingScrollIndex.current !== null) && !timedOut) {
+        frame = window.requestAnimationFrame(waitForTextLayout);
+        return;
+      }
+
+      settleAfterPaint();
+    };
+
+    void waitForReaderFonts().then(() => {
+      if (!cancelled) waitForTextLayout();
+    });
+
+    return () => {
+      cancelled = true;
+      if (frame) window.cancelAnimationFrame(frame);
+      if (settleTimer) window.clearTimeout(settleTimer);
+    };
+  }, [activeBookId, book, currentIndex, openingBook, view]);
 
   useEffect(() => {
     if (view !== "reader" || !book || !openingBook || openingBook.id !== activeBookId) return;
@@ -6287,6 +6601,16 @@ function App() {
       if (cancelled) return;
 
       const timedOut = performance.now() - startedAt > 1400;
+      if (book.format === "pdf" && !openingPdfSettled) {
+        frame = window.requestAnimationFrame(settleOpening);
+        return;
+      }
+
+      if (book.format !== "pdf" && !openingTextSettled) {
+        frame = window.requestAnimationFrame(settleOpening);
+        return;
+      }
+
       if (pendingScrollIndex.current !== null && !timedOut) {
         frame = window.requestAnimationFrame(settleOpening);
         return;
@@ -6296,6 +6620,8 @@ function App() {
         if (!cancelled) {
           setOpeningBook(null);
           setOpeningBookProgress(0);
+          setOpeningPdfSettled(false);
+          setOpeningTextSettled(false);
         }
       }, 260);
     };
@@ -6307,7 +6633,7 @@ function App() {
       if (frame) window.cancelAnimationFrame(frame);
       if (exitTimer) window.clearTimeout(exitTimer);
     };
-  }, [activeBookId, book, openingBook, view]);
+  }, [activeBookId, book, openingBook, openingPdfSettled, openingTextSettled, view]);
 
   useEffect(() => {
     if (view !== "reader" || !book || openingBook || pendingScrollIndex.current === null) return;
@@ -7520,7 +7846,7 @@ function App() {
     updatePendingImportProgress(pendingImportId, 12);
     const pdfPreview = format === "pdf" ? await readPdfPreview(file) : null;
     updatePendingImportProgress(pendingImportId, 25);
-    const parsed = pdfPreview ? pdfPreviewToBook(file, pdfPreview) : await parseEpub(file);
+    const parsed = format === "pdf" ? await parsePdf(file) : await parseEpub(file);
     updatePendingImportProgress(pendingImportId, 42);
     const embeddedCoverUrl = parsed.coverUrl ? await shrinkCoverDataUrl(parsed.coverUrl) : "";
     const coverUrl = embeddedCoverUrl || (format === "epub" ? await getOpenLibraryCoverUrl(parsed.title, parsed.author) : "");
@@ -7590,11 +7916,12 @@ function App() {
     if (format === "pdf") queuePdfProcessing(row.id);
 
     const imageContext = readerImageOpenContext(row, parsed, row.current_index);
+    let initialReaderImage: ReaderImageState | null = null;
     if (imageContext.firstChunk) {
       updatePendingImportProgress(pendingImportId, 94);
       updatePendingImportDetails(pendingImportId, { statusText: "Generating visuals" });
       try {
-        await preGenerateReaderImageForBook(row, parsed, imageContext.firstChunk);
+        initialReaderImage = await preGenerateReaderImageForBook(row, parsed, imageContext.firstChunk);
       } catch (error) {
         console.warn("Could not prepare the first reader image during upload:", error);
       }
@@ -7607,7 +7934,7 @@ function App() {
     }
     showUploadedBookNotice(row.title);
     if (openAfterImport) {
-      openParsedBook(row, parsed, 0, file);
+      openParsedBook(row, parsed, 0, file, { initialReaderImage });
     }
   };
 
@@ -7647,7 +7974,7 @@ function App() {
       ]);
 
       try {
-        await importDocumentFile(file, false, pendingImportId);
+        await importDocumentFile(file, files.length === 1, pendingImportId);
       } catch (error) {
         setPendingBookImports((items) => items.filter((item) => item.id !== pendingImportId));
         setNotice(error instanceof Error ? error.message : "Could not upload this document.");
@@ -7777,7 +8104,7 @@ function App() {
     parsed: ReaderBook,
     chunk: ReaderImageChunk,
     style = readerImageStyle
-  ) => {
+  ): Promise<ReaderImageState | null> => {
     const requestBody = {
       author: parsed.author,
       bookId: row.id,
@@ -7798,7 +8125,7 @@ function App() {
     if (error) throw error;
     if (typeof data?.imageCount === "number") setReaderImageCount(data.imageCount);
     else void loadReaderImageUsage();
-    if (data?.limitReached || !data?.imageUrl) return;
+    if (data?.limitReached || !data?.imageUrl) return null;
 
     const prompt = typeof data.prompt === "string" ? data.prompt : undefined;
     void cacheReaderImage({
@@ -7811,6 +8138,14 @@ function App() {
       startWord: chunk.startWord,
       style
     });
+    return {
+      imageCount: typeof data.imageCount === "number" ? data.imageCount : undefined,
+      imageLimit: typeof data.imageLimit === "number" ? data.imageLimit : undefined,
+      prompt,
+      src: data.imageUrl,
+      status: "ready",
+      style
+    };
   };
 
   const prepareOpeningReaderImage = async (
@@ -7927,6 +8262,13 @@ function App() {
     setOpeningPdfPreview(null);
     setActiveBookFile(file ?? null);
     setPdfReaderViewMode(parsed.format === "pdf" ? "pdf" : "text");
+    setOpeningPdfSettled(parsed.format !== "pdf");
+    setOpeningTextSettled(parsed.format === "pdf");
+    if (parsed.format === "pdf") {
+      setChapterDrawerOpen(false);
+      setPdfPageLayout("single");
+      setPdfPageScale(1);
+    }
     setPdfScrollOffsetRatio(imageContext.start.offsetRatio);
     setPdfScrollPage(imageContext.initialPage);
     setPdfScrollRequest(imageContext.start.offsetRatio > 0 ? 1 : 0);
@@ -7980,9 +8322,16 @@ function App() {
     setBook(null);
     setOpeningBook(row);
     setOpeningBookProgress(8);
+    setOpeningPdfSettled(bookFormat(row) !== "pdf");
+    setOpeningTextSettled(bookFormat(row) === "pdf");
     setOpeningPdfPreview(null);
     setActiveBookFile(null);
     setPdfReaderViewMode(bookFormat(row) === "pdf" ? "pdf" : "text");
+    if (bookFormat(row) === "pdf") {
+      setChapterDrawerOpen(false);
+      setPdfPageLayout("single");
+      setPdfPageScale(1);
+    }
     setCurrentPage(Math.max(1, row.current_page ?? 1));
     setCurrentIndex(Math.max(0, row.current_index ?? 0));
     setView("reader");
@@ -7990,6 +8339,10 @@ function App() {
 
     await waitForOpeningPaint();
     if (runId !== bookOpenRunRef.current) return;
+    if (row.cover_url) {
+      await preloadLibraryCover(row.cover_url);
+      if (runId !== bookOpenRunRef.current) return;
+    }
     setOpeningBookProgress(18);
 
     if (cached && !cachedPdfNeedsProcessedText && (cached.format !== "pdf" || cachedFile)) {
@@ -8025,7 +8378,12 @@ function App() {
       const preview = format === "pdf" ? pdfPreviewFromRow(row) ?? await readPdfPreview(file) : null;
       const pages = await pdfPagesPromise;
       setOpeningBookProgress(82);
-      const parsed = preview ? pdfPreviewToBook(file, preview, pages) : await parseEpub(file);
+      const parsed =
+        format === "pdf"
+          ? pages.length && preview
+            ? pdfPreviewToBook(file, preview, pages)
+            : await parsePdf(file)
+          : await parseEpub(file);
       if (runId !== bookOpenRunRef.current) return;
       setOpeningBookProgress(92);
       if (format === "pdf") {
@@ -8082,6 +8440,8 @@ function App() {
       setNotice(error instanceof Error ? error.message : "Could not open this book.");
       setOpeningBook(null);
       setOpeningBookProgress(0);
+      setOpeningPdfSettled(false);
+      setOpeningTextSettled(false);
       setBook(null);
       setActiveBookFile(null);
       setActiveBookId("");
@@ -8196,6 +8556,8 @@ function App() {
       setBook(null);
       setOpeningBook(null);
       setOpeningBookProgress(0);
+      setOpeningPdfSettled(false);
+      setOpeningTextSettled(false);
       setActiveBookFile(null);
       setActiveBookId("");
       setView("catalog");
@@ -8352,6 +8714,7 @@ function App() {
   };
 
   const handlePdfDocumentReady = useCallback(() => {
+    setOpeningPdfSettled(true);
     if (!progressNotice) return;
     setProgressNoticeToken((token) => token + 1);
   }, [progressNotice]);
@@ -8452,6 +8815,8 @@ function App() {
     if (activeBookId && book) void saveReadingProgress(activeBookId, currentIndex, currentPage);
     setOpeningBook(null);
     setOpeningBookProgress(0);
+    setOpeningPdfSettled(false);
+    setOpeningTextSettled(false);
     setOpeningPdfPreview(null);
     setView("catalog");
     if (updateHistory) writeAppHistory({ illumeView: "catalog" });
@@ -8817,6 +9182,31 @@ function App() {
     }
   };
 
+  const renderReaderModeToggle = () => (
+    <div className="typography-mode-toggle" aria-label="Reader appearance">
+      <button
+        aria-label="Use light mode"
+        aria-pressed={readerThemeMode === "light"}
+        className={readerThemeMode === "light" ? "active" : undefined}
+        onClick={() => setReaderThemeMode("light")}
+        title="Light mode"
+        type="button"
+      >
+        <Sun size={14} aria-hidden="true" />
+      </button>
+      <button
+        aria-label="Use dark mode"
+        aria-pressed={readerThemeMode === "dark"}
+        className={readerThemeMode === "dark" ? "active" : undefined}
+        onClick={() => setReaderThemeMode("dark")}
+        title="Dark mode"
+        type="button"
+      >
+        <Moon size={14} aria-hidden="true" />
+      </button>
+    </div>
+  );
+
   const renderOpeningSettingsPopover = (isPdfMode: boolean) => (
     <>
       <div
@@ -8872,6 +9262,8 @@ function App() {
                     <Plus size={14} aria-hidden="true" />
                   </button>
                 </div>
+
+                {renderReaderModeToggle()}
               </>
             ) : (
               <>
@@ -9670,7 +10062,15 @@ function App() {
     return null;
   }
 
-  const readerImageStage = !isPdfBook && readerImageMode ? renderReaderImageStage() : null;
+  const readerImageStage = readerImageMode ? renderReaderImageStage() : null;
+  const isWaitingForOpeningOverlay = Boolean(
+    openingBook &&
+    openingBook.id === activeBookId &&
+    (
+      (book?.format === "pdf" && !openingPdfSettled) ||
+      (book?.format !== "pdf" && !openingTextSettled)
+    )
+  );
 
   return (
     <main
@@ -9679,7 +10079,13 @@ function App() {
       data-reader-theme={readerTheme}
     >
       {openingBook && openingBook.id === activeBookId && (
-        <div className="reader-opening-overlay reader-opening-settle-overlay" aria-busy="true">
+        <div
+          className={[
+            "reader-opening-overlay",
+            isWaitingForOpeningOverlay ? "reader-opening-wait-overlay" : "reader-opening-settle-overlay"
+          ].join(" ")}
+          aria-busy="true"
+        >
           {renderOpeningBookStage(openingBook)}
         </div>
       )}
@@ -9778,6 +10184,8 @@ function App() {
                             <Plus size={14} aria-hidden="true" />
                           </button>
                         </div>
+
+                        {renderReaderModeToggle()}
                       </>
                     ) : (
                       <>
@@ -10015,6 +10423,7 @@ function App() {
         <div className={[
           readerImageMode ? "main-spread reader-only image-mode" : "main-spread reader-only",
           readerImageStage ? "has-reader-image" : "",
+          readerImageResizeMasked ? "reader-image-resizing" : "",
           isPdfBook ? `pdf-reader-main pdf-reader-${pdfReaderViewMode} pdf-layout-${pdfPageLayout}` : ""
         ].filter(Boolean).join(" ")}>
           {isPdfBook ? (
@@ -10038,6 +10447,7 @@ function App() {
             renderTextReadingSurface()
           )}
           {readerImageStage}
+          {readerImageResizeMasked && <div className="reader-image-resize-veil" aria-hidden="true" />}
         </div>
       </section>
 

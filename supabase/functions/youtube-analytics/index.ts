@@ -111,9 +111,16 @@ const weightedAverage = (rows: Array<Record<string, any>>, key: string) => {
   return rows.reduce((total, row) => total + Number(row[key] ?? 0) * Number(row.views ?? 0), 0) / views;
 };
 
-const weeklyViewTallies = (rows: Array<Record<string, any>>, endDate: string) => {
+const latestRowDate = (rows: Array<Record<string, any>>, fallback: string) =>
+  rows.reduce((latest, row) => {
+    const day = String(row.day ?? "");
+    return /^\d{4}-\d{2}-\d{2}$/.test(day) && day > latest ? day : latest;
+  }, "") || fallback;
+
+const weeklyViewTallies = (rows: Array<Record<string, any>>, startDate: string, endDate: string) => {
+  const start = dateFromIsoDate(startDate);
   const end = dateFromIsoDate(endDate);
-  let cursor = addDays(mondayOfWeek(end), -7);
+  let cursor = mondayOfWeek(start);
   const tallies: Array<{ endDate: string; startDate: string; views: number }> = [];
 
   while (cursor <= end) {
@@ -210,6 +217,7 @@ Deno.serve(async (req) => {
       sort: "day"
     });
     const dailyRows = (dailyReport.rows ?? []).map((row: unknown[]) => rowObject(dailyReport.columnHeaders ?? [], row));
+    const availableEndDate = latestRowDate(dailyRows, common.endDate);
 
     const videoReportQuery: Record<string, string> = {
       ...common,
@@ -232,7 +240,11 @@ Deno.serve(async (req) => {
     return jsonResponse({
       channel: connection?.channel_handle || channelHandle,
       connected: true,
-      range: { endDate: common.endDate, startDate: common.startDate },
+      range: {
+        availableEndDate,
+        endDate: common.endDate,
+        startDate: common.startDate
+      },
       summary: {
         averageViewDuration: weightedAverage(dailyRows, "averageViewDuration"),
         averageViewPercentage: weightedAverage(dailyRows, "averageViewPercentage"),
@@ -244,7 +256,7 @@ Deno.serve(async (req) => {
       },
       timeline: dailyRows,
       topVideos,
-      weeklyViews: weeklyViewTallies(dailyRows, common.endDate)
+      weeklyViews: weeklyViewTallies(dailyRows, common.startDate, availableEndDate)
     });
   } catch (error) {
     return jsonResponse({ error: error instanceof Error ? error.message : "Could not load YouTube analytics." }, 400);
