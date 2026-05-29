@@ -22,6 +22,21 @@ const jsonResponse = (body: unknown, status = 200) =>
   });
 
 const isoDate = (date: Date) => date.toISOString().slice(0, 10);
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const dateFromIsoDate = (value: string) => {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day));
+};
+
+const addDays = (date: Date, days: number) => new Date(date.getTime() + days * DAY_MS);
+
+const mondayOfWeek = (date: Date) => {
+  const monday = new Date(date);
+  const daysSinceMonday = (monday.getUTCDay() + 6) % 7;
+  monday.setUTCDate(monday.getUTCDate() - daysSinceMonday);
+  return monday;
+};
 
 const analyticsRequest = async (accessToken: string, query: Record<string, string>) => {
   const url = new URL("https://youtubeanalytics.googleapis.com/v2/reports");
@@ -96,6 +111,28 @@ const weightedAverage = (rows: Array<Record<string, any>>, key: string) => {
   return rows.reduce((total, row) => total + Number(row[key] ?? 0) * Number(row.views ?? 0), 0) / views;
 };
 
+const weeklyViewTallies = (rows: Array<Record<string, any>>, endDate: string) => {
+  const end = dateFromIsoDate(endDate);
+  let cursor = addDays(mondayOfWeek(end), -7);
+  const tallies: Array<{ endDate: string; startDate: string; views: number }> = [];
+
+  while (cursor <= end) {
+    const weekStart = new Date(cursor);
+    const weekEnd = new Date(Math.min(addDays(weekStart, 6).getTime(), end.getTime()));
+    const startIso = isoDate(weekStart);
+    const endIso = isoDate(weekEnd);
+    const views = rows.reduce((total, row) => {
+      const day = String(row.day ?? "");
+      return day >= startIso && day <= endIso ? total + Number(row.views ?? 0) : total;
+    }, 0);
+
+    tallies.push({ endDate: endIso, startDate: startIso, views });
+    cursor = addDays(cursor, 7);
+  }
+
+  return tallies;
+};
+
 const refreshAccessToken = async (refreshToken: string) => {
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
@@ -132,6 +169,11 @@ Deno.serve(async (req) => {
     const channelHandle = typeof payload.channel === "string" && payload.channel.trim()
       ? payload.channel.trim()
       : Deno.env.get("YOUTUBE_CHANNEL_ID") || DEFAULT_CHANNEL_HANDLE;
+    const requestedVideoIds = Array.isArray(payload.videoIds)
+      ? payload.videoIds
+        .filter((id: unknown): id is string => typeof id === "string" && /^[\w-]+$/.test(id))
+        .slice(0, 50)
+      : [];
 
     if (payload.action === "store") {
       if (typeof payload.refreshToken !== "string" || !payload.refreshToken) {
@@ -164,19 +206,28 @@ Deno.serve(async (req) => {
     const dailyReport = await analyticsRequest(accessToken, {
       ...common,
       dimensions: "day",
-      metrics: "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,subscribersLost",
+      metrics: "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,subscribersLost,engagedViews",
       sort: "day"
     });
     const dailyRows = (dailyReport.rows ?? []).map((row: unknown[]) => rowObject(dailyReport.columnHeaders ?? [], row));
 
-    const topVideosReport = await analyticsRequest(accessToken, {
+    const videoReportQuery: Record<string, string> = {
       ...common,
       dimensions: "video",
-      maxResults: "5",
-      metrics: "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage",
+      maxResults: String(Math.max(5, requestedVideoIds.length)),
+      metrics: "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,subscribersLost,engagedViews",
       sort: "-views"
-    });
-    const topVideos = (topVideosReport.rows ?? []).map((row: unknown[]) => rowObject(topVideosReport.columnHeaders ?? [], row));
+    };
+    if (requestedVideoIds.length) {
+      videoReportQuery.filters = `video==${requestedVideoIds.join(",")}`;
+    }
+
+    const topVideosReport = await analyticsRequest(accessToken, videoReportQuery);
+    const topVideos = (topVideosReport.rows ?? []).map((row: unknown[]) => ({
+      ...rowObject(topVideosReport.columnHeaders ?? [], row),
+      impressions: null,
+      impressionsClickThroughRate: null
+    }));
 
     return jsonResponse({
       channel: connection?.channel_handle || channelHandle,
@@ -185,13 +236,15 @@ Deno.serve(async (req) => {
       summary: {
         averageViewDuration: weightedAverage(dailyRows, "averageViewDuration"),
         averageViewPercentage: weightedAverage(dailyRows, "averageViewPercentage"),
+        engagedViews: sumMetric(dailyRows, "engagedViews"),
         estimatedMinutesWatched: sumMetric(dailyRows, "estimatedMinutesWatched"),
         subscribersGained: sumMetric(dailyRows, "subscribersGained"),
         subscribersLost: sumMetric(dailyRows, "subscribersLost"),
         views: sumMetric(dailyRows, "views")
       },
       timeline: dailyRows,
-      topVideos
+      topVideos,
+      weeklyViews: weeklyViewTallies(dailyRows, common.endDate)
     });
   } catch (error) {
     return jsonResponse({ error: error instanceof Error ? error.message : "Could not load YouTube analytics." }, 400);

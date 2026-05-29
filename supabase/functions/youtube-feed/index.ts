@@ -136,7 +136,7 @@ Deno.serve(async (req) => {
 
     const items = playlistData.items ?? [];
     const videoIds = items.map((item: any) => item.contentDetails?.videoId).filter(Boolean).join(",");
-    const statsMap = new Map<string, { duration: string; views: string }>();
+    const statsMap = new Map<string, { comments: string; duration: string; likes: string; views: string }>();
 
     if (videoIds) {
       const videosUrl = new URL("https://youtube.googleapis.com/youtube/v3/videos");
@@ -152,7 +152,9 @@ Deno.serve(async (req) => {
 
       (videosData.items ?? []).forEach((video: any) => {
         statsMap.set(video.id, {
+          comments: video.statistics?.commentCount ?? "0",
           duration: parseISO8601Duration(video.contentDetails?.duration),
+          likes: video.statistics?.likeCount ?? "0",
           views: formatViews(video.statistics?.viewCount)
         });
       });
@@ -160,12 +162,15 @@ Deno.serve(async (req) => {
 
     const videos = items.map((item: any) => {
       const videoId = item.contentDetails?.videoId;
-      const stats = statsMap.get(videoId) ?? { duration: "10:00", views: "No views" };
+      const stats = statsMap.get(videoId) ?? { comments: "0", duration: "10:00", likes: "0", views: "No views" };
 
       return {
+        comments: stats.comments,
         duration: stats.duration,
         id: videoId || item.id,
         imageUrl: item.snippet?.thumbnails?.high?.url ?? item.snippet?.thumbnails?.medium?.url ?? "",
+        likes: stats.likes,
+        publishedAt: item.snippet?.publishedAt ?? "",
         published: formatTimeAgo(item.snippet?.publishedAt),
         title: item.snippet?.title ?? "Untitled Video",
         views: stats.views

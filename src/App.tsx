@@ -13,6 +13,7 @@ import {
   Image as ImageIcon,
   Loader2,
   LogOut,
+  MessageCircle,
   Moon,
   MoreHorizontal,
   Palette,
@@ -31,7 +32,10 @@ import {
   Plus,
   Check,
   Users,
-  X
+  X,
+  Link2,
+  ThumbsUp,
+  TrendingUp
 } from "lucide-react";
 import { ChangeEvent, Component, CSSProperties, DragEvent, FormEvent, Fragment, KeyboardEvent, MouseEvent, PointerEvent, ReactNode, RefObject, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
@@ -2266,7 +2270,7 @@ const YouTubeIcon = () => (
 );
 
 const InstagramIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0 }}>
+  <svg className="instagram-glyph" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0 }}>
     <rect x="2" y="2" width="20" height="20" rx="5" ry="5"></rect>
     <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"></path>
     <line x1="17.5" y1="6.5" x2="17.51" y2="6.5"></line>
@@ -2322,9 +2326,12 @@ const InfoIcon = () => (
 
 type ServiceConnectionStatus = "disconnected" | "connected" | "simulated";
 type YouTubeVideoPreview = {
+  comments?: number | string;
   duration: string;
   id: string;
   imageUrl: string;
+  likes?: number | string;
+  publishedAt?: string;
   published: string;
   title: string;
   views: string;
@@ -2332,11 +2339,108 @@ type YouTubeVideoPreview = {
 type YouTubeAnalyticsSummary = {
   averageViewDuration: number;
   averageViewPercentage: number;
+  engagedViews?: number;
   estimatedMinutesWatched: number;
   subscribersGained: number;
   subscribersLost: number;
   views: number;
 };
+type YouTubeWeeklyViews = {
+  endDate: string;
+  startDate: string;
+  views: number;
+  engagedViews?: number;
+};
+type YouTubeTopVideoAnalytics = {
+  averageViewDuration: number;
+  averageViewPercentage: number;
+  engagedViews: number;
+  estimatedMinutesWatched: number;
+  impressions: number | null;
+  impressionsClickThroughRate: number | null;
+  subscribersGained: number;
+  subscribersLost: number;
+  video: string;
+  views: number;
+};
+type InstagramPostPreview = {
+  averageWatchTime?: number;
+  caption: string;
+  comments?: number;
+  durationSeconds?: number;
+  follows?: number;
+  id: string;
+  imageUrl: string;
+  likes?: number;
+  mediaUrl?: string;
+  mediaProductType?: string;
+  mediaType?: string;
+  permalink?: string;
+  profileActivity?: number;
+  profileVisits?: number;
+  views?: number;
+  publishedAt?: string;
+  reach?: number;
+  saved?: number;
+  shares?: number;
+  skipRate?: number;
+  totalInteractions?: number;
+  totalViewTime?: number;
+};
+type SortDirection = "asc" | "desc";
+type YouTubePerformanceSortKey =
+  | "duration"
+  | "publishedAt"
+  | "title"
+  | "averageViewPercentage"
+  | "stayedToWatch"
+  | "views"
+  | "watchHours"
+  | "impressions"
+  | "impressionsClickThroughRate";
+type CombinedPerformanceSortKey =
+  | "duration"
+  | "publishedAt"
+  | "title"
+  | "totalViews"
+  | "ytViews"
+  | "igViews"
+  | "engagedViews"
+  | "averageViewPercentage"
+  | "ytAverageViewPercentage"
+  | "igAverageViewPercentage"
+  | "stayedToWatch"
+  | "ytStayedToWatch"
+  | "igStayedToWatch"
+  | "igEngagedViews"
+  | "ytEngagedViews";
+
+const compareText = (left: string, right: string) =>
+  left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
+
+const compareNullableNumber = (left: number | null | undefined, right: number | null | undefined) => {
+  const leftMissing = left === null || left === undefined || Number.isNaN(left);
+  const rightMissing = right === null || right === undefined || Number.isNaN(right);
+  if (leftMissing && rightMissing) return 0;
+  if (leftMissing) return 1;
+  if (rightMissing) return -1;
+  return left - right;
+};
+
+const timestampFromDate = (value?: string) => {
+  if (!value) return null;
+  const timestamp = new Date(value).getTime();
+  return Number.isNaN(timestamp) ? null : timestamp;
+};
+
+const durationToSeconds = (duration?: string) => {
+  if (!duration) return null;
+  const parts = duration.split(":").map((part) => Number(part));
+  if (parts.some((part) => Number.isNaN(part))) return null;
+  return parts.reduce((total, part) => total * 60 + part, 0);
+};
+
+const numericSortDirectionFor = (direction: SortDirection) => (direction === "asc" ? 1 : -1);
 
 const YOUTUBE_OAUTH_SCOPES = [
   "https://www.googleapis.com/auth/youtube.readonly",
@@ -2365,8 +2469,15 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
   const [youtubeGuideOpen, setYoutubeGuideOpen] = useState(false);
   const [instagramGuideOpen, setInstagramGuideOpen] = useState(false);
   const [youtubeAnalytics, setYoutubeAnalytics] = useState<YouTubeAnalyticsSummary | null>(null);
+  const [youtubeWeeklyViews, setYoutubeWeeklyViews] = useState<YouTubeWeeklyViews[]>([]);
+  const [youtubeTopVideos, setYoutubeTopVideos] = useState<YouTubeTopVideoAnalytics[]>([]);
   const [youtubeVideos, setYoutubeVideos] = useState<YouTubeVideoPreview[]>([]);
   const [fetchError, setFetchError] = useState("");
+  const [hoveredWeekIndex, setHoveredWeekIndex] = useState<number | null>(null);
+  const [youtubePerformanceSort, setYoutubePerformanceSort] = useState<{
+    direction: SortDirection;
+    key: YouTubePerformanceSortKey;
+  }>({ direction: "desc", key: "publishedAt" });
 
   // YouTube Credentials States
   const [ytAccessToken, setYtAccessToken] = useState(storedYouTubeAccessToken);
@@ -2380,11 +2491,16 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
   const [ytStatus, setYtStatus] = useState<ServiceConnectionStatus>(initialYouTubeStatus);
 
   // Instagram Credentials States
-  const [igAppId, setIgAppId] = useState(() => localStorage.getItem("reader-ig-app-id") ?? "");
-  const [igAppSecret, setIgAppSecret] = useState(() => localStorage.getItem("reader-ig-app-secret") ?? "");
-  const [igAccessToken, setIgAccessToken] = useState(() => localStorage.getItem("reader-ig-access-token") ?? "");
+  const [igAppId, setIgAppId] = useState("");
+  const [igAppSecret, setIgAppSecret] = useState("");
+  const [igAccessToken, setIgAccessToken] = useState("");
   const [igRedirectUri, setIgRedirectUri] = useState(() => localStorage.getItem("reader-ig-redirect-uri") ?? window.location.origin + "/auth/instagram/callback");
-  const [igStatus, setIgStatus] = useState<ServiceConnectionStatus>(() => (localStorage.getItem("reader-ig-status") as ServiceConnectionStatus) ?? "disconnected");
+  const [igStatus, setIgStatus] = useState<ServiceConnectionStatus>(() => {
+    const stored = localStorage.getItem("reader-ig-status") as ServiceConnectionStatus;
+    if (stored && stored !== "simulated") return stored;
+    if (import.meta.env.VITE_INSTAGRAM_ACCESS_TOKEN) return "connected";
+    return "disconnected";
+  });
 
   // Simulated OAuth Modal States
   const [authModalOpen, setAuthModalOpen] = useState(false);
@@ -2392,7 +2508,7 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
   const [authModalStep, setAuthModalStep] = useState(0);
 
   // Simulated Content Feed States
-  const [activeFeedTab, setActiveFeedTab] = useState<"youtube" | "instagram">("youtube");
+  const [activeFeedTab, setActiveFeedTab] = useState<"youtube" | "weekly" | "instagram">("youtube");
   const [feedLoading, setFeedLoading] = useState(false);
   const [feedFetched, setFeedFetched] = useState(false);
 
@@ -2411,6 +2527,187 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
     const remainder = seconds % 60;
     return `${minutes}:${String(remainder).padStart(2, "0")}`;
   };
+
+  const formatPublishDate = (value?: string) => {
+    if (!value) return "-";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", year: "numeric" }).format(date);
+  };
+
+  const formatShortDate = (value: string) => {
+    const date = new Date(`${value}T00:00:00Z`);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", timeZone: "UTC" }).format(date);
+  };
+
+  const formatAnalyticsPercent = (value: number) =>
+    `${new Intl.NumberFormat("en-GB", { maximumFractionDigits: 1 }).format(value || 0)}%`;
+
+  const formatOptionalAnalyticsNumber = (value: number | null) =>
+    value === null ? "-" : formatAnalyticsNumber(value);
+
+  const formatOptionalAnalyticsPercent = (value: number | null) =>
+    value === null ? "-" : formatAnalyticsPercent(value);
+
+  const formatViews = useCallback((views: string | number) => {
+    if (typeof views === "string" && (views.includes("K") || views.includes("M") || views.includes("views"))) {
+      return views;
+    }
+    const count = Number(views);
+    if (Number.isNaN(count) || count <= 0) return "No views";
+    if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M views`;
+    if (count >= 1000) return `${(count / 1000).toFixed(1)}K views`;
+    return `${count} views`;
+  }, []);
+
+  const videoDetailsById = useMemo(
+    () => new Map(youtubeVideos.map((video) => [video.id, video])),
+    [youtubeVideos]
+  );
+
+  const youtubeAnalyticsRows = useMemo(() => {
+    const totalViews = youtubeAnalytics?.views ?? 0;
+    const totalWatchMinutes = youtubeAnalytics?.estimatedMinutesWatched ?? 0;
+    const totalSubscribers = youtubeAnalytics
+      ? youtubeAnalytics.subscribersGained - youtubeAnalytics.subscribersLost
+      : 0;
+
+    return youtubeTopVideos.map((row, index) => {
+      const details = videoDetailsById.get(row.video);
+      const netSubscribers = Number(row.subscribersGained ?? 0) - Number(row.subscribersLost ?? 0);
+
+      return {
+        averageViewPercentage: Number(row.averageViewPercentage ?? 0),
+        color: ["#3b82f6", "#84cc16", "#eab308", "#a855f7", "#f43f5e"][index % 5],
+        duration: details?.duration ?? formatDurationSeconds(Number(row.averageViewDuration ?? 0)),
+        id: row.video,
+        imageUrl: details?.imageUrl ?? "https://images.unsplash.com/photo-1516979187457-637abb4f9353?w=600",
+        impressions: row.impressions === null ? null : Number(row.impressions ?? 0),
+        impressionsClickThroughRate: row.impressionsClickThroughRate === null ? null : Number(row.impressionsClickThroughRate ?? 0),
+        publishedAt: details?.publishedAt,
+        stayedToWatch: Number(row.views ?? 0) ? (Number(row.engagedViews ?? 0) / Number(row.views ?? 0)) * 100 : 0,
+        subscribers: netSubscribers,
+        subscriberShare: totalSubscribers ? (netSubscribers / totalSubscribers) * 100 : 0,
+        title: details?.title ?? row.video,
+        views: Number(row.views ?? 0),
+        viewsShare: totalViews ? (Number(row.views ?? 0) / totalViews) * 100 : 0,
+        watchHours: Number(row.estimatedMinutesWatched ?? 0) / 60,
+        watchTimeShare: totalWatchMinutes ? (Number(row.estimatedMinutesWatched ?? 0) / totalWatchMinutes) * 100 : 0
+      };
+    });
+  }, [formatDurationSeconds, videoDetailsById, youtubeAnalytics, youtubeTopVideos]);
+
+  const sortedYoutubeAnalyticsRows = useMemo(() => {
+    if (!youtubePerformanceSort) return youtubeAnalyticsRows;
+
+    const { direction, key } = youtubePerformanceSort;
+    const multiplier = numericSortDirectionFor(direction);
+
+    return [...youtubeAnalyticsRows].sort((left, right) => {
+      let result = 0;
+
+      if (key === "title") {
+        result = compareText(left.title, right.title);
+      } else if (key === "duration") {
+        result = compareNullableNumber(durationToSeconds(left.duration), durationToSeconds(right.duration));
+      } else if (key === "publishedAt") {
+        result = compareNullableNumber(timestampFromDate(left.publishedAt), timestampFromDate(right.publishedAt));
+      } else {
+        result = compareNullableNumber(left[key], right[key]);
+      }
+
+      return result === 0 ? compareText(left.title, right.title) : result * multiplier;
+    });
+  }, [youtubeAnalyticsRows, youtubePerformanceSort]);
+
+  const toggleYoutubePerformanceSort = (key: YouTubePerformanceSortKey) => {
+    setYoutubePerformanceSort((current) => {
+      const defaultDirection: SortDirection = key === "title" || key === "duration" || key === "publishedAt" ? "asc" : "desc";
+      if (!current || current.key !== key) return { key, direction: defaultDirection };
+      return { key, direction: current.direction === "asc" ? "desc" : "asc" };
+    });
+  };
+
+  const youtubeSortButton = (key: YouTubePerformanceSortKey, label: string) => {
+    const active = youtubePerformanceSort?.key === key;
+    const direction = active ? youtubePerformanceSort.direction : undefined;
+
+    return (
+      <button
+        aria-label={`Sort by ${label}${active ? ` ${direction === "asc" ? "descending" : "ascending"}` : ""}`}
+        aria-sort={active ? (direction === "asc" ? "ascending" : "descending") : "none"}
+        className={`table-sort-button ${active ? "active" : ""}`}
+        onClick={() => toggleYoutubePerformanceSort(key)}
+        type="button"
+      >
+        <span>{label}</span>
+        <span className="table-sort-indicator" aria-hidden="true">
+          {active ? (direction === "asc" ? <ChevronUpIcon /> : <ChevronDownIcon />) : <span className="table-sort-placeholder" />}
+        </span>
+      </button>
+    );
+  };
+
+  const youtubeAnalyticsTotals = useMemo(() => {
+    const rows = youtubeAnalyticsRows;
+    const impressionRows = rows.filter((row) => row.impressions !== null && row.impressionsClickThroughRate !== null);
+    const impressions = impressionRows.reduce((total, row) => total + (row.impressions ?? 0), 0);
+    const weightedCtr = impressions
+      ? impressionRows.reduce((total, row) => total + (row.impressionsClickThroughRate ?? 0) * (row.impressions ?? 0), 0) / impressions
+      : null;
+
+    return {
+      averageViewPercentage: youtubeAnalytics?.averageViewPercentage ?? 0,
+      impressions: impressionRows.length ? impressions : null,
+      impressionsClickThroughRate: weightedCtr,
+      stayedToWatch: youtubeAnalytics?.views ? (Number(youtubeAnalytics.engagedViews ?? 0) / youtubeAnalytics.views) * 100 : 0,
+      subscribers: youtubeAnalytics ? youtubeAnalytics.subscribersGained - youtubeAnalytics.subscribersLost : 0,
+      views: youtubeAnalytics?.views ?? 0,
+      watchHours: (youtubeAnalytics?.estimatedMinutesWatched ?? 0) / 60
+    };
+  }, [youtubeAnalytics, youtubeAnalyticsRows]);
+
+  const weeklyViewsTotal = useMemo(
+    () => youtubeWeeklyViews.reduce((total, week) => total + Number(week.views ?? 0), 0),
+    [youtubeWeeklyViews]
+  );
+
+  const getLinkedIgViewsForWeek = useCallback((startDateStr: string, endDateStr: string): number => {
+    try {
+      const cachedIgPostsRaw = localStorage.getItem("reader-ig-posts-cache");
+      const igPosts: InstagramPostPreview[] = cachedIgPostsRaw ? JSON.parse(cachedIgPostsRaw) : [];
+      const links: Record<string, string> = JSON.parse(localStorage.getItem("reader-ig-yt-links") || "{}");
+
+      if (!igPosts.length) return 0;
+
+      const start = new Date(startDateStr);
+      const end = new Date(endDateStr);
+      start.setHours(0, 0, 0, 0);
+      end.setHours(23, 59, 59, 999);
+
+      return igPosts
+        .filter((post) => {
+          if (!post.publishedAt || !links[post.id]) return false;
+          const pubDate = new Date(post.publishedAt);
+          pubDate.setHours(0, 0, 0, 0);
+          return pubDate >= start && pubDate <= end;
+        })
+        .reduce((sum, post) => sum + (post.views ?? 0), 0);
+    } catch (e) {
+      console.error("Error aggregating Instagram views:", e);
+      return 0;
+    }
+  }, []);
+
+  const weeklyIgViewsTotal = useMemo(() => {
+    return youtubeWeeklyViews.reduce((total, week) => total + getLinkedIgViewsForWeek(week.startDate, week.endDate), 0);
+  }, [youtubeWeeklyViews, getLinkedIgViewsForWeek]);
+
+  const weeklyViewsMax = useMemo(
+    () => Math.max(...youtubeWeeklyViews.map((week) => Number(week.views ?? 0)), 0),
+    [youtubeWeeklyViews]
+  );
 
   const handleYtOAuth = () => {
     const clientId = ytClientId.trim();
@@ -2456,7 +2753,7 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
     }
   };
 
-  const handleSimulateConnection = (type: "youtube" | "instagram") => {
+  const handleSimulateConnection = (type: "youtube") => {
     setAuthModalType(type);
     setAuthModalStep(0);
     setAuthModalOpen(true);
@@ -2466,27 +2763,15 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
       setTimeout(() => {
         setAuthModalStep(index + 1);
         if (index === 3) {
-          // Success
-          if (type === "youtube") {
-            setYtStatus("simulated");
-            localStorage.setItem("reader-yt-status", "simulated");
-            setYtChannel("@youtube");
-            setYtAccessToken("");
-            setYtClientId(YOUTUBE_DEFAULT_CLIENT_ID || LEGACY_YOUTUBE_CLIENT_ID);
-            localStorage.setItem("reader-yt-channel", "@youtube");
-            localStorage.setItem("reader-yt-client-id", YOUTUBE_DEFAULT_CLIENT_ID || LEGACY_YOUTUBE_CLIENT_ID);
-            localStorage.removeItem("reader-yt-api-key");
-            localStorage.removeItem("reader-yt-access-token");
-          } else {
-            setIgStatus("simulated");
-            localStorage.setItem("reader-ig-status", "simulated");
-            setIgAppId("1928374928374");
-            setIgAppSecret("fakeinstagramappsecret_928374928374");
-            setIgAccessToken("IGQVJFakeInstagramToken_102938401928340918230918230912");
-            localStorage.setItem("reader-ig-app-id", "1928374928374");
-            localStorage.setItem("reader-ig-app-secret", "fakeinstagramappsecret_928374928374");
-            localStorage.setItem("reader-ig-access-token", "IGQVJFakeInstagramToken_102938401928340918230918230912");
-          }
+          setYtStatus("simulated");
+          localStorage.setItem("reader-yt-status", "simulated");
+          setYtChannel("@youtube");
+          setYtAccessToken("");
+          setYtClientId(YOUTUBE_DEFAULT_CLIENT_ID || LEGACY_YOUTUBE_CLIENT_ID);
+          localStorage.setItem("reader-yt-channel", "@youtube");
+          localStorage.setItem("reader-yt-client-id", YOUTUBE_DEFAULT_CLIENT_ID || LEGACY_YOUTUBE_CLIENT_ID);
+          localStorage.removeItem("reader-yt-api-key");
+          localStorage.removeItem("reader-yt-access-token");
         }
       }, time);
     });
@@ -2533,13 +2818,7 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
       return `${minutes}:${String(seconds).padStart(2, "0")}`;
     };
 
-    const formatViews = (views: string | number) => {
-      const count = Number(views);
-      if (Number.isNaN(count) || count <= 0) return "No views";
-      if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M views`;
-      if (count >= 1000) return `${(count / 1000).toFixed(1)}K views`;
-      return `${count} views`;
-    };
+
 
     const formatTimeAgo = (dateStr: string) => {
       if (!dateStr) return "";
@@ -2567,10 +2846,65 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
       return "just now";
     };
 
-    if (activeFeedTab === "youtube") {
+    if (activeFeedTab === "youtube" || activeFeedTab === "weekly") {
       if (ytStatus === "simulated") {
         setTimeout(() => {
           setYoutubeVideos(youtubeMockVideos);
+          setYoutubeAnalytics({
+            views: 124500,
+            estimatedMinutesWatched: 864500,
+            averageViewDuration: 418,
+            averageViewPercentage: 54.5,
+            engagedViews: 82000,
+            subscribersGained: 1420,
+            subscribersLost: 85,
+          });
+          setYoutubeWeeklyViews([
+            { startDate: "2026-04-20", endDate: "2026-04-26", views: 24500 },
+            { startDate: "2026-04-27", endDate: "2026-05-03", views: 28900 },
+            { startDate: "2026-05-04", endDate: "2026-05-10", views: 18400 },
+            { startDate: "2026-05-11", endDate: "2026-05-17", views: 32400 },
+            { startDate: "2026-05-18", endDate: "2026-05-24", views: 38200 },
+            { startDate: "2026-05-25", endDate: "2026-05-31", views: 42100 },
+          ]);
+          setYoutubeTopVideos([
+            {
+              video: "yt-4",
+              views: 42100,
+              estimatedMinutesWatched: 210000,
+              averageViewDuration: 300,
+              averageViewPercentage: 52,
+              subscribersGained: 280,
+              subscribersLost: 15,
+              engagedViews: 22000,
+              impressions: 480000,
+              impressionsClickThroughRate: 5.8
+            },
+            {
+              video: "yt-3",
+              views: 38200,
+              estimatedMinutesWatched: 174000,
+              averageViewDuration: 270,
+              averageViewPercentage: 58,
+              subscribersGained: 210,
+              subscribersLost: 10,
+              engagedViews: 19000,
+              impressions: 390000,
+              impressionsClickThroughRate: 6.2
+            },
+            {
+              video: "yt-1",
+              views: 32400,
+              estimatedMinutesWatched: 144000,
+              averageViewDuration: 266,
+              averageViewPercentage: 48,
+              subscribersGained: 180,
+              subscribersLost: 8,
+              engagedViews: 15000,
+              impressions: 310000,
+              impressionsClickThroughRate: 4.9
+            }
+          ]);
           setFeedLoading(false);
           setFeedFetched(true);
         }, 1500);
@@ -2581,13 +2915,25 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
       const isOAuth = Boolean(token);
 
       try {
-        const loadYouTubeAnalytics = async () => {
-          const { data, error } = await supabase.functions.invoke("youtube-analytics", {
-            body: { channel: ytChannel.trim() || "@ilumereader" }
-          });
+        const loadYouTubeAnalytics = async (videosForAnalytics: YouTubeVideoPreview[] = youtubeVideos) => {
+          try {
+            const { data, error } = await supabase.functions.invoke("youtube-analytics", {
+              body: {
+                channel: ytChannel.trim() || "@ilumereader",
+                videoIds: videosForAnalytics.map((video) => video.id).filter(Boolean)
+              }
+            });
 
-          if (error) throw new Error(await edgeFunctionErrorMessage(error));
-          setYoutubeAnalytics(data?.summary ?? null);
+            if (error) throw new Error(await edgeFunctionErrorMessage(error));
+            setYoutubeAnalytics(data?.summary ?? null);
+            setYoutubeWeeklyViews(data?.weeklyViews ?? []);
+            setYoutubeTopVideos(data?.topVideos ?? []);
+          } catch (error) {
+            console.info("YouTube Analytics unavailable:", error);
+            setYoutubeAnalytics(null);
+            setYoutubeWeeklyViews([]);
+            setYoutubeTopVideos([]);
+          }
         };
 
         if (!token) {
@@ -2598,10 +2944,10 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
           if (error) throw new Error(await edgeFunctionErrorMessage(error));
 
           setYoutubeVideos(data?.videos ?? []);
-          await loadYouTubeAnalytics();
           setYtStatus("connected");
           localStorage.setItem("reader-yt-status", "connected");
           setFeedFetched(true);
+          await loadYouTubeAnalytics(data?.videos ?? []);
           return;
         }
 
@@ -2683,7 +3029,9 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
             const videosData = await videosRes.json();
             (videosData.items ?? []).forEach((v: any) => {
               statsMap.set(v.id, {
-                views: formatViews(v.statistics?.viewCount),
+                comments: v.statistics?.commentCount || "0",
+                likes: v.statistics?.likeCount || "0",
+                views: v.statistics?.viewCount || "0",
                 duration: parseISO8601Duration(v.contentDetails?.duration)
               });
             });
@@ -2692,20 +3040,23 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
 
         const parsedVideos = items.map((item: any) => {
           const vId = item.contentDetails?.videoId;
-          const stats = statsMap.get(vId) ?? { views: "0 views", duration: "10:00" };
+          const stats = statsMap.get(vId) ?? { comments: "0", likes: "0", views: "0 views", duration: "10:00" };
           return {
-            id: item.id,
+            comments: stats.comments,
+            id: vId || item.id,
             title: item.snippet?.title ?? "Untitled Video",
             duration: stats.duration,
+            likes: stats.likes,
             views: stats.views,
+            publishedAt: item.snippet?.publishedAt ?? "",
             published: formatTimeAgo(item.snippet?.publishedAt),
             imageUrl: item.snippet?.thumbnails?.high?.url ?? item.snippet?.thumbnails?.medium?.url ?? "https://images.unsplash.com/photo-1516979187457-637abb4f9353?w=600"
           };
         });
 
         setYoutubeVideos(parsedVideos);
-        await loadYouTubeAnalytics();
         setFeedFetched(true);
+        await loadYouTubeAnalytics(parsedVideos);
       } catch (err) {
         console.error("YouTube API retrieval failed:", err);
         setFetchError(err instanceof Error ? err.message : "Failed to load real YouTube uploads.");
@@ -2713,11 +3064,8 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
         setFeedLoading(false);
       }
     } else {
-      // Instagram feed mock
-      setTimeout(() => {
-        setFeedLoading(false);
-        setFeedFetched(true);
-      }, 1500);
+      setFeedLoading(false);
+      setFeedFetched(true);
     }
   };
 
@@ -2725,13 +3073,37 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
     void handleFetchFeed();
   }, [refreshSignal]);
 
+  useEffect(() => {
+    const listToCache = youtubeVideos.length ? youtubeVideos : youtubeMockVideos;
+    localStorage.setItem("reader-yt-videos-cache", JSON.stringify(listToCache));
+  }, [youtubeVideos]);
+
+  useEffect(() => {
+    const listToCache = youtubeWeeklyViews.length ? youtubeWeeklyViews : [
+      { startDate: "2026-04-20", endDate: "2026-04-26", views: 24500 },
+      { startDate: "2026-04-27", endDate: "2026-05-03", views: 28900 },
+      { startDate: "2026-05-04", endDate: "2026-05-10", views: 18400 },
+      { startDate: "2026-05-11", endDate: "2026-05-17", views: 32400 },
+      { startDate: "2026-05-18", endDate: "2026-05-24", views: 38200 },
+      { startDate: "2026-05-25", endDate: "2026-05-31", views: 42100 },
+    ];
+    localStorage.setItem("reader-yt-weekly-views-cache", JSON.stringify(listToCache));
+  }, [youtubeWeeklyViews]);
+
+  useEffect(() => {
+    localStorage.setItem("reader-yt-analytics-cache", JSON.stringify(youtubeTopVideos));
+  }, [youtubeTopVideos]);
+
   // Mock Data
   const youtubeMockVideos = [
     {
       id: "yt-1",
       title: "Building a modern PDF & ePub Reader with Supabase",
       duration: "14:22",
+      likes: 820,
+      comments: 64,
       views: "12.4K views",
+      publishedAt: "2026-05-25T10:00:00Z",
       published: "3 days ago",
       imageUrl: "https://images.unsplash.com/photo-1516979187457-637abb4f9353?w=600&auto=format&fit=crop&q=60"
     },
@@ -2739,7 +3111,10 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
       id: "yt-2",
       title: "How to deploy Supabase Edge Functions in 5 minutes",
       duration: "8:05",
+      likes: 510,
+      comments: 38,
       views: "8.2K views",
+      publishedAt: "2026-05-21T10:00:00Z",
       published: "1 week ago",
       imageUrl: "https://images.unsplash.com/photo-1555066931-4365d14bab8c?w=600&auto=format&fit=crop&q=60"
     },
@@ -2747,7 +3122,10 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
       id: "yt-3",
       title: "Aesthetic Web Design: HSL gradients & glassmorphism",
       duration: "22:40",
+      likes: 1300,
+      comments: 112,
       views: "24.5K views",
+      publishedAt: "2026-05-14T10:00:00Z",
       published: "2 weeks ago",
       imageUrl: "https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?w=600&auto=format&fit=crop&q=60"
     },
@@ -2755,300 +3133,18 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
       id: "yt-4",
       title: "Next.js 15 vs. Vanilla React: The complete performance audit",
       duration: "18:15",
+      likes: 940,
+      comments: 76,
       views: "15.9K views",
+      publishedAt: "2026-04-28T10:00:00Z",
       published: "1 month ago",
       imageUrl: "https://images.unsplash.com/photo-1633356122544-f134324a6cee?w=600&auto=format&fit=crop&q=60"
     }
   ];
 
-  const instagramMockPosts = [
-    {
-      id: "ig-1",
-      caption: "Developing our next-gen reading environment. The details make all the difference. ✨📚 #webdev #design #javascript #supabase",
-      likes: 482,
-      comments: 38,
-      imageUrl: "https://images.unsplash.com/photo-1531403009284-440f080d1e12?w=600&auto=format&fit=crop&q=60"
-    },
-    {
-      id: "ig-2",
-      caption: "Dark mode is finally complete! Soft contrasts, gold brand accents, and customizable line lengths. Which themes do you read with? 🌙",
-      likes: 591,
-      comments: 47,
-      imageUrl: "https://images.unsplash.com/photo-1542744094-3a31f103e35f?w=600&auto=format&fit=crop&q=60"
-    },
-    {
-      id: "ig-3",
-      caption: "Supabase database migrations and storage structures scaling flawlessly to 10k monthly active readers. Real-time metrics are now live. 🚀",
-      likes: 320,
-      comments: 19,
-      imageUrl: "https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=600&auto=format&fit=crop&q=60"
-    },
-    {
-      id: "ig-4",
-      caption: "A visual showcase of generated imagery inline with ePub paragraphs. Read your stories with automatic context-aware painting. 🎨🤖",
-      likes: 643,
-      comments: 52,
-      imageUrl: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600&auto=format&fit=crop&q=60"
-    }
-  ];
-
   return (
     <div className="content-integrations-section">
-      {false && (
-      <>
-      <div className="integrations-grid">
-        {/* YOUTUBE CARD */}
-        <div className="integration-card youtube">
-          <div className="integration-header">
-            <div className="integration-brand">
-              <div className="integration-brand-icon youtube">
-                <YouTubeIcon />
-              </div>
-              <div className="integration-brand-info">
-                <h2>YouTube API</h2>
-                <p>Sync video content & statistics</p>
-              </div>
-            </div>
-            {ytStatus === "connected" && <span className="status-badge connected">Connected</span>}
-            {ytStatus === "simulated" && <span className="status-badge simulated">Demo Connected</span>}
-            {ytStatus === "disconnected" && <span className="status-badge disconnected">Disconnected</span>}
-          </div>
 
-          <div className="credentials-form">
-            <div className="form-group">
-              <label>YouTube channel URL, handle, or ID</label>
-              <input
-                type="text"
-                placeholder="@yourhandle or https://youtube.com/@yourhandle"
-                value={ytChannel}
-                onChange={(e) => setYtChannel(e.target.value)}
-              />
-            </div>
-            <div className="form-group">
-              <label>OAuth 2.0 Client ID</label>
-              <input
-                type="text"
-                placeholder="Google Client ID..."
-                value={ytClientId}
-                onChange={(e) => setYtClientId(e.target.value)}
-              />
-            </div>
-          </div>
-
-          <div className="integration-actions" style={{ flexWrap: 'wrap', gap: 8 }}>
-            <>
-              <button className="dashboard-secondary-button" onClick={() => handleSaveYtCreds()} type="button" style={{ flexGrow: 1 }}>
-                Save Settings
-              </button>
-              <button className="dashboard-toggle active" onClick={() => handleYtOAuth()} type="button" style={{ flexGrow: 2, background: '#2563eb', borderColor: '#2563eb', color: '#fff' }}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }}>
-                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-                  <polyline points="15 3 21 3 21 9"></polyline>
-                  <line x1="10" y1="14" x2="21" y2="3"></line>
-                </svg>
-                <span>Link Live Google Account</span>
-              </button>
-              {ytStatus !== "disconnected" && (
-                <button className="dashboard-secondary-button" onClick={() => handleDisconnect("youtube")} type="button" style={{ flexGrow: 1, borderColor: '#fecaca', color: '#991b1b' }}>
-                  Disconnect API Link
-                </button>
-              )}
-              <button className="dashboard-secondary-button" onClick={() => handleSimulateConnection("youtube")} type="button" style={{ flexGrow: 1, width: '100%' }}>
-                Simulate OAuth Demo
-              </button>
-            </>
-          </div>
-        </div>
-
-        {/* INSTAGRAM CARD */}
-        <div className="integration-card instagram">
-          <div className="integration-header">
-            <div className="integration-brand">
-              <div className="integration-brand-icon instagram">
-                <InstagramIcon />
-              </div>
-              <div className="integration-brand-info">
-                <h2>Instagram API</h2>
-                <p>Sync photo feeds & social metrics</p>
-              </div>
-            </div>
-            {igStatus === "connected" && <span className="status-badge connected">Connected</span>}
-            {igStatus === "simulated" && <span className="status-badge simulated">Demo Connected</span>}
-            {igStatus === "disconnected" && <span className="status-badge disconnected">Disconnected</span>}
-          </div>
-
-          <div className="credentials-form">
-            <div className="form-group">
-              <label>App ID (Meta App ID)</label>
-              <input
-                type="text"
-                placeholder="Meta App ID..."
-                value={igAppId}
-                onChange={(e) => setIgAppId(e.target.value)}
-              />
-            </div>
-            <div className="form-group">
-              <label>App Secret</label>
-              <input
-                type="password"
-                placeholder="Meta App Secret..."
-                value={igAppSecret}
-                onChange={(e) => setIgAppSecret(e.target.value)}
-              />
-            </div>
-            <div className="form-group">
-              <label>Long-Lived Access Token</label>
-              <input
-                type="password"
-                placeholder="IGQVJ..."
-                value={igAccessToken}
-                onChange={(e) => setIgAccessToken(e.target.value)}
-              />
-            </div>
-          </div>
-
-          <div className="integration-actions">
-            {igStatus === "disconnected" ? (
-              <>
-                <button className="dashboard-secondary-button" onClick={() => handleSaveIgCreds()} type="button">
-                  Save Credentials
-                </button>
-                <button className="dashboard-toggle active" onClick={() => handleSimulateConnection("instagram")} type="button">
-                  Simulate OAuth Connection
-                </button>
-              </>
-            ) : (
-              <button className="dashboard-secondary-button" onClick={() => handleDisconnect("instagram")} type="button" style={{ borderColor: '#fecaca', color: '#991b1b' }}>
-                Disconnect API Link
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* DOCUMENTATION SECTION ACCORDIONS */}
-      <div className="accordion-container">
-        {/* YOUTUBE GUIDE ACCORDION */}
-        <div className="accordion-item">
-          <div className="accordion-header" onClick={() => { setInstagramGuideOpen(false); setYoutubeGuideOpen(!youtubeGuideOpen); }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <YouTubeIcon />
-              <span>Step-by-Step: YouTube Data API v3 Auth Guide</span>
-            </div>
-            <div>{youtubeGuideOpen ? <ChevronUpIcon /> : <ChevronDownIcon />}</div>
-          </div>
-          {youtubeGuideOpen && (
-            <div className="accordion-content">
-              <div className="accordion-step">
-                <div className="step-number">1</div>
-                <div className="step-details">
-                  <h3>Create a Google Cloud Project</h3>
-                  <p>Go to the Google Cloud Console, click the project selector, and select "New Project". Give your project a descriptive name (e.g. <code>illume-reader-api</code>) and choose an organization if required.</p>
-                  <a href="https://console.cloud.google.com/" target="_blank" rel="noopener noreferrer" className="dashboard-kicker" style={{ display: 'inline-flex', alignItems: 'center', marginTop: 6, color: '#2563eb' }}>
-                    <span>Open Google Cloud Console</span>
-                    <ExternalLinkIcon />
-                  </a>
-                </div>
-              </div>
-
-              <div className="accordion-step">
-                <div className="step-number">2</div>
-                <div className="step-details">
-                  <h3>Enable the YouTube Data API v3</h3>
-                  <p>In your Google Cloud Project dashboard, click the navigation menu and head to **APIs & Services &gt; Library**. Search for **YouTube Data API v3**, select it, and click **Enable**.</p>
-                </div>
-              </div>
-
-              <div className="accordion-step">
-                <div className="step-number">3</div>
-                <div className="step-details">
-                  <h3>Configure OAuth Consent Screen</h3>
-                  <p>Navigate to **APIs & Services &gt; OAuth consent screen**. Select **External** as user type, fill out the required App details (App Name, Support email). In the **Scopes** section, add the following scope required to read a user's content feed:</p>
-                  <div className="copy-snippet">
-                    <span>{YOUTUBE_OAUTH_SCOPE}</span>
-                    <button onClick={() => copyToClipboard(YOUTUBE_OAUTH_SCOPE, "yt-scope")} type="button">
-                      {copiedId === "yt-scope" ? <CheckIcon /> : <CopyIcon />}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="accordion-step">
-                <div className="step-number">4</div>
-                <div className="step-details">
-                  <h3>Create OAuth Client Credentials</h3>
-                  <p>Go to **APIs & Services &gt; Credentials**. Click **+ Create Credentials** and select **OAuth client ID**. Choose **Web application** as application type. Under **Authorized redirect URIs**, add your application's callback URI:</p>
-                  <div className="copy-snippet">
-                    <span>{ytRedirectUri}</span>
-                    <button onClick={() => copyToClipboard(ytRedirectUri, "yt-redirect")} type="button">
-                      {copiedId === "yt-redirect" ? <CheckIcon /> : <CopyIcon />}
-                    </button>
-                  </div>
-                  <p style={{ marginTop: 8 }}>Copy the generated <strong>Client ID</strong> and <strong>Client Secret</strong> into the YouTube configuration panel above, or click "Simulate Connection" to automatically configure a demo account.</p>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* INSTAGRAM GUIDE ACCORDION */}
-        <div className="accordion-item">
-          <div className="accordion-header" onClick={() => { setYoutubeGuideOpen(false); setInstagramGuideOpen(!instagramGuideOpen); }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <InstagramIcon />
-              <span>Step-by-Step: Instagram Graph API Auth Guide</span>
-            </div>
-            <div>{instagramGuideOpen ? <ChevronUpIcon /> : <ChevronDownIcon />}</div>
-          </div>
-          {instagramGuideOpen && (
-            <div className="accordion-content">
-              <div className="accordion-step">
-                <div className="step-number">1</div>
-                <div className="step-details">
-                  <h3>Register a Meta for Developers Account</h3>
-                  <p>Head to the Meta Developer Portal and register as a developer. Click **My Apps** and select **Create App**. Select **Business** or **Consumer** as your use case depending on whether you are integrating an Instagram Business account or Consumer display account.</p>
-                  <a href="https://developers.facebook.com/" target="_blank" rel="noopener noreferrer" className="dashboard-kicker" style={{ display: 'inline-flex', alignItems: 'center', marginTop: 6, color: '#2563eb' }}>
-                    <span>Open Meta for Developers</span>
-                    <ExternalLinkIcon />
-                  </a>
-                </div>
-              </div>
-
-              <div className="accordion-step">
-                <div className="step-number">2</div>
-                <div className="step-details">
-                  <h3>Add Facebook Login & Instagram Graph API</h3>
-                  <p>In your App dashboard, locate **Add Products**. Click **Set Up** on **Facebook Login** and **Instagram Graph API**. Ensure your Instagram Professional/Business account is fully linked to an active Facebook Page that you own.</p>
-                </div>
-              </div>
-
-              <div className="accordion-step">
-                <div className="step-number">3</div>
-                <div className="step-details">
-                  <h3>Configure OAuth redirect URIs</h3>
-                  <p>Go to **Facebook Login &gt; Settings**. In **Valid OAuth Redirect URIs**, insert your application callback redirect route:</p>
-                  <div className="copy-snippet">
-                    <span>{igRedirectUri}</span>
-                    <button onClick={() => copyToClipboard(igRedirectUri, "ig-redirect")} type="button">
-                      {copiedId === "ig-redirect" ? <CheckIcon /> : <CopyIcon />}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="accordion-step">
-                <div className="step-number">4</div>
-                <div className="step-details">
-                  <h3>Generate Instagram User Access Token</h3>
-                  <p>In Meta Developer Tools, use the **Graph API Explorer** to select your linked Facebook Page. Request permissions <code>instagram_basic</code> and <code>pages_show_list</code>. Swap the short-lived user token for a **Long-Lived Access Token** (valid for 60 days) using the access token tool, and paste it into the Instagram configuration panel above.</p>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-      </>
-      )}
 
       {/* FEED TESTING / PREVIEW SECTION */}
       <div className="preview-feed-section">
@@ -3067,11 +3163,21 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
                 <span>Refresh Content</span>
             )}
           </button>
+          {!youtubeAnalytics && ytStatus !== "disconnected" && (
+            <button className="dashboard-secondary-button" onClick={handleYtOAuth} type="button" style={{ width: 'auto', margin: 0, padding: '0 16px' }}>
+              Link Google
+            </button>
+          )}
         </div>
 
         {fetchError && (
           <div className="dashboard-error" style={{ margin: '0 0 18px 0' }}>
-            {fetchError}
+            <span>{fetchError}</span>
+            {fetchError.toLowerCase().includes("link google") && (
+              <button className="dashboard-secondary-button" onClick={handleYtOAuth} type="button" style={{ width: 'auto', marginLeft: 12, padding: '8px 12px' }}>
+                Link Google
+              </button>
+            )}
           </div>
         )}
 
@@ -3089,69 +3195,141 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
           </div>
         ) : (
           <>
-            {youtubeAnalytics && (
-              <div className="youtube-analytics-grid">
-                <article className="youtube-analytics-card">
-                  <span>Views</span>
-                  <strong>{formatAnalyticsNumber(youtubeAnalytics.views)}</strong>
-                </article>
-                <article className="youtube-analytics-card">
-                  <span>Watch time</span>
-                  <strong>{formatAnalyticsNumber(youtubeAnalytics.estimatedMinutesWatched)} min</strong>
-                </article>
-                <article className="youtube-analytics-card">
-                  <span>Avg view duration</span>
-                  <strong>{formatDurationSeconds(youtubeAnalytics.averageViewDuration)}</strong>
-                </article>
-                <article className="youtube-analytics-card">
-                  <span>Avg viewed</span>
-                  <strong>{formatAnalyticsNumber(youtubeAnalytics.averageViewPercentage)}%</strong>
-                </article>
-                <article className="youtube-analytics-card">
-                  <span>Subscribers</span>
-                  <strong>{formatAnalyticsNumber(youtubeAnalytics.subscribersGained - youtubeAnalytics.subscribersLost)}</strong>
-                </article>
-              </div>
-            )}
-
-            <div className="preview-tabs">
-              <button
-                className={`preview-tab-btn ${activeFeedTab === "youtube" ? "active" : ""}`}
-                onClick={() => setActiveFeedTab("youtube")}
-                disabled={ytStatus === "disconnected"}
-                type="button"
-                style={{ opacity: ytStatus === "disconnected" ? 0.4 : 1 }}
-              >
-                YouTube Uploads ({youtubeVideos.length || youtubeMockVideos.length})
-              </button>
-            </div>
-
-            {activeFeedTab === "youtube" && ytStatus !== "disconnected" && (
-              <div className="media-feed-grid">
-                {(youtubeVideos.length ? youtubeVideos : youtubeMockVideos).map((video) => (
-                  <article className="youtube-video-card" key={video.id}>
-                    <div className="video-thumbnail-container">
-                      <img src={video.imageUrl} alt={video.title} />
-                      <span className="video-duration">{video.duration}</span>
-                    </div>
-                    <div className="video-details">
-                      <h4>{video.title}</h4>
-                      <div className="video-stats">
-                        <span>{video.views}</span>
-                        <span>{video.published}</span>
+            {/* 1. YouTube Uploads Grid */}
+            {ytStatus !== "disconnected" && (
+              <div className="uploads-grid-container" style={{ marginBottom: 28 }}>
+                <div className="preview-feed-header" style={{ border: 'none', padding: 0, marginBottom: 16 }}>
+                  <h3>YouTube Uploads ({youtubeVideos.length || youtubeMockVideos.length})</h3>
+                </div>
+                <div className="media-feed-grid">
+                  {(youtubeVideos.length ? youtubeVideos : youtubeMockVideos).map((video) => (
+                    <article className="youtube-video-card" key={video.id}>
+                      <div className="video-thumbnail-container">
+                        <img src={video.imageUrl} alt={video.title} />
+                        <span className="video-duration">{video.duration}</span>
                       </div>
-                    </div>
-                  </article>
-                ))}
+                      <div className="video-details">
+                        <h4>{video.title}</h4>
+                        <div className="video-stats">
+                          <span>{formatViews(video.views)}</span>
+                          <span>{video.published}</span>
+                        </div>
+                        <div className="video-engagement-stats">
+                          <span>
+                            <ThumbsUp size={13} aria-hidden="true" />
+                            {formatAnalyticsNumber(Number(video.likes ?? 0))}
+                          </span>
+                          <span>
+                            <MessageCircle size={13} aria-hidden="true" />
+                            {formatAnalyticsNumber(Number(video.comments ?? 0))}
+                          </span>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
               </div>
             )}
 
+            {/* 2. YouTube Analytics Performance */}
+            {youtubeAnalytics && youtubeAnalyticsRows.length > 0 && (
+              <div className="youtube-analytics-block" style={{ marginTop: 28 }}>
+                <div className="preview-feed-header" style={{ border: 'none', padding: 0, marginBottom: 16 }}>
+                  <h3>YouTube Analytics Performance</h3>
+                </div>
+                <div className="youtube-analytics-grid" style={{ marginBottom: 20 }}>
+                  <article className="youtube-analytics-card">
+                    <span>Views</span>
+                    <strong>{formatAnalyticsNumber(youtubeAnalytics.views)}</strong>
+                  </article>
+                  <article className="youtube-analytics-card">
+                    <span>Watch time</span>
+                    <strong>{formatAnalyticsNumber(youtubeAnalytics.estimatedMinutesWatched)} min</strong>
+                  </article>
+                  <article className="youtube-analytics-card">
+                    <span>Avg view duration</span>
+                    <strong>{formatDurationSeconds(youtubeAnalytics.averageViewDuration)}</strong>
+                  </article>
+                  <article className="youtube-analytics-card">
+                    <span>Avg viewed</span>
+                    <strong>{formatAnalyticsNumber(youtubeAnalytics.averageViewPercentage)}%</strong>
+                  </article>
+                </div>
+
+                <div className="youtube-analytics-table-wrap">
+                  <table className="youtube-analytics-table">
+                    <thead>
+                      <tr>
+                        <th className="content-column metric-help" colSpan={3} data-definition="Video duration, publish date, thumbnail, and title." tabIndex={0}>Content</th>
+                        <th className="metric-help sortable-heading" data-definition="The average percentage of the video watched, weighted by views." tabIndex={0}>{youtubeSortButton("averageViewPercentage", "Average duration watched")}</th>
+                        <th className="metric-help sortable-heading" data-definition="YouTube engaged views divided by views. This approximates how many viewers stayed to watch." tabIndex={0}>{youtubeSortButton("stayedToWatch", "Stayed to watch")}</th>
+                        <th className="metric-help sortable-heading" data-definition="Total YouTube views in the selected analytics period." tabIndex={0}>{youtubeSortButton("views", "Views")}</th>
+                        <th className="metric-help sortable-heading" data-definition="Estimated total hours watched in the selected analytics period." tabIndex={0}>{youtubeSortButton("watchHours", "Watch time (hours)")}</th>
+                        <th className="metric-help sortable-heading" data-definition="How many times YouTube showed the video thumbnail to viewers." tabIndex={0}>{youtubeSortButton("impressions", "Impressions")}</th>
+                        <th className="metric-help sortable-heading" data-definition="The percentage of impressions that became views." tabIndex={0}>{youtubeSortButton("impressionsClickThroughRate", "Impressions click-through rate")}</th>
+                      </tr>
+                      <tr>
+                        <th className="duration-heading metric-help sortable-heading" data-definition="Video length." tabIndex={0}>{youtubeSortButton("duration", "Duration")}</th>
+                        <th className="date-heading metric-help sortable-heading" data-definition="Date the video was published." tabIndex={0}>{youtubeSortButton("publishedAt", "Publishing date")}</th>
+                        <th className="sortable-heading">{youtubeSortButton("title", "Title")}</th>
+                        <th></th>
+                        <th></th>
+                        <th></th>
+                        <th></th>
+                        <th></th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedYoutubeAnalyticsRows.map((row) => (
+                        <tr key={row.id}>
+                          <td className="duration-cell">
+                            <span className="analytics-row-accent" style={{ background: row.color }} />
+                            <span className="analytics-duration-pill">{row.duration}</span>
+                          </td>
+                          <td>{formatPublishDate(row.publishedAt)}</td>
+                          <td className="analytics-content-cell">
+                            <div className="analytics-content-inner">
+                              <img src={row.imageUrl} alt="" />
+                              <span>{row.title}</span>
+                            </div>
+                          </td>
+                          <td>{formatAnalyticsPercent(row.averageViewPercentage)}</td>
+                          <td>{formatAnalyticsPercent(row.stayedToWatch)}</td>
+                          <td>
+                            {formatAnalyticsNumber(row.views)}
+                            <small>{formatAnalyticsPercent(row.viewsShare)}</small>
+                          </td>
+                          <td>
+                            {formatAnalyticsNumber(row.watchHours)}
+                            <small>{formatAnalyticsPercent(row.watchTimeShare)}</small>
+                          </td>
+                          <td>{formatOptionalAnalyticsNumber(row.impressions)}</td>
+                          <td>{formatOptionalAnalyticsPercent(row.impressionsClickThroughRate)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr>
+                        <th colSpan={3}>Total / average</th>
+                        <th>{formatAnalyticsPercent(youtubeAnalyticsTotals.averageViewPercentage)}</th>
+                        <th>{formatAnalyticsPercent(youtubeAnalyticsTotals.stayedToWatch)}</th>
+                        <th>{formatAnalyticsNumber(youtubeAnalyticsTotals.views)}</th>
+                        <th>{formatAnalyticsNumber(youtubeAnalyticsTotals.watchHours)}</th>
+                        <th>{formatOptionalAnalyticsNumber(youtubeAnalyticsTotals.impressions)}</th>
+                        <th>{formatOptionalAnalyticsPercent(youtubeAnalyticsTotals.impressionsClickThroughRate)}</th>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>
 
       {/* SIMULATED OAUTH MODAL BACKDROP */}
-      {false && authModalOpen && (
+      {authModalOpen && (
         <div className="auth-modal-backdrop" onClick={() => setAuthModalOpen(false)}>
           <div className="auth-modal-dialog" onClick={(e) => e.stopPropagation()}>
             <h3>
@@ -3203,6 +3381,429 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
               )}
             </div>
 
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InstagramIntegrationSection({ refreshSignal, onLinksChanged }: { refreshSignal: number; onLinksChanged?: () => void }) {
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [instagramGuideOpen, setInstagramGuideOpen] = useState(false);
+  const [instagramPosts, setInstagramPosts] = useState<InstagramPostPreview[]>([]);
+  const [fetchError, setFetchError] = useState("");
+
+  // Instagram Credentials States
+  const [igAppId, setIgAppId] = useState("");
+  const [igAppSecret, setIgAppSecret] = useState("");
+  const [igAccessToken, setIgAccessToken] = useState("");
+  const [igRedirectUri, setIgRedirectUri] = useState(() => localStorage.getItem("reader-ig-redirect-uri") ?? window.location.origin + "/auth/instagram/callback");
+  const [igStatus, setIgStatus] = useState<ServiceConnectionStatus>(() => {
+    const stored = localStorage.getItem("reader-ig-status") as ServiceConnectionStatus;
+    if (stored && stored !== "simulated") return stored;
+    if (import.meta.env.VITE_INSTAGRAM_ACCESS_TOKEN) return "connected";
+    return "connected";
+  });
+
+  // Simulated OAuth Modal States
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authModalStep, setAuthModalStep] = useState(0);
+
+  // Simulated Content Feed States
+  const [feedLoading, setFeedLoading] = useState(false);
+  const [feedFetched, setFeedFetched] = useState(false);
+
+  // Instagram-to-YouTube Video Linking States
+  const [links, setLinks] = useState<Record<string, string>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("reader-ig-yt-links") || "{}");
+    } catch {
+      return {};
+    }
+  });
+  const [skipped, setSkipped] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("reader-ig-yt-skipped") || "[]");
+    } catch {
+      return [];
+    }
+  });
+  const [manualLinkPost, setManualLinkPost] = useState<InstagramPostPreview | null>(null);
+  const [promptLinkPost, setPromptLinkPost] = useState<InstagramPostPreview | null>(null);
+  const [selectedYtVideoId, setSelectedYtVideoId] = useState("");
+
+  const handleLink = (igId: string, ytId: string) => {
+    const newLinks = { ...links, [igId]: ytId };
+    setLinks(newLinks);
+    localStorage.setItem("reader-ig-yt-links", JSON.stringify(newLinks));
+    setManualLinkPost(null);
+    setPromptLinkPost(null);
+    setSelectedYtVideoId("");
+    if (onLinksChanged) onLinksChanged();
+  };
+
+  const handleUnlink = (igId: string) => {
+    const newLinks = { ...links };
+    delete newLinks[igId];
+    setLinks(newLinks);
+    localStorage.setItem("reader-ig-yt-links", JSON.stringify(newLinks));
+    if (onLinksChanged) onLinksChanged();
+  };
+
+  const handleSkip = (igId: string) => {
+    const newSkipped = [...skipped, igId];
+    setSkipped(newSkipped);
+    localStorage.setItem("reader-ig-yt-skipped", JSON.stringify(newSkipped));
+    setPromptLinkPost(null);
+  };
+
+  const cachedYtVideos: YouTubeVideoPreview[] = useMemo(() => {
+    try {
+      return JSON.parse(localStorage.getItem("reader-yt-videos-cache") || "[]");
+    } catch {
+      return [];
+    }
+  }, [refreshSignal, manualLinkPost]);
+
+  const formatInstagramNumber = (value: number | string | undefined) =>
+    new Intl.NumberFormat("en-GB", { maximumFractionDigits: 1 }).format(Number(value ?? 0) || 0);
+
+  const formatInstagramViews = (views: string | number | undefined) => {
+    const count = Number(views ?? 0);
+    if (Number.isNaN(count) || count <= 0) return "No views";
+    if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M views`;
+    if (count >= 1000) return `${(count / 1000).toFixed(1)}K views`;
+    return `${count} views`;
+  };
+
+  const formatInstagramTimeAgo = (dateStr?: string) => {
+    if (!dateStr) return "";
+    const date = new Date(dateStr);
+    if (Number.isNaN(date.getTime())) return "";
+    const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+    const intervals = [
+      { label: "year", seconds: 31536000 },
+      { label: "month", seconds: 2592000 },
+      { label: "week", seconds: 604800 },
+      { label: "day", seconds: 86400 },
+      { label: "hour", seconds: 3600 },
+      { label: "minute", seconds: 60 }
+    ];
+    const match = intervals.find((interval) => Math.floor(seconds / interval.seconds) >= 1);
+    if (!match) return "just now";
+    const value = Math.floor(seconds / match.seconds);
+    return `${value} ${match.label}${value > 1 ? "s" : ""} ago`;
+  };
+
+  // Automatic Prompt for New Content
+  useEffect(() => {
+    if (!instagramPosts.length) return;
+
+    const latestPost = instagramPosts[0];
+    if (!links[latestPost.id] && !skipped.includes(latestPost.id)) {
+      const timer = setTimeout(() => {
+        setPromptLinkPost(latestPost);
+      }, 800);
+      return () => clearTimeout(timer);
+    }
+  }, [instagramPosts, links, skipped]);
+
+  const copyToClipboard = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const formatAnalyticsNumber = (value: number) =>
+    new Intl.NumberFormat("en-GB", { maximumFractionDigits: value >= 100 ? 0 : 1 }).format(value || 0);
+
+  const formatViews = (views: string | number) => {
+    const count = Number(views);
+    if (Number.isNaN(count) || count <= 0) return "No views";
+    if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M views`;
+    if (count >= 1000) return `${(count / 1000).toFixed(1)}K views`;
+    return `${count} views`;
+  };
+
+  const formatTimeAgo = (dateStr?: string) => {
+    if (!dateStr) return "";
+    const date = new Date(dateStr);
+    const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
+    const intervals = [
+      { label: "year", seconds: 31536000 },
+      { label: "month", seconds: 2592000 },
+      { label: "day", seconds: 86400 },
+      { label: "hour", seconds: 3600 },
+      { label: "minute", seconds: 60 }
+    ];
+    for (const interval of intervals) {
+      const count = Math.floor(seconds / interval.seconds);
+      if (count >= 1) return `${count} ${interval.label}${count > 1 ? "s" : ""} ago`;
+    }
+    return "just now";
+  };
+
+  const handleSaveIgCreds = () => {
+    localStorage.setItem("reader-ig-app-id", igAppId);
+    localStorage.setItem("reader-ig-app-secret", igAppSecret);
+    localStorage.setItem("reader-ig-access-token", igAccessToken);
+    localStorage.setItem("reader-ig-redirect-uri", igRedirectUri);
+    if (igAccessToken || (igAppId && igAppSecret)) {
+      setIgStatus("connected");
+      localStorage.setItem("reader-ig-status", "connected");
+    } else {
+      setIgStatus("disconnected");
+      localStorage.setItem("reader-ig-status", "disconnected");
+    }
+  };
+
+  const handleDisconnect = () => {
+    setIgStatus("disconnected");
+    localStorage.setItem("reader-ig-status", "disconnected");
+    setIgAppId("");
+    setIgAppSecret("");
+    setIgAccessToken("");
+    localStorage.removeItem("reader-ig-app-id");
+    localStorage.removeItem("reader-ig-app-secret");
+    localStorage.removeItem("reader-ig-access-token");
+    localStorage.removeItem("reader-ig-posts-cache");
+    localStorage.removeItem("reader-ig-user-insights-cache");
+    setInstagramPosts([]);
+    setFeedFetched(false);
+  };
+
+  const handleFetchFeed = async () => {
+    setFeedLoading(true);
+    setFetchError("");
+    localStorage.removeItem("reader-ig-user-insights-cache");
+
+    try {
+      const { data, error } = await supabase.functions.invoke("instagram-feed", {
+        body: {}
+      });
+
+      if (error) throw new Error(await edgeFunctionErrorMessage(error));
+
+      console.log("Instagram API response:", data);
+
+      setInstagramPosts((data?.media ?? []).map((item: any) => {
+        console.log(`Post ${item.id} (${item.media_type}):`, {
+          insights: item.insights,
+          like_count: item.like_count,
+          comments_count: item.comments_count,
+          error: item._error
+        });
+        const insightsViews = item.insights?.views || item.insights?.total_views || item.total_views_count || 0;
+        return {
+          averageWatchTime: Number(item.insights?.average_watch_time ?? 0),
+          caption: item.caption ?? "Instagram post",
+          comments: Number(item.insights?.comments ?? item.comments_count ?? 0),
+          follows: Number(item.insights?.follows ?? 0),
+          id: item.id,
+          imageUrl: item.thumbnail_url ?? item.media_url ?? "",
+          likes: Number(item.insights?.likes ?? item.like_count ?? 0),
+          mediaUrl: item.media_url,
+          mediaProductType: item.media_product_type,
+          mediaType: item.media_type,
+          permalink: item.permalink,
+          profileActivity: Number(item.insights?.profile_activity ?? 0),
+          profileVisits: Number(item.insights?.profile_visits ?? 0),
+          publishedAt: item.timestamp ?? item.publishedAt ?? new Date().toISOString(),
+          reach: Number(item.insights?.reach ?? 0),
+          saved: Number(item.insights?.saved ?? 0),
+          shares: Number(item.insights?.shares ?? 0),
+          skipRate: Number(item.insights?.skip_rate ?? 0),
+          totalInteractions: Number(item.insights?.total_interactions ?? 0),
+          totalViewTime: Number(item.insights?.total_view_time ?? 0),
+          views: Number(insightsViews)
+        };
+      }));
+
+      if (data?.userInsightsTimeline) {
+        localStorage.setItem("reader-ig-user-insights-cache", JSON.stringify(data.userInsightsTimeline));
+      } else {
+        localStorage.removeItem("reader-ig-user-insights-cache");
+      }
+
+      setIgStatus("connected");
+      localStorage.setItem("reader-ig-status", "connected");
+      setFeedFetched(true);
+    } catch (err) {
+      console.error("Instagram API retrieval failed:", err);
+      localStorage.removeItem("reader-ig-user-insights-cache");
+      setFetchError(err instanceof Error ? err.message : "Failed to load Instagram feed.");
+    } finally {
+      setFeedLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void handleFetchFeed();
+  }, [refreshSignal]);
+
+  useEffect(() => {
+    localStorage.setItem("reader-ig-posts-cache", JSON.stringify(instagramPosts));
+  }, [instagramPosts]);
+
+  return (
+    <div className="content-integrations-section">
+
+      {/* FEED TESTING / PREVIEW SECTION */}
+      <div className="preview-feed-section">
+        <div className="preview-feed-header">
+          <div>
+            <h2>Instagram Media Feed</h2>
+            <p>Latest posts fetched automatically using your connection credentials.</p>
+          </div>
+          <button className="dashboard-primary-button" onClick={() => handleFetchFeed()} disabled={feedLoading} type="button" style={{ width: 'auto', margin: 0, padding: '0 16px' }}>
+            {feedLoading ? (
+              <>
+                <Loader2 className="spin" size={16} aria-hidden="true" />
+                <span>Pulling API Content...</span>
+              </>
+            ) : (
+                <span>Refresh Content</span>
+            )}
+          </button>
+        </div>
+
+        {fetchError && (
+          <div className="dashboard-error" style={{ margin: '0 0 18px 0' }}>
+            {fetchError}
+          </div>
+        )}
+
+        {igStatus === "disconnected" ? (
+          <div className="dashboard-sparkline-empty" style={{ minHeight: 140 }}>
+            <InfoIcon />
+            <span style={{ marginTop: 8, fontWeight: 700 }}>No Instagram source is connected.</span>
+            <small style={{ color: '#64748b', marginTop: 4 }}>Configure an API credential in your environment, then refresh this tab to pull the latest items.</small>
+          </div>
+        ) : !feedFetched ? (
+          <div className="dashboard-sparkline-empty" style={{ minHeight: 140 }}>
+            <InfoIcon />
+            <span style={{ marginTop: 8, fontWeight: 700, color: '#1e293b' }}>Credentials Configured!</span>
+            <small style={{ color: '#64748b', marginTop: 4 }}>Fetching starts automatically when the content tab opens.</small>
+          </div>
+        ) : (
+          <div className="media-feed-grid">
+            {instagramPosts.map((post) => {
+              const linkedYtId = links[post.id];
+              const linkedYtVideo = cachedYtVideos.find((v) => v.id === linkedYtId);
+
+              return (
+                <article className="youtube-video-card instagram-post-card" key={post.id}>
+                  <div className="video-thumbnail-container instagram-image-container">
+                    <img src={post.imageUrl} alt={post.caption} />
+                    {linkedYtVideo && (
+                      <span className="youtube-linked-badge-icon" title="Linked to YouTube video">
+                        <YouTubeIcon />
+                      </span>
+                    )}
+                  </div>
+                  <div className="video-details instagram-post-details">
+                    <h4 className="instagram-caption">{post.caption || "Instagram media"}</h4>
+                    <div className="video-stats">
+                      <span>{formatInstagramViews(post.views)}</span>
+                      <span>{formatInstagramTimeAgo(post.publishedAt)}</span>
+                    </div>
+                    <div className="video-engagement-stats">
+                      <span>
+                        <ThumbsUp size={13} aria-hidden="true" />
+                        {formatInstagramNumber(post.likes)}
+                      </span>
+                      <span>
+                        <MessageCircle size={13} aria-hidden="true" />
+                        {formatInstagramNumber(post.comments)}
+                      </span>
+                    </div>
+
+                    <div className="ig-post-yt-link-section">
+                      {linkedYtVideo ? (
+                        <div className="ig-post-yt-badge linked">
+                          <YouTubeIcon />
+                          <span className="yt-title" title={linkedYtVideo.title}>
+                            {linkedYtVideo.title}
+                          </span>
+                          <button
+                            className="ig-post-yt-unlink-btn"
+                            onClick={() => handleUnlink(post.id)}
+                            title="Unlink YouTube video"
+                            type="button"
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          className="ig-post-yt-link-btn"
+                          onClick={() => {
+                            setManualLinkPost(post);
+                            setSelectedYtVideoId("");
+                          }}
+                          type="button"
+                        >
+                          <Link2 size={13} />
+                          <span>Link YouTube Video</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* SIMULATED OAUTH MODAL BACKDROP */}
+      {authModalOpen && (
+        <div className="auth-modal-backdrop" onClick={() => setAuthModalOpen(false)}>
+          <div className="auth-modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <h3>Connect Meta & Instagram API</h3>
+
+            <div className="auth-modal-body">
+              <p>Simulating standard OAuth 2.0 Web Authorization callback flow redirecting to secure Consent server...</p>
+
+              <div className="oauth-simulation-steps">
+                <div className={`simulation-step ${authModalStep >= 1 ? "completed" : "active"}`}>
+                  <div className="simulation-indicator">
+                    {authModalStep >= 1 ? <CheckIcon /> : <Loader2 className="spin" size={14} />}
+                  </div>
+                  <span>Contacting authorization authorization callback handlers...</span>
+                </div>
+
+                <div className={`simulation-step ${authModalStep >= 2 ? "completed" : authModalStep === 1 ? "active" : ""}`}>
+                  <div className="simulation-indicator">
+                    {authModalStep >= 2 ? <CheckIcon /> : authModalStep === 1 ? <Loader2 className="spin" size={14} /> : <KeyIcon />}
+                  </div>
+                  <span>Requesting permissions: instagram_basic, instagram_manage_insights...</span>
+                </div>
+
+                <div className={`simulation-step ${authModalStep >= 3 ? "completed" : authModalStep === 2 ? "active" : ""}`}>
+                  <div className="simulation-indicator">
+                    {authModalStep >= 3 ? <CheckIcon /> : authModalStep === 2 ? <Loader2 className="spin" size={14} /> : <KeyIcon />}
+                  </div>
+                  <span>Exchanging authorization code for long-lived OAuth token...</span>
+                </div>
+
+                <div className={`simulation-step ${authModalStep >= 4 ? "completed" : authModalStep === 3 ? "active" : ""}`}>
+                  <div className="simulation-indicator">
+                    {authModalStep >= 4 ? <CheckIcon /> : authModalStep === 3 ? <Loader2 className="spin" size={14} /> : <KeyIcon />}
+                  </div>
+                  <span>Validating connection credentials & loading sandbox data...</span>
+                </div>
+              </div>
+
+              {authModalStep >= 4 && (
+                <div style={{ color: '#16a34a', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, margin: '14px 0 6px 0' }}>
+                  <CheckIcon />
+                  <span>Link Established successfully! Credentials saved.</span>
+                </div>
+              )}
+            </div>
+
             <div className="auth-modal-footer">
               <button
                 className="dashboard-secondary-button"
@@ -3216,6 +3817,944 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
           </div>
         </div>
       )}
+
+      {/* INSTAGRAM-TO-YOUTUBE LINKING MODAL */}
+      {(manualLinkPost || promptLinkPost) && (() => {
+        const activePost = manualLinkPost || promptLinkPost!;
+        const isAutoPrompt = Boolean(promptLinkPost);
+
+        return (
+          <div className="auth-modal-backdrop" onClick={() => {
+            if (!isAutoPrompt) setManualLinkPost(null);
+          }}>
+            <div className="auth-modal-dialog ig-yt-link-dialog" onClick={(e) => e.stopPropagation()}>
+              <h3>
+                {isAutoPrompt ? "⚡ Link New Instagram Reel" : "🔗 Link Instagram Reel to YouTube"}
+              </h3>
+
+              <div className="auth-modal-body ig-yt-link-modal-body">
+                {isAutoPrompt && (
+                  <div className="new-reel-alert-badge">
+                    New content detected! Link it to YouTube to synchronize combined weekly analytics.
+                  </div>
+                )}
+
+                <div className="link-modal-split-preview">
+                  <div className="ig-preview-thumbnail-container">
+                    <img src={activePost.imageUrl} alt="" />
+                    <div className="ig-preview-overlay">
+                      <span>❤️ {activePost.likes ?? 0}</span>
+                      <span>💬 {activePost.comments ?? 0}</span>
+                    </div>
+                  </div>
+                  <div className="ig-preview-copy">
+                    <span className="ig-preview-label">Instagram Reel Caption</span>
+                    <p className="ig-preview-caption-text">{activePost.caption}</p>
+                    {activePost.publishedAt && (
+                      <span className="ig-preview-date">
+                        Published on {new Date(activePost.publishedAt).toLocaleDateString("en-GB", { day: '2-digit', month: 'short', year: 'numeric' })}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="link-dropdown-form-row">
+                  <label htmlFor="yt-video-select">Select target YouTube Video:</label>
+                  <select
+                    id="yt-video-select"
+                    value={selectedYtVideoId}
+                    onChange={(e) => setSelectedYtVideoId(e.target.value)}
+                    className="yt-select-dropdown"
+                  >
+                    <option value="">-- Choose YouTube Video --</option>
+                    {cachedYtVideos.map((video) => (
+                      <option key={video.id} value={video.id}>
+                        {video.title} ({video.views || "0 views"})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="auth-modal-footer">
+                {isAutoPrompt ? (
+                  <button
+                    className="dashboard-secondary-button"
+                    onClick={() => handleSkip(activePost.id)}
+                    type="button"
+                  >
+                    Ignore Reel
+                  </button>
+                ) : (
+                  <button
+                    className="dashboard-secondary-button"
+                    onClick={() => setManualLinkPost(null)}
+                    type="button"
+                  >
+                    Cancel
+                  </button>
+                )}
+                <button
+                  className="dashboard-primary-button"
+                  disabled={!selectedYtVideoId}
+                  onClick={() => handleLink(activePost.id, selectedYtVideoId)}
+                  type="button"
+                  style={{ width: 'auto', margin: 0 }}
+                >
+                  Link & Sync Views
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: number; linksVersion?: number }) {
+  const [hoveredWeekIndex, setHoveredWeekIndex] = useState<number | null>(null);
+  const [averageViewExpanded, setAverageViewExpanded] = useState(false);
+  const [engagedViewsExpanded, setEngagedViewsExpanded] = useState(false);
+  const [igVideoDurations, setIgVideoDurations] = useState<Record<string, number>>({});
+  const [platformViewsExpanded, setPlatformViewsExpanded] = useState(false);
+  const [stayedToWatchExpanded, setStayedToWatchExpanded] = useState(false);
+  const [combinedPerformanceSort, setCombinedPerformanceSort] = useState<{
+    direction: SortDirection;
+    key: CombinedPerformanceSortKey;
+  }>({ direction: "desc", key: "publishedAt" });
+
+  // 1. Read cached YouTube weekly views
+  const weeklyViews = useMemo((): YouTubeWeeklyViews[] => {
+    try {
+      return JSON.parse(localStorage.getItem("reader-yt-weekly-views-cache") || "[]");
+    } catch {
+      return [];
+    }
+  }, [refreshSignal]);
+
+  // 2. Read cached YouTube videos
+  const ytVideos = useMemo((): YouTubeVideoPreview[] => {
+    try {
+      return JSON.parse(localStorage.getItem("reader-yt-videos-cache") || "[]");
+    } catch {
+      return [];
+    }
+  }, [refreshSignal]);
+
+  const ytAnalytics = useMemo((): YouTubeTopVideoAnalytics[] => {
+    try {
+      return JSON.parse(localStorage.getItem("reader-yt-analytics-cache") || "[]");
+    } catch {
+      return [];
+    }
+  }, [refreshSignal]);
+
+  // 3. Read cached Instagram posts
+  const igPosts = useMemo((): InstagramPostPreview[] => {
+    try {
+      return JSON.parse(localStorage.getItem("reader-ig-posts-cache") || "[]");
+    } catch {
+      return [];
+    }
+  }, [refreshSignal]);
+
+  // 4. Read links mapping
+  const links = useMemo((): Record<string, string> => {
+    try {
+      return JSON.parse(localStorage.getItem("reader-ig-yt-links") || "{}");
+    } catch {
+      return {};
+    }
+  }, [refreshSignal, linksVersion]);
+
+  useEffect(() => {
+    const videoPosts = igPosts.filter((post) =>
+      post.mediaUrl &&
+      !post.durationSeconds &&
+      !igVideoDurations[post.id] &&
+      (post.mediaType === "VIDEO" || post.mediaProductType === "REELS")
+    );
+    if (!videoPosts.length) return;
+
+    const videos = videoPosts.map((post) => {
+      const video = document.createElement("video");
+      video.preload = "metadata";
+      video.src = post.mediaUrl || "";
+      video.onloadedmetadata = () => {
+        if (Number.isFinite(video.duration) && video.duration > 0) {
+          setIgVideoDurations((durations) => ({ ...durations, [post.id]: video.duration }));
+        }
+      };
+      return video;
+    });
+
+    return () => {
+      videos.forEach((video) => {
+        video.onloadedmetadata = null;
+        video.removeAttribute("src");
+        video.load();
+      });
+    };
+  }, [igPosts, igVideoDurations]);
+
+  // parseViews utility for robust string-to-number views conversion
+  const parseViews = useCallback((viewsStr: string | number): number => {
+    if (typeof viewsStr === "number") return viewsStr;
+    const cleaned = viewsStr.toLowerCase().replace(/ views/, "");
+    if (cleaned.endsWith("k")) return parseFloat(cleaned) * 1000;
+    if (cleaned.endsWith("m")) return parseFloat(cleaned) * 1000000;
+    const parsed = parseInt(cleaned.replace(/,/g, ""), 10);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }, []);
+
+  const parseDurationSeconds = useCallback((duration?: string): number => {
+    if (!duration) return 0;
+    const parts = duration.split(":").map((part) => Number(part));
+    if (parts.some((part) => Number.isNaN(part))) return 0;
+    return parts.reduce((total, part) => total * 60 + part, 0);
+  }, []);
+
+  const formatDurationSeconds = useCallback((value: number) => {
+    const seconds = Math.round(value || 0);
+    const minutes = Math.floor(seconds / 60);
+    const remainder = seconds % 60;
+    return `${minutes}:${String(remainder).padStart(2, "0")}`;
+  }, []);
+
+  const formatPublishDate = useCallback((value?: string) => {
+    if (!value) return "-";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", year: "numeric" }).format(date);
+  }, []);
+
+  const dateFromIsoDate = useCallback((value: string) => {
+    const [year, month, day] = value.split("-").map(Number);
+    return new Date(Date.UTC(year, month - 1, day));
+  }, []);
+
+  // 4.1 Get account-level views from user-level daily insights cache
+  const getIgAccountViewsForWeek = useCallback((startDateStr: string, endDateStr: string): number => {
+    try {
+      const cachedInsightsRaw = localStorage.getItem("reader-ig-user-insights-cache");
+      if (!cachedInsightsRaw) return -1;
+      const dailyViews: Array<{ day: string; views: number }> = JSON.parse(cachedInsightsRaw);
+      if (!dailyViews.length) return -1;
+
+      const startTime = dateFromIsoDate(startDateStr).getTime();
+      const endTime = dateFromIsoDate(endDateStr).getTime() + 24 * 60 * 60 * 1000 - 1;
+
+      const viewsSum = dailyViews
+        .filter((item) => {
+          const dayTime = dateFromIsoDate(item.day).getTime();
+          return dayTime >= startTime && dayTime <= endTime;
+        })
+        .reduce((sum, item) => sum + (item.views ?? 0), 0);
+
+      return viewsSum;
+    } catch {
+      return -1;
+    }
+  }, [dateFromIsoDate]);
+
+  // 5. Aggregate Instagram weekly views from account-level daily insights.
+  const getIgViewsForWeek = useCallback((startDateStr: string, endDateStr: string): number => {
+    const accountViews = getIgAccountViewsForWeek(startDateStr, endDateStr);
+    return accountViews >= 0 ? accountViews : 0;
+  }, [getIgAccountViewsForWeek]);
+
+  // 6. Compute weekly combined analytics
+  const weeklyViewsData = useMemo(() => {
+    return weeklyViews.map((week) => {
+      const ytViews = Number(week.views ?? 0);
+      const igViews = getIgViewsForWeek(week.startDate, week.endDate);
+      const totalViews = ytViews + igViews;
+      return {
+        ...week,
+        ytViews,
+        igViews,
+        totalViews
+      };
+    });
+  }, [weeklyViews, getIgViewsForWeek]);
+
+  const weeklyViewsMax = useMemo(() => {
+    return Math.max(...weeklyViewsData.map((week) => week.totalViews), 1);
+  }, [weeklyViewsData]);
+
+  // 7. Aggregate combined video entries (linked items merged into one entry)
+  const combinedEntries = useMemo(() => {
+	    const entries: Array<{
+		      averageViewPercentage: number | null;
+		      color: string;
+		      duration: string;
+		      engagedViews: number | null;
+		      id: string;
+	      ytVideo: YouTubeVideoPreview | null;
+	      igPost: InstagramPostPreview | null;
+	      imageUrl: string;
+	      publishedAt?: string;
+	      stayedToWatch: number | null;
+	      ytStayedToWatch: number | null;
+	      igStayedToWatch: number | null;
+	      title: string;
+		      igCaption: string | null;
+		      igEngagedViews: number | null;
+		      igAverageViewPercentage: number | null;
+		      platform: "youtube" | "instagram" | "both";
+		      ytAverageViewPercentage: number | null;
+		      ytEngagedViews: number | null;
+	      ytViews: number;
+      igViews: number;
+      totalViews: number;
+      watchHours: number;
+      watchTimeShare: number;
+    }> = [];
+
+    const processedIgIds = new Set<string>();
+    const analyticsByVideoId = new Map(ytAnalytics.map((row) => [row.video, row]));
+    const totalWatchHours = ytAnalytics.reduce((total, row) => total + Number(row.estimatedMinutesWatched ?? 0) / 60, 0) +
+      igPosts.reduce((total, post) => {
+        const totalViewTime = Number(post.totalViewTime ?? 0);
+        const inferredViewTime = (Number(post.averageWatchTime ?? 0) / 1000) * Number(post.views ?? 0);
+        return total + (totalViewTime ? totalViewTime / 3600000 : inferredViewTime / 3600);
+      }, 0);
+
+    const rowFrom = (values: {
+      index: number;
+      ytVideo: YouTubeVideoPreview | null;
+      igPost: InstagramPostPreview | null;
+      ytViews: number;
+      igViews: number;
+      platform: "youtube" | "instagram" | "both";
+    }) => {
+      const ytRow = values.ytVideo ? analyticsByVideoId.get(values.ytVideo.id) : undefined;
+	      const ytDurationSeconds = parseDurationSeconds(values.ytVideo?.duration);
+	      const igAverageWatchSeconds = Number(values.igPost?.averageWatchTime ?? 0) / 1000;
+	      const igDurationSeconds = Number(values.igPost?.durationSeconds ?? 0) || Number(values.igPost ? igVideoDurations[values.igPost.id] ?? 0 : 0) || ytDurationSeconds;
+	      const igTotalViewTime = Number(values.igPost?.totalViewTime ?? 0);
+      const igWatchHours = igTotalViewTime
+        ? igTotalViewTime / 3600000
+        : (igAverageWatchSeconds * values.igViews) / 3600;
+      const ytWatchHours = Number(ytRow?.estimatedMinutesWatched ?? 0) / 60;
+      const totalViews = values.ytViews + values.igViews;
+	      const watchHours = ytWatchHours + igWatchHours;
+	      const ytAverageViewPercentage = ytRow ? Number(ytRow.averageViewPercentage ?? 0) : null;
+	      const igAverageViewPercentage = igDurationSeconds && igAverageWatchSeconds
+	        ? Math.min((igAverageWatchSeconds / igDurationSeconds) * 100, 999)
+	        : null;
+      const averageViewPercentage = values.ytViews && ytAverageViewPercentage !== null && values.igViews && igAverageViewPercentage !== null
+        ? ((ytAverageViewPercentage * values.ytViews) + (igAverageViewPercentage * values.igViews)) / totalViews
+        : ytAverageViewPercentage ?? igAverageViewPercentage;
+	      const ytEngagedViews = ytRow ? Number(ytRow.engagedViews ?? 0) : null;
+	      const ytStayed = ytRow && Number(ytRow.views ?? 0) ? (Number(ytRow.engagedViews ?? 0) / Number(ytRow.views ?? 0)) * 100 : null;
+	      const igStayed = typeof values.igPost?.skipRate === "number" ? 100 - Number(values.igPost.skipRate) : null;
+	      const igEngagedViews = igStayed !== null ? (values.igViews * igStayed) / 100 : null;
+	      const engagedValues = [ytEngagedViews, igEngagedViews].filter((value): value is number => value !== null);
+	      const engagedViews = engagedValues.length ? engagedValues.reduce((sum, value) => sum + value, 0) : null;
+	      const stayedToWatch = values.ytViews && ytStayed !== null && values.igViews && igStayed !== null
+	        ? ((ytStayed * values.ytViews) + (igStayed * values.igViews)) / totalViews
+	        : ytStayed ?? igStayed;
+
+      return {
+	        averageViewPercentage,
+	        color: ["#3b82f6", "#84cc16", "#eab308", "#a855f7", "#f43f5e"][values.index % 5],
+	        duration: values.ytVideo?.duration ?? (igAverageWatchSeconds ? formatDurationSeconds(igAverageWatchSeconds) : "-"),
+	        engagedViews,
+	        id: values.ytVideo && values.igPost ? `${values.ytVideo.id}-${values.igPost.id}` : values.ytVideo?.id ?? values.igPost?.id ?? String(values.index),
+		        imageUrl: values.ytVideo?.imageUrl ?? values.igPost?.imageUrl ?? "https://images.unsplash.com/photo-1516979187457-637abb4f9353?w=600",
+		        igCaption: values.igPost?.caption ?? null,
+		        igAverageViewPercentage,
+		        igEngagedViews,
+		        igPost: values.igPost,
+		        platform: values.platform,
+	        publishedAt: values.ytVideo?.publishedAt ?? values.igPost?.publishedAt,
+	        stayedToWatch,
+	        ytStayedToWatch: ytStayed,
+	        igStayedToWatch: igStayed,
+	        title: values.ytVideo?.title ?? values.igPost?.caption ?? "Instagram media",
+        totalViews,
+	        watchHours,
+	        watchTimeShare: totalWatchHours ? (watchHours / totalWatchHours) * 100 : 0,
+	        ytVideo: values.ytVideo,
+	        ytAverageViewPercentage,
+	        ytEngagedViews,
+        ytViews: values.ytViews,
+        igViews: values.igViews
+      };
+    };
+
+    // 7.1 Map YouTube videos and see if they are linked
+    ytVideos.forEach((ytVideo, index) => {
+      const linkedIg = igPosts.find((post) => links[post.id] === ytVideo.id);
+      const ytViewsNum = parseViews(ytVideo.views);
+
+      if (linkedIg) {
+        processedIgIds.add(linkedIg.id);
+        const igViewsNum = parseViews(linkedIg.views ?? 0);
+        entries.push(rowFrom({
+          index,
+          ytVideo,
+          igPost: linkedIg,
+          platform: "both",
+          ytViews: ytViewsNum,
+          igViews: igViewsNum
+        }));
+      } else {
+        entries.push(rowFrom({
+          index,
+          ytVideo,
+          igPost: null,
+          platform: "youtube",
+          ytViews: ytViewsNum,
+          igViews: 0
+        }));
+      }
+    });
+
+    // 7.2 Map remaining Instagram posts
+    igPosts.forEach((igPost, index) => {
+      if (!processedIgIds.has(igPost.id)) {
+        const igViewsNum = parseViews(igPost.views ?? 0);
+        entries.push(rowFrom({
+          index: ytVideos.length + index,
+          ytVideo: null,
+          igPost,
+          platform: "instagram",
+          ytViews: 0,
+          igViews: igViewsNum
+        }));
+      }
+    });
+
+    return entries.sort((a, b) => b.totalViews - a.totalViews);
+	  }, [formatDurationSeconds, igPosts, igVideoDurations, links, parseDurationSeconds, parseViews, ytAnalytics, ytVideos]);
+
+  const sortedCombinedEntries = useMemo(() => {
+    if (!combinedPerformanceSort) return combinedEntries;
+
+    const { direction, key } = combinedPerformanceSort;
+    const multiplier = numericSortDirectionFor(direction);
+
+    return [...combinedEntries].sort((left, right) => {
+      let result = 0;
+
+      if (key === "title") {
+        result = compareText(left.title, right.title);
+      } else if (key === "duration") {
+        result = compareNullableNumber(durationToSeconds(left.duration), durationToSeconds(right.duration));
+      } else if (key === "publishedAt") {
+        result = compareNullableNumber(timestampFromDate(left.publishedAt), timestampFromDate(right.publishedAt));
+      } else {
+        result = compareNullableNumber(left[key], right[key]);
+      }
+
+      return result === 0 ? compareText(left.title, right.title) : result * multiplier;
+    });
+  }, [combinedEntries, combinedPerformanceSort]);
+
+  const toggleCombinedPerformanceSort = (key: CombinedPerformanceSortKey) => {
+    setCombinedPerformanceSort((current) => {
+      const defaultDirection: SortDirection = key === "title" || key === "duration" ? "asc" : "desc";
+      if (!current || current.key !== key) return { key, direction: defaultDirection };
+      return { key, direction: current.direction === "asc" ? "desc" : "asc" };
+    });
+  };
+
+  const combinedSortButton = (key: CombinedPerformanceSortKey, label: string) => {
+    const active = combinedPerformanceSort?.key === key;
+    const direction = active ? combinedPerformanceSort.direction : undefined;
+
+    return (
+      <button
+        aria-label={`Sort by ${label}${active ? ` ${direction === "asc" ? "descending" : "ascending"}` : ""}`}
+        aria-sort={active ? (direction === "asc" ? "ascending" : "descending") : "none"}
+        className={`table-sort-button ${active ? "active" : ""}`}
+        onClick={() => toggleCombinedPerformanceSort(key)}
+        type="button"
+      >
+        <span>{label}</span>
+        <span className="table-sort-indicator" aria-hidden="true">
+          {active ? (direction === "asc" ? <ChevronUpIcon /> : <ChevronDownIcon />) : <span className="table-sort-placeholder" />}
+        </span>
+      </button>
+    );
+  };
+
+  const combinedVideoSortControls = () => (
+    <div className="video-header-sort-box">
+      <span>Video</span>
+      <div>
+        {combinedSortButton("publishedAt", "Date")}
+        {combinedSortButton("duration", "Duration")}
+      </div>
+    </div>
+  );
+
+  const formatAnalyticsNumber = (value: number) =>
+    new Intl.NumberFormat("en-GB", { maximumFractionDigits: value >= 100 ? 0 : 1 }).format(value || 0);
+
+  const formatAnalyticsPercent = (value: number | null) =>
+    value === null ? "-" : `${new Intl.NumberFormat("en-GB", { maximumFractionDigits: 1 }).format(value || 0)}%`;
+
+  const combinedPerformanceTotals = useMemo(() => {
+	    const totalViews = combinedEntries.reduce((sum, entry) => sum + entry.totalViews, 0);
+	    const ytViews = combinedEntries.reduce((sum, entry) => sum + entry.ytViews, 0);
+	    const igViews = combinedEntries.reduce((sum, entry) => sum + entry.igViews, 0);
+	    const watchHours = combinedEntries.reduce((sum, entry) => sum + entry.watchHours, 0);
+		    const engagedViews = combinedEntries.reduce((sum, entry) => sum + Number(entry.engagedViews ?? 0), 0);
+		    const ytEngagedViews = combinedEntries.reduce((sum, entry) => sum + Number(entry.ytEngagedViews ?? 0), 0);
+		    const igEngagedViews = combinedEntries.reduce((sum, entry) => sum + Number(entry.igEngagedViews ?? 0), 0);
+		    const averageViewRows = combinedEntries.filter((entry) => entry.averageViewPercentage !== null);
+		    const ytAverageRows = combinedEntries.filter((entry) => entry.ytAverageViewPercentage !== null && entry.ytViews > 0);
+		    const igAverageRows = combinedEntries.filter((entry) => entry.igAverageViewPercentage !== null && entry.igViews > 0);
+		    const stayedRows = combinedEntries.filter((entry) => entry.stayedToWatch !== null);
+		    const ytStayedRows = combinedEntries.filter((entry) => entry.ytStayedToWatch !== null && entry.ytViews > 0);
+		    const igStayedRows = combinedEntries.filter((entry) => entry.igStayedToWatch !== null && entry.igViews > 0);
+	    const averageViewPercentage = averageViewRows.length && totalViews
+	      ? averageViewRows.reduce((sum, entry) => sum + Number(entry.averageViewPercentage ?? 0) * entry.totalViews, 0) / totalViews
+	      : null;
+	    const ytAverageViewPercentage = ytAverageRows.length && ytViews
+	      ? ytAverageRows.reduce((sum, entry) => sum + Number(entry.ytAverageViewPercentage ?? 0) * entry.ytViews, 0) / ytViews
+	      : null;
+	    const igAverageViewPercentage = igAverageRows.length && igViews
+	      ? igAverageRows.reduce((sum, entry) => sum + Number(entry.igAverageViewPercentage ?? 0) * entry.igViews, 0) / igViews
+	      : null;
+		    const stayedToWatch = stayedRows.length && totalViews
+		      ? stayedRows.reduce((sum, entry) => sum + Number(entry.stayedToWatch ?? 0) * entry.totalViews, 0) / totalViews
+		      : null;
+		    const ytStayedToWatch = ytStayedRows.length && ytViews
+		      ? ytStayedRows.reduce((sum, entry) => sum + Number(entry.ytStayedToWatch ?? 0) * entry.ytViews, 0) / ytViews
+		      : null;
+		    const igStayedToWatch = igStayedRows.length && igViews
+		      ? igStayedRows.reduce((sum, entry) => sum + Number(entry.igStayedToWatch ?? 0) * entry.igViews, 0) / igViews
+		      : null;
+
+		    return { averageViewPercentage, engagedViews, igAverageViewPercentage, igEngagedViews, igStayedToWatch, igViews, stayedToWatch, totalViews, watchHours, ytAverageViewPercentage, ytEngagedViews, ytStayedToWatch, ytViews };
+		  }, [combinedEntries]);
+
+  const formatShortDate = (value: string) => {
+    const date = new Date(`${value}T00:00:00Z`);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", timeZone: "UTC" }).format(date);
+  };
+
+  return (
+    <div className="weekly-views-layout-container">
+      {/* 1. WEEKLY VIEWS GRAPH & SUMMARY TABLE */}
+      <div className="weekly-views-dashboard-block">
+        <div className="weekly-views-block-header">
+          <h2>Weekly Views Trend (Combined Platforms)</h2>
+          <p>Displays combined views over time for linked YouTube videos and Instagram Reels.</p>
+        </div>
+
+        {weeklyViewsData.length > 0 ? (
+          <div className="weekly-views-layout">
+            <section className="weekly-views-graph" aria-label="Weekly views graph">
+              {(() => {
+                const svgWidth = 650;
+                const svgHeight = 250;
+                const paddingLeft = 55;
+                const paddingRight = 20;
+                const paddingTop = 30;
+                const paddingBottom = 40;
+
+                const chartWidth = svgWidth - paddingLeft - paddingRight;
+                const chartHeight = svgHeight - paddingTop - paddingBottom;
+
+                const points = weeklyViewsData.map((week, index) => {
+                  const ratio = weeklyViewsData.length > 1 ? index / (weeklyViewsData.length - 1) : 0.5;
+                  const x = paddingLeft + ratio * chartWidth;
+                  const baseline = paddingTop + chartHeight;
+                  const yInstagram = baseline - (week.igViews / weeklyViewsMax) * chartHeight;
+                  const yTotal = baseline - (week.totalViews / weeklyViewsMax) * chartHeight;
+                  return {
+                    baseline,
+                    index,
+                    week,
+                    x,
+                    yInstagram,
+                    yTotal,
+                  };
+                });
+
+                const steps = [0, 0.25, 0.5, 0.75, 1];
+                const instagramLineD = points.map((p, index) => `${index === 0 ? "M" : "L"} ${p.x.toFixed(2)} ${p.yInstagram.toFixed(2)}`).join(" ");
+                const totalLineD = points.map((p, index) => `${index === 0 ? "M" : "L"} ${p.x.toFixed(2)} ${p.yTotal.toFixed(2)}`).join(" ");
+                const instagramAreaD = points.length
+                  ? `${instagramLineD} L ${points[points.length - 1].x.toFixed(2)} ${(paddingTop + chartHeight).toFixed(2)} L ${points[0].x.toFixed(2)} ${(paddingTop + chartHeight).toFixed(2)} Z`
+                  : "";
+                const youtubeAreaD = points.length
+                  ? `${totalLineD} L ${[...points].reverse().map((p) => `${p.x.toFixed(2)} ${p.yInstagram.toFixed(2)}`).join(" L ")} Z`
+                  : "";
+
+                return (
+                  <div style={{ position: "relative", width: "100%", height: "100%", minHeight: "260px" }}>
+                    <div className="weekly-views-legend" aria-hidden="true">
+                      <span><i className="youtube" />YouTube</span>
+                      <span><i className="instagram" />Instagram</span>
+                    </div>
+                    <svg
+                      viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+                      className="weekly-views-svg"
+                      preserveAspectRatio="xMidYMid meet"
+                      onMouseLeave={() => setHoveredWeekIndex(null)}
+                    >
+                      <defs>
+                        <linearGradient id="weeklyViewsGradient" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%" stopColor="#818cf8" />
+                          <stop offset="50%" stopColor="#ec4899" />
+                          <stop offset="100%" stopColor="#f43f5e" />
+                        </linearGradient>
+                        <linearGradient id="weeklyViewsAreaGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#818cf8" stopOpacity={0.24} />
+                          <stop offset="100%" stopColor="#ec4899" stopOpacity={0.0} />
+                        </linearGradient>
+                      </defs>
+
+                      {steps.map((step) => {
+                        const yGrid = paddingTop + step * chartHeight;
+                        const labelVal = Math.round((1 - step) * weeklyViewsMax);
+
+                        return (
+                          <g key={step}>
+                            <line
+                              x1={paddingLeft}
+                              y1={yGrid}
+                              x2={svgWidth - paddingRight}
+                              y2={yGrid}
+                              className="weekly-views-gridline"
+                            />
+                            <text
+                              x={paddingLeft - 10}
+                              y={yGrid + 4}
+                              textAnchor="end"
+                              className="weekly-views-axis-label-y"
+                            >
+                              {formatAnalyticsNumber(labelVal)}
+                            </text>
+                          </g>
+                        );
+                      })}
+
+                      {instagramAreaD && <path d={instagramAreaD} className="weekly-views-area-instagram" />}
+                      {youtubeAreaD && <path d={youtubeAreaD} className="weekly-views-area-youtube" />}
+                      {instagramLineD && <path d={instagramLineD} className="weekly-views-line-instagram" />}
+                      {totalLineD && <path d={totalLineD} className="weekly-views-line-total" />}
+
+                      {hoveredWeekIndex !== null && points[hoveredWeekIndex] && (
+                        <line
+                          x1={points[hoveredWeekIndex].x}
+                          y1={paddingTop}
+                          x2={points[hoveredWeekIndex].x}
+                          y2={paddingTop + chartHeight}
+                          className="weekly-views-guide-line"
+                        />
+                      )}
+
+                      {points.map((p) => (
+                        <text
+                          key={p.week.startDate}
+                          x={p.x}
+                          y={paddingTop + chartHeight + 20}
+                          textAnchor="middle"
+                          className="weekly-views-axis-label-x"
+                        >
+                          {formatShortDate(p.week.startDate)}
+                        </text>
+                      ))}
+
+                      {points.map((p) => {
+                        const colWidth = chartWidth / (weeklyViewsData.length || 1);
+                        const rectX = p.x - colWidth / 2;
+
+                        return (
+                          <rect
+                            key={p.week.startDate}
+                            x={rectX}
+                            y={paddingTop}
+                            width={colWidth}
+                            height={chartHeight}
+                            fill="transparent"
+                            style={{ cursor: "pointer" }}
+                            onMouseEnter={() => setHoveredWeekIndex(p.index)}
+                          />
+                        );
+                      })}
+                    </svg>
+
+                    {hoveredWeekIndex !== null && points[hoveredWeekIndex] && (() => {
+                      const activeP = points[hoveredWeekIndex];
+                      const leftPct = (activeP.x / svgWidth) * 100;
+                      const topPct = (activeP.yTotal / svgHeight) * 100;
+
+                      return (
+                        <div
+                          className="weekly-views-tooltip"
+                          style={{
+                            left: `${leftPct}%`,
+                            top: `${topPct - 8}%`,
+                          }}
+                        >
+                          <div className="tooltip-views">
+                            <strong>{formatAnalyticsNumber(activeP.week.totalViews)}</strong>
+                            <span>combined views</span>
+                          </div>
+                          <div className="tooltip-sub-details" style={{ fontSize: '0.7rem', color: '#cbd5e1', marginTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <span>YouTube: {formatAnalyticsNumber(activeP.week.ytViews)}</span>
+                            <span>Instagram: {formatAnalyticsNumber(activeP.week.igViews)}</span>
+                          </div>
+                          <div className="tooltip-dates" style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: 4, marginTop: 4 }}>
+                            {formatShortDate(activeP.week.startDate)} - {formatShortDate(activeP.week.endDate)}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                );
+              })()}
+            </section>
+
+            <div className="weekly-views-table-wrap">
+              <table className="weekly-views-table">
+                <thead>
+                  <tr>
+                    <th>Week</th>
+                    <th>Date range</th>
+                    <th>YouTube Views</th>
+                    <th>Instagram Views</th>
+                    <th>Views</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {weeklyViewsData.map((week, index) => (
+                    <tr key={week.startDate}>
+                      <td>Week {index + 1}</td>
+                      <td>{formatShortDate(week.startDate)} - {formatShortDate(week.endDate)}</td>
+                      <td>{formatAnalyticsNumber(week.ytViews)}</td>
+                      <td>{formatAnalyticsNumber(week.igViews)}</td>
+                      <td><strong>{formatAnalyticsNumber(week.totalViews)}</strong></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : (
+          <div className="dashboard-sparkline-empty" style={{ minHeight: 140 }}>
+            <InfoIcon />
+            <span style={{ marginTop: 8, fontWeight: 700 }}>No weekly view data yet.</span>
+            <small style={{ color: '#64748b', marginTop: 4 }}>Please connect a YouTube/Instagram account to populate analytics.</small>
+          </div>
+        )}
+      </div>
+
+      {/* 2. COMBINED CONTENT LIBRARY TABLE (DEDUPLICATED) */}
+      <div className="weekly-views-dashboard-block" style={{ marginTop: 24 }}>
+        <div className="weekly-views-block-header">
+          <h2>All Videos & Reels Performance</h2>
+          <p>
+            Displays connected YouTube videos and Instagram Reels with linked items consolidated into one performance row.
+          </p>
+        </div>
+
+        {combinedEntries.length > 0 ? (
+          <div className="youtube-analytics-table-wrap combined-performance-table-wrap">
+            <table className="youtube-analytics-table combined-performance-table">
+              <thead>
+                <tr>
+                  <th className="content-column metric-help sortable-heading" data-definition="Content duration, publish date, platform, thumbnail, and title." tabIndex={0}>{combinedVideoSortControls()}</th>
+                  <th className="metric-help sortable-heading" data-definition="Combined YouTube and Instagram views for this row. Linked YouTube and Instagram items are merged." tabIndex={0}>
+                    <span className="expandable-metric-heading">
+                      {combinedSortButton("totalViews", "Views")}
+                      <button
+                        aria-label={platformViewsExpanded ? "Hide platform view split" : "Show platform view split"}
+                        className="metric-expand-toggle"
+                        onClick={() => setPlatformViewsExpanded((expanded) => !expanded)}
+                        title={platformViewsExpanded ? "Hide YouTube and Instagram views" : "Show YouTube and Instagram views"}
+                        type="button"
+                      >
+                        {platformViewsExpanded ? <Minus size={12} aria-hidden="true" /> : <Plus size={12} aria-hidden="true" />}
+                      </button>
+                    </span>
+	                  </th>
+	                  {platformViewsExpanded && (
+	                    <>
+	                      <th className="expanded-metric-column expanded-metric-column-start metric-help sortable-heading" data-definition="YouTube views for this row." tabIndex={0}>{combinedSortButton("ytViews", "YouTube views")}</th>
+	                      <th className="expanded-metric-column metric-help sortable-heading" data-definition="Instagram views for this row." tabIndex={0}>{combinedSortButton("igViews", "Instagram views")}</th>
+	                    </>
+	                  )}
+			                  <th className="metric-help sortable-heading" data-definition="Combined YouTube engaged views and estimated Instagram engaged views. Instagram engaged views are estimated as Instagram views multiplied by (100 minus skip rate) percent." tabIndex={0}>
+		                    <span className="expandable-metric-heading">
+		                      {combinedSortButton("engagedViews", "Engaged views")}
+	                      <button
+	                        aria-label={engagedViewsExpanded ? "Hide platform engaged views split" : "Show platform engaged views split"}
+	                        className="metric-expand-toggle"
+	                        onClick={() => setEngagedViewsExpanded((expanded) => !expanded)}
+	                        title={engagedViewsExpanded ? "Hide YouTube and Instagram engaged views" : "Show YouTube and Instagram engaged views"}
+	                        type="button"
+	                      >
+	                        {engagedViewsExpanded ? <Minus size={12} aria-hidden="true" /> : <Plus size={12} aria-hidden="true" />}
+	                      </button>
+	                    </span>
+		                  </th>
+		                  {engagedViewsExpanded && (
+		                    <>
+		                      <th className="expanded-metric-column expanded-metric-column-start metric-help sortable-heading" data-definition="YouTube engaged views from YouTube Analytics." tabIndex={0}>{combinedSortButton("ytEngagedViews", "YouTube engaged views")}</th>
+			                      <th className="expanded-metric-column metric-help sortable-heading" data-definition="Estimated Instagram engaged views: Instagram views multiplied by (100 minus skip rate) percent." tabIndex={0}>{combinedSortButton("igEngagedViews", "Instagram engaged views")}</th>
+		                    </>
+		                  )}
+		                  <th className="metric-help sortable-heading" data-definition="Combined average percentage viewed. YouTube uses Analytics average percentage viewed; Instagram is estimated from average watch time divided by reel duration." tabIndex={0}>
+	                    <span className="expandable-metric-heading">
+	                      {combinedSortButton("averageViewPercentage", "Average duration watched")}
+	                      <button
+	                        aria-label={averageViewExpanded ? "Hide platform average viewed split" : "Show platform average viewed split"}
+	                        className="metric-expand-toggle"
+	                        onClick={() => setAverageViewExpanded((expanded) => !expanded)}
+	                        title={averageViewExpanded ? "Hide YouTube and Instagram average viewed" : "Show YouTube and Instagram average viewed"}
+	                        type="button"
+	                      >
+	                        {averageViewExpanded ? <Minus size={12} aria-hidden="true" /> : <Plus size={12} aria-hidden="true" />}
+	                      </button>
+	                    </span>
+	                  </th>
+		                  {averageViewExpanded && (
+		                    <>
+		                      <th className="expanded-metric-column expanded-metric-column-start metric-help sortable-heading" data-definition="YouTube average percentage viewed from YouTube Analytics." tabIndex={0}>{combinedSortButton("ytAverageViewPercentage", "YouTube avg viewed")}</th>
+		                      <th className="expanded-metric-column metric-help sortable-heading" data-definition="Instagram average watch time divided by reel duration. A dash means duration or watch time is unavailable." tabIndex={0}>{combinedSortButton("igAverageViewPercentage", "Instagram avg viewed")}</th>
+		                    </>
+		                  )}
+	                  <th className="metric-help sortable-heading" data-definition="Combined stayed-to-watch rate. YouTube uses engaged views divided by views; Instagram uses 100 minus skip rate. Linked rows are weighted by platform views." tabIndex={0}>
+	                    <span className="expandable-metric-heading">
+	                      {combinedSortButton("stayedToWatch", "Stayed to watch")}
+	                      <button
+	                        aria-label={stayedToWatchExpanded ? "Hide platform stayed-to-watch split" : "Show platform stayed-to-watch split"}
+	                        className="metric-expand-toggle"
+	                        onClick={() => setStayedToWatchExpanded((expanded) => !expanded)}
+	                        title={stayedToWatchExpanded ? "Hide YouTube and Instagram stayed-to-watch" : "Show YouTube and Instagram stayed-to-watch"}
+	                        type="button"
+	                      >
+	                        {stayedToWatchExpanded ? <Minus size={12} aria-hidden="true" /> : <Plus size={12} aria-hidden="true" />}
+	                      </button>
+	                    </span>
+	                  </th>
+		                  {stayedToWatchExpanded && (
+		                    <>
+		                      <th className="expanded-metric-column expanded-metric-column-start metric-help sortable-heading" data-definition="YouTube engaged views divided by YouTube views." tabIndex={0}>{combinedSortButton("ytStayedToWatch", "YouTube stayed")}</th>
+		                      <th className="expanded-metric-column metric-help sortable-heading" data-definition="Instagram stayed-to-watch estimated as 100 minus skip rate." tabIndex={0}>{combinedSortButton("igStayedToWatch", "Instagram stayed")}</th>
+		                    </>
+		                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {sortedCombinedEntries.map((entry) => (
+                  <tr key={entry.id}>
+                    <td className="analytics-content-cell combined-performance-content-cell">
+                      <span className="analytics-row-accent" style={{ background: entry.color }} />
+                      <div className="combined-video-cell">
+                        <img src={entry.imageUrl} alt="" />
+                        <div className="combined-video-copy">
+                          <span className="combined-video-title" title={entry.title}>{entry.title}</span>
+                          <div className="combined-video-meta">
+                            <span className="analytics-duration-pill">{entry.duration}</span>
+                            <span>{formatPublishDate(entry.publishedAt)}</span>
+                            {entry.platform === "both" && (
+                              <span className="platform-badge both" aria-label="YouTube and Instagram">
+                                <YouTubeIcon />
+                                <InstagramIcon />
+                              </span>
+                            )}
+                            {entry.platform === "youtube" && (
+                              <span className="platform-badge youtube" aria-label="YouTube">
+                                <YouTubeIcon />
+                              </span>
+                            )}
+                            {entry.platform === "instagram" && (
+                              <span className="platform-badge instagram" aria-label="Instagram">
+                                <InstagramIcon />
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+	                    <td>
+	                      {formatAnalyticsNumber(entry.totalViews)}
+	                    </td>
+	                    {platformViewsExpanded && (
+	                      <>
+	                        <td className="expanded-metric-column expanded-metric-column-start">{entry.ytViews > 0 ? formatAnalyticsNumber(entry.ytViews) : "-"}</td>
+	                        <td className="expanded-metric-column">{entry.igViews > 0 ? formatAnalyticsNumber(entry.igViews) : "-"}</td>
+	                      </>
+		                    )}
+		                    <td>{entry.engagedViews !== null ? formatAnalyticsNumber(entry.engagedViews) : "-"}</td>
+		                    {engagedViewsExpanded && (
+		                      <>
+		                        <td className="expanded-metric-column expanded-metric-column-start">{entry.ytEngagedViews !== null ? formatAnalyticsNumber(entry.ytEngagedViews) : "-"}</td>
+		                        <td className="expanded-metric-column">{entry.igEngagedViews !== null ? formatAnalyticsNumber(entry.igEngagedViews) : "-"}</td>
+		                      </>
+		                    )}
+		                    <td>{formatAnalyticsPercent(entry.averageViewPercentage)}</td>
+		                    {averageViewExpanded && (
+		                      <>
+		                        <td className="expanded-metric-column expanded-metric-column-start">{formatAnalyticsPercent(entry.ytAverageViewPercentage)}</td>
+		                        <td className="expanded-metric-column">{formatAnalyticsPercent(entry.igAverageViewPercentage)}</td>
+		                      </>
+		                    )}
+			                    <td>{formatAnalyticsPercent(entry.stayedToWatch)}</td>
+			                    {stayedToWatchExpanded && (
+			                      <>
+			                        <td className="expanded-metric-column expanded-metric-column-start">{formatAnalyticsPercent(entry.ytStayedToWatch)}</td>
+			                        <td className="expanded-metric-column">{formatAnalyticsPercent(entry.igStayedToWatch)}</td>
+			                      </>
+			                    )}
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+	                <tr>
+	                  <th>Total / average</th>
+	                  <th>{formatAnalyticsNumber(combinedPerformanceTotals.totalViews)}</th>
+	                  {platformViewsExpanded && (
+	                    <>
+	                      <th className="expanded-metric-column expanded-metric-column-start">{formatAnalyticsNumber(combinedPerformanceTotals.ytViews)}</th>
+	                      <th className="expanded-metric-column">{formatAnalyticsNumber(combinedPerformanceTotals.igViews)}</th>
+	                    </>
+		                  )}
+		                  <th>{formatAnalyticsNumber(combinedPerformanceTotals.engagedViews)}</th>
+		                  {engagedViewsExpanded && (
+		                    <>
+		                      <th className="expanded-metric-column expanded-metric-column-start">{formatAnalyticsNumber(combinedPerformanceTotals.ytEngagedViews)}</th>
+		                      <th className="expanded-metric-column">{formatAnalyticsNumber(combinedPerformanceTotals.igEngagedViews)}</th>
+		                    </>
+		                  )}
+		                  <th>{formatAnalyticsPercent(combinedPerformanceTotals.averageViewPercentage)}</th>
+		                  {averageViewExpanded && (
+		                    <>
+		                      <th className="expanded-metric-column expanded-metric-column-start">{formatAnalyticsPercent(combinedPerformanceTotals.ytAverageViewPercentage)}</th>
+		                      <th className="expanded-metric-column">{formatAnalyticsPercent(combinedPerformanceTotals.igAverageViewPercentage)}</th>
+		                    </>
+		                  )}
+			                  <th>{formatAnalyticsPercent(combinedPerformanceTotals.stayedToWatch)}</th>
+			                  {stayedToWatchExpanded && (
+			                    <>
+			                      <th className="expanded-metric-column expanded-metric-column-start">{formatAnalyticsPercent(combinedPerformanceTotals.ytStayedToWatch)}</th>
+			                      <th className="expanded-metric-column">{formatAnalyticsPercent(combinedPerformanceTotals.igStayedToWatch)}</th>
+			                    </>
+			                  )}
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        ) : (
+          <div className="dashboard-sparkline-empty" style={{ minHeight: 140 }}>
+            <InfoIcon />
+            <span style={{ marginTop: 8, fontWeight: 700 }}>No video or reel content found.</span>
+            <small style={{ color: '#64748b', marginTop: 4 }}>Connect YouTube Sync or Instagram Sync tabs to retrieve lists.</small>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -3225,6 +4764,7 @@ function ReaderDashboard({
   data,
   error,
   onNavigate,
+
   onRefresh,
   onContentTabClick,
   onSignInWithGoogle,
@@ -3245,9 +4785,9 @@ function ReaderDashboard({
   onSignOut: () => void;
   selectedUserId: string | null;
   session: Session | null;
-  activeTab: "users" | "content";
+  activeTab: "users" | "weekly_views" | "content" | "instagram";
   contentRefreshSignal: number;
-  setActiveTab: (tab: "users" | "content") => void;
+  setActiveTab: (tab: "users" | "weekly_views" | "content" | "instagram") => void;
 }) {
   const email = session?.user.email ?? "";
   const isOwner = email.toLowerCase() === "r.lobo2003@gmail.com";
@@ -3261,6 +4801,7 @@ function ReaderDashboard({
   const selectedJourney = buildUserJourneyFromData(selectedUser);
   const selectedUserTimeline = selectedUser?.timeline?.length ? selectedUser.timeline : buildUserTimelineFromData(selectedUser);
   const timeline = data?.timeline?.length ? data.timeline : buildDashboardTimelineFromUsers(data);
+  const [linksVersion, setLinksVersion] = useState(0);
 
   if (!session) {
     return (
@@ -3480,87 +5021,108 @@ function ReaderDashboard({
           <span>Users & Analytics</span>
         </button>
         <button
+          className={`dashboard-tab-btn ${activeTab === "weekly_views" ? "active" : ""}`}
+          onClick={() => setActiveTab("weekly_views")}
+          type="button"
+        >
+          <TrendingUp size={16} aria-hidden="true" />
+          <span>Weekly & Combined Views</span>
+        </button>
+        <button
           className={`dashboard-tab-btn ${activeTab === "content" ? "active" : ""}`}
-          onClick={() => {
-            setActiveTab("content");
-            onContentTabClick();
-          }}
+          onClick={() => setActiveTab("content")}
+          type="button"
+        >
+          <YouTubeIcon />
+          <span>YouTube Sync</span>
+        </button>
+        <button
+          className={`dashboard-tab-btn ${activeTab === "instagram" ? "active" : ""}`}
+          onClick={() => setActiveTab("instagram")}
           type="button"
         >
           <InstagramIcon />
-          <span>Content Integrations</span>
+          <span>Instagram Sync</span>
         </button>
       </div>
 
-      {activeTab === "users" ? (
-        <>
-          <section className="dashboard-metrics" aria-label="Reader project metrics">
-            <article className="dashboard-metric">
-              <HardDrive size={20} aria-hidden="true" />
-              <span>Supabase storage</span>
-              <strong>{formatBytes(storageTotal)}</strong>
-              <DashboardSparkline label="Supabase storage over time" points={timeline} valueKey="storageBytes" />
-            </article>
-            <article className="dashboard-metric">
-              <BookOpen size={20} aria-hidden="true" />
-              <span>Books</span>
-              <strong>{formatBytes(data?.storage.booksBytes ?? 0)}</strong>
-              <small>{data?.totals.books ?? 0} uploaded</small>
-              <DashboardSparkline label="Book storage over time" points={timeline} valueKey="booksBytes" />
-            </article>
-            <article className="dashboard-metric">
-              <ImageIcon size={20} aria-hidden="true" />
-              <span>Images</span>
-              <strong>{formatBytes(data?.storage.imagesBytes ?? 0)}</strong>
-              <small>{data?.totals.imagesGenerated ?? 0} generated</small>
-              <DashboardSparkline label="Image storage over time" points={timeline} valueKey="imagesBytes" />
-            </article>
-            <article className="dashboard-metric">
-              <Users size={20} aria-hidden="true" />
-              <span>Users</span>
-              <strong>{data?.totals.users ?? 0}</strong>
-              <DashboardSparkline label="Users over time" points={timeline} valueKey="usersCount" />
-            </article>
-          </section>
+      <div style={{ display: activeTab === "users" ? "block" : "none" }}>
+        <section className="dashboard-metrics" aria-label="Reader project metrics">
+          <article className="dashboard-metric">
+            <HardDrive size={20} aria-hidden="true" />
+            <span>Supabase storage</span>
+            <strong>{formatBytes(storageTotal)}</strong>
+            <DashboardSparkline label="Supabase storage over time" points={timeline} valueKey="storageBytes" />
+          </article>
+          <article className="dashboard-metric">
+            <BookOpen size={20} aria-hidden="true" />
+            <span>Books</span>
+            <strong>{formatBytes(data?.storage.booksBytes ?? 0)}</strong>
+            <small>{data?.totals.books ?? 0} uploaded</small>
+            <DashboardSparkline label="Book storage over time" points={timeline} valueKey="booksBytes" />
+          </article>
+          <article className="dashboard-metric">
+            <ImageIcon size={20} aria-hidden="true" />
+            <span>Images</span>
+            <strong>{formatBytes(data?.storage.imagesBytes ?? 0)}</strong>
+            <small>{data?.totals.imagesGenerated ?? 0} generated</small>
+            <DashboardSparkline label="Image storage over time" points={timeline} valueKey="imagesBytes" />
+          </article>
+          <article className="dashboard-metric">
+            <Users size={20} aria-hidden="true" />
+            <span>Users</span>
+            <strong>{data?.totals.users ?? 0}</strong>
+            <DashboardSparkline label="Users over time" points={timeline} valueKey="usersCount" />
+          </article>
+        </section>
 
-          <section className="dashboard-user-section">
-            <div className="dashboard-section-heading">
-              <div>
-                <h2>Users</h2>
-                <p>{data ? `Updated ${formatShortDate(data.generatedAt)}` : "Loading project data"}</p>
-              </div>
+        <section className="dashboard-user-section">
+          <div className="dashboard-section-heading">
+            <div>
+              <h2>Users</h2>
+              <p>{data ? `Updated ${formatShortDate(data.generatedAt)}` : "Loading project data"}</p>
             </div>
+          </div>
 
-            <div className="dashboard-user-list">
-              {dashboardUsers.map((item) => (
-                <button className="dashboard-user-row dashboard-user-button" key={item.id} onClick={() => onNavigate(`/dashboard/users/${item.id}`)} type="button">
-                  <div className="dashboard-user-main">
-                    <div className="dashboard-avatar">{item.email[0]?.toUpperCase() ?? "U"}</div>
-                    <div>
-                      <h3>{item.email}</h3>
-                      <p>Joined {formatShortDate(item.createdAt)}</p>
-                    </div>
+          <div className="dashboard-user-list">
+            {dashboardUsers.map((item) => (
+              <button className="dashboard-user-row dashboard-user-button" key={item.id} onClick={() => onNavigate(`/dashboard/users/${item.id}`)} type="button">
+                <div className="dashboard-user-main">
+                  <div className="dashboard-avatar">{item.email[0]?.toUpperCase() ?? "U"}</div>
+                  <div>
+                    <h3>{item.email}</h3>
+                    <p>Joined {formatShortDate(item.createdAt)}</p>
                   </div>
-                  <div className="dashboard-user-stats">
-                    <span>{(item.books ?? []).length} books</span>
-                    <span>{item.imagesGenerated ?? (item.images ?? []).length} images</span>
-                    <span>{formatBytes((item.bookStorageBytes ?? 0) + (item.imageStorageBytes ?? 0))}</span>
-                  </div>
-                  <ChevronRight className="dashboard-row-arrow" size={18} aria-hidden="true" />
-                </button>
-              ))}
-              {!data && !error && (
-                <div className="dashboard-loading">
-                  <Loader2 className="spin" size={22} aria-hidden="true" />
-                  <span>Loading dashboard</span>
                 </div>
-              )}
-            </div>
-          </section>
-        </>
-      ) : (
+                <div className="dashboard-user-stats">
+                  <span>{(item.books ?? []).length} books</span>
+                  <span>{item.imagesGenerated ?? (item.images ?? []).length} images</span>
+                  <span>{formatBytes((item.bookStorageBytes ?? 0) + (item.imageStorageBytes ?? 0))}</span>
+                </div>
+                <ChevronRight className="dashboard-row-arrow" size={18} aria-hidden="true" />
+              </button>
+            ))}
+            {!data && !error && (
+              <div className="dashboard-loading">
+                <Loader2 className="spin" size={22} aria-hidden="true" />
+                <span>Loading dashboard</span>
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
+
+      <div style={{ display: activeTab === "weekly_views" ? "block" : "none" }}>
+        <WeeklyViewsSection refreshSignal={contentRefreshSignal} linksVersion={linksVersion} />
+      </div>
+
+      <div style={{ display: activeTab === "content" ? "block" : "none" }}>
         <ContentIntegrationsSection refreshSignal={contentRefreshSignal} />
-      )}
+      </div>
+
+      <div style={{ display: activeTab === "instagram" ? "block" : "none" }}>
+        <InstagramIntegrationSection refreshSignal={contentRefreshSignal} onLinksChanged={() => setLinksVersion((v) => v + 1)} />
+      </div>
     </main>
   );
 }
@@ -4093,9 +5655,12 @@ function App() {
   const [dashboardError, setDashboardError] = useState("");
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [dashboardPath, setDashboardPath] = useState(() => window.location.pathname);
-  const [dashboardTab, setDashboardTab] = useState<"users" | "content">(() => {
+  const [dashboardTab, setDashboardTab] = useState<"users" | "weekly_views" | "content" | "instagram">(() => {
     const tab = new URL(window.location.href).searchParams.get("tab");
-    return tab === "content" ? "content" : "users";
+    if (tab === "content") return "content";
+    if (tab === "instagram") return "instagram";
+    if (tab === "weekly_views") return "weekly_views";
+    return "users";
   });
   const [contentRefreshSignal, setContentRefreshSignal] = useState(0);
 
@@ -7593,8 +9158,11 @@ function App() {
           data={dashboardData}
           error={dashboardError}
           onNavigate={navigateDashboard}
-          onRefresh={() => void loadReaderDashboard()}
-          onContentTabClick={() => setContentRefreshSignal((value) => value + 1)}
+          onRefresh={() => {
+            void loadReaderDashboard();
+            setContentRefreshSignal((value) => value + 1);
+          }}
+          onContentTabClick={() => {}}
           onSignInWithGoogle={() => void signInWithGoogle()}
           onSignOut={() => void signOut()}
           selectedUserId={selectedDashboardUserId}
