@@ -163,7 +163,8 @@ public enum IllumeJSON {
             let container = try decoder.singleValueContainer()
             let value = try container.decode(String.self)
             if let date = makeISO8601Formatter(fractionalSeconds: true).date(from: value)
-                ?? makeISO8601Formatter(fractionalSeconds: false).date(from: value) {
+                ?? makeISO8601Formatter(fractionalSeconds: false).date(from: value)
+                ?? makeDateOnlyFormatter().date(from: value) {
                 return date
             }
             throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid ISO-8601 date: \(value)")
@@ -181,6 +182,15 @@ public enum IllumeJSON {
     private static func makeISO8601Formatter(fractionalSeconds: Bool) -> ISO8601DateFormatter {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = fractionalSeconds ? [.withInternetDateTime, .withFractionalSeconds] : [.withInternetDateTime]
+        return formatter
+    }
+
+    private static func makeDateOnlyFormatter() -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
         return formatter
     }
 }

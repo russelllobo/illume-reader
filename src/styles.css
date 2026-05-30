@@ -9845,17 +9845,21 @@ html[data-color-scheme] .library-upgrade-button {
    ========================================================================== */
 
 .dashboard-tabs {
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
   gap: 4px;
+  width: min(1180px, 100%);
   padding: 4px;
   background: rgba(226, 232, 240, 0.75);
   border-radius: 10px;
   border: 1px solid #dfe5ec;
-  margin-bottom: 24px;
+  margin: 0 auto 24px;
   backdrop-filter: blur(8px);
 }
 
 .dashboard-tab-btn {
+  flex: 1 0 max-content;
+  min-width: max-content;
   padding: 8px 18px;
   border-radius: 8px;
   font-size: 0.88rem;
@@ -9867,7 +9871,16 @@ html[data-color-scheme] .library-upgrade-button {
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
+}
+
+.dashboard-tab-btn svg {
+  flex: 0 0 auto;
+}
+
+.dashboard-tab-btn span {
+  white-space: nowrap;
 }
 
 .dashboard-tab-btn:hover {
@@ -9879,6 +9892,27 @@ html[data-color-scheme] .library-upgrade-button {
   background: #fff;
   color: #0f172a;
   box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08);
+}
+
+@media (max-width: 620px) {
+  .dashboard-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-tab-btn {
+    min-width: 0;
+  }
+
+  .dashboard-tab-btn span {
+    white-space: normal;
+  }
+}
+
+@media (max-width: 420px) {
+  .dashboard-tabs {
+    grid-template-columns: 1fr;
+  }
 }
 
 .integrations-grid {
@@ -10204,6 +10238,20 @@ html[data-color-scheme] .library-upgrade-button {
   margin: 4px 0 0;
   font-size: 0.88rem;
   color: #64748b;
+}
+
+.feed-refresh-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid #dbe4ef;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 0.78rem;
+  font-weight: 800;
 }
 
 .preview-tabs {
@@ -10929,7 +10977,7 @@ html[data-color-scheme] .library-upgrade-button {
 
 .weekly-views-table {
   width: 100%;
-  min-width: 420px;
+  min-width: 560px;
   border-collapse: collapse;
   color: #0f172a;
   font-size: 0.82rem;
@@ -10960,6 +11008,32 @@ html[data-color-scheme] .library-upgrade-button {
 
 .weekly-views-table tbody td {
   font-weight: 750;
+}
+
+.weekly-change-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 900;
+}
+
+.weekly-change-pill.green {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.weekly-change-pill.amber {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.weekly-change-pill.red {
+  background: #fee2e2;
+  color: #991b1b;
 }
 
 .weekly-views-table tfoot th {
@@ -11449,14 +11523,16 @@ html[data-color-scheme] .library-upgrade-button {
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
 }
 
-/* Adjust Weekly views table for 5 columns */
+/* Adjust Weekly views table spacing */
 .weekly-views-table th,
 .weekly-views-table td {
   padding: 12px 16px;
 }
 
 .weekly-views-table th:nth-child(5),
-.weekly-views-table td:nth-child(5) {
+.weekly-views-table td:nth-child(5),
+.weekly-views-table th:nth-child(6),
+.weekly-views-table td:nth-child(6) {
   text-align: right;
 }
 

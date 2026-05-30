@@ -25,6 +25,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
     @Published var notice = ""
     @Published var readerSettings = ReaderSettings()
     @Published var readerImageResponse: ReaderImageFunctionResponse?
+    @Published var readerImagePhase: ReaderImagePhase = .idle
     @Published var narration = NarrationState()
 
     let backend = SupabaseBackend()
@@ -76,6 +77,14 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
     var imageLimit: Int {
         BillingAccess.imageLimit(isPro: isPro)
+    }
+
+    var imageUsageLabel: String {
+        "\(imageUsageCount) / \(imageLimit)"
+    }
+
+    var imageUsageSuffix: String {
+        isPro ? "/ mo" : "total"
     }
 
     func bootstrap() async {
@@ -137,6 +146,8 @@ final class IllumeAppModel: NSObject, ObservableObject {
         billingProfile = nil
         readerImageUsage = nil
         readerImageRowCount = 0
+        readerImageResponse = nil
+        readerImagePhase = .idle
     }
 
     func reload() async {
@@ -240,6 +251,8 @@ final class IllumeAppModel: NSObject, ObservableObject {
             }
             activeBookRow = row
             activeBook = parsed
+            readerImageResponse = nil
+            readerImagePhase = .idle
             try await backend.saveProgress(
                 bookId: row.id,
                 progress: ReadingProgress(currentIndex: row.currentIndex, currentPage: row.currentPage ?? 1),
@@ -254,6 +267,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
         activeBookRow = nil
         openingBook = nil
         readerImageResponse = nil
+        readerImagePhase = .idle
     }
 
     func renameBook(_ row: BookRow, title: String) async {
@@ -588,22 +602,60 @@ final class IllumeAppModel: NSObject, ObservableObject {
         return Float(AVSpeechUtteranceMinimumSpeechRate + normalizedValue * (AVSpeechUtteranceMaximumSpeechRate - AVSpeechUtteranceMinimumSpeechRate))
     }
 
-    func generateImage(text: String, startWord: Int, endWord: Int) async {
+    func generateImage(text: String, chunkIndex: Int, startWord: Int, endWord: Int) async {
         guard let row = activeBookRow, let accessToken = session?.accessToken else { return }
-        await runBusy { [self] in
-            let response = try await backend.invokeReaderImage(
+        let bookTitle = activeBook?.title ?? row.title
+        let author = activeBook?.author ?? row.author
+        let style = readerSettings.imageStyle
+        await runReaderImageTask { [self] in
+            readerImagePhase = .checking
+            let checkResponse = try await backend.invokeReaderImage(
                 ReaderImageFunctionRequest(
+                    author: author,
                     bookId: row.id,
+                    bookTitle: bookTitle,
+                    checkOnly: true,
+                    chunkIndex: chunkIndex,
                     startWord: startWord,
                     endWord: endWord,
+                    imageStyle: style,
                     text: text,
-                    style: readerSettings.imageStyle
+                    style: style
                 ),
                 accessToken: accessToken
             )
-            readerImageResponse = response
-            applyReaderImageCount(response.imageCount, plan: response.plan)
-            if response.imageCount == nil {
+
+            applyReaderImageCount(checkResponse.imageCount, plan: checkResponse.plan)
+            if checkResponse.imageUrl != nil {
+                readerImageResponse = checkResponse
+                readerImagePhase = .ready
+                return
+            }
+
+            readerImagePhase = .generating
+            let generationResponse = try await backend.invokeReaderImage(
+                ReaderImageFunctionRequest(
+                    author: author,
+                    bookId: row.id,
+                    bookTitle: bookTitle,
+                    checkOnly: nil,
+                    chunkIndex: chunkIndex,
+                    startWord: startWord,
+                    endWord: endWord,
+                    imageStyle: style,
+                    text: text,
+                    style: style
+                ),
+                accessToken: accessToken
+            )
+            readerImageResponse = generationResponse
+            applyReaderImageCount(generationResponse.imageCount, plan: generationResponse.plan)
+            if generationResponse.imageUrl != nil {
+                readerImagePhase = .ready
+            } else if generationResponse.limitReached == true {
+                readerImagePhase = .error
+            }
+            if generationResponse.imageCount == nil {
                 await reload()
             }
         }
@@ -634,6 +686,16 @@ final class IllumeAppModel: NSObject, ObservableObject {
             notice = error.localizedDescription
         }
         isLoading = false
+    }
+
+    private func runReaderImageTask(_ operation: @escaping () async throws -> Void) async {
+        notice = ""
+        do {
+            try await operation()
+        } catch {
+            readerImagePhase = .error
+            notice = error.localizedDescription
+        }
     }
 
     private func runImporting(_ operation: @escaping () async throws -> Void) async {
@@ -883,6 +945,14 @@ struct ReaderSettings: Equatable {
     var lineWidth: Double = 42
     var narrationRate: Double = 1.0
     var imageStyle: ReaderImageStyle = .cartoon
+}
+
+enum ReaderImagePhase: Equatable {
+    case idle
+    case checking
+    case generating
+    case ready
+    case error
 }
 
 struct NarrationState: Equatable {

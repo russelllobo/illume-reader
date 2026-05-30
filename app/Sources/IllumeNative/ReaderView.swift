@@ -12,6 +12,84 @@ private struct ReaderImageChunk {
     let text: String
 }
 
+private struct ReaderImageChunkCache {
+    let bookID: UUID?
+    let firstParagraphID: String?
+    let lastParagraphID: String?
+    let paragraphCount: Int
+    let paragraphWordStarts: [Int]
+    let chunks: [ReaderImageChunk]
+
+    static let empty = ReaderImageChunkCache(
+        bookID: nil,
+        firstParagraphID: nil,
+        lastParagraphID: nil,
+        paragraphCount: 0,
+        paragraphWordStarts: [],
+        chunks: []
+    )
+
+    func matches(bookID: UUID?, book: ReaderBook) -> Bool {
+        self.bookID == bookID
+            && paragraphCount == book.paragraphs.count
+            && firstParagraphID == book.paragraphs.first?.id
+            && lastParagraphID == book.paragraphs.last?.id
+    }
+
+    static func build(bookID: UUID?, book: ReaderBook) -> ReaderImageChunkCache {
+        var paragraphWordStarts = Array(repeating: 0, count: book.paragraphs.count)
+        var chunks: [ReaderImageChunk] = []
+        var chunkWords: [String] = []
+        var chunkStartWord = 1
+        var totalWords = 0
+
+        for (index, paragraph) in book.paragraphs.enumerated() {
+            paragraphWordStarts[index] = totalWords
+            guard paragraph.kind != .heading else { continue }
+
+            let words = paragraph.text.split(whereSeparator: \.isWhitespace).map(String.init)
+            for word in words {
+                if chunkWords.count == readerImageChunkWords {
+                    let chunkIndex = chunks.count
+                    chunks.append(
+                        ReaderImageChunk(
+                            endWord: chunkStartWord + chunkWords.count - 1,
+                            index: chunkIndex,
+                            startWord: chunkStartWord,
+                            text: chunkWords.joined(separator: " ")
+                        )
+                    )
+                    chunkStartWord += chunkWords.count
+                    chunkWords.removeAll(keepingCapacity: true)
+                }
+                chunkWords.append(word)
+                totalWords += 1
+            }
+        }
+
+        if !chunkWords.isEmpty {
+            let chunkIndex = chunks.count
+            chunks.append(
+                ReaderImageChunk(
+                    endWord: chunkStartWord + chunkWords.count - 1,
+                    index: chunkIndex,
+                    startWord: chunkStartWord,
+                    text: chunkWords.joined(separator: " ")
+                )
+            )
+        }
+
+        return ReaderImageChunkCache(
+            bookID: bookID,
+            firstParagraphID: book.paragraphs.first?.id,
+            lastParagraphID: book.paragraphs.last?.id,
+            paragraphCount: book.paragraphs.count,
+            paragraphWordStarts: paragraphWordStarts,
+            chunks: chunks
+        )
+    }
+}
+
 struct ReaderView: View {
     @EnvironmentObject private var app: IllumeAppModel
     @Environment(\.dismiss) private var dismiss
@@ -21,9 +99,10 @@ struct ReaderView: View {
     @State private var scrollRequest = 0
     @State private var readerContentVisible = true
     @State private var currentIndex = 0
-    @State private var imageModeEnabled = false
+    @State private var imageModeEnabled = true
     @State private var imageModeTask: Task<Void, Never>?
     @State private var scheduledImageChunkIndex: Int?
+    @State private var imageChunkCache = ReaderImageChunkCache.empty
 
     var body: some View {
         let theme = app.readerSettings.theme
@@ -32,16 +111,36 @@ struct ReaderView: View {
             theme.background.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                ReaderToolbar(
-                    tableOfContentsOpen: $tableOfContentsOpen,
-                    settingsOpen: $settingsOpen,
-                    hasTableOfContents: app.activeBook.map { !tableOfContentsEntries(for: $0).isEmpty } ?? false
-                ) {
-                    app.closeReader()
-                    dismiss()
-                }
-
                 if let book = app.activeBook {
+                    let isShowingImageMode = imageModeEnabled && imageParagraph(in: book) != nil
+
+                    if isShowingImageMode {
+                        ZStack(alignment: .top) {
+                            ReaderImageTopPanel(
+                                urlString: app.readerImageResponse?.imageUrl,
+                                phase: app.readerImagePhase
+                            )
+
+                            ReaderToolbar(
+                                settingsOpen: $settingsOpen
+                            ) {
+                                app.closeReader()
+                                dismiss()
+                            }
+                            .padding(.top, 8)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.top, 6)
+                    } else {
+                        ReaderToolbar(
+                            settingsOpen: $settingsOpen
+                        ) {
+                            app.closeReader()
+                            dismiss()
+                        }
+                        .background(theme.background)
+                    }
+
                     ScrollViewReader { proxy in
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: 18) {
@@ -64,10 +163,7 @@ struct ReaderView: View {
                             .frame(maxWidth: .infinity)
                         }
                         .scrollIndicators(.hidden)
-                        .blurLoadIn(radius: 7)
                         .opacity(readerContentVisible ? 1 : 0)
-                        .blur(radius: readerContentVisible ? 0 : 7)
-                        .scaleEffect(readerContentVisible ? 1 : 0.985)
                         .onAppear {
                             if let row = app.activeBookRow,
                                book.paragraphs.indices.contains(row.currentIndex) {
@@ -96,15 +192,6 @@ struct ReaderView: View {
                 }
             }
 
-            if let imageUrl = app.readerImageResponse?.imageUrl,
-               let url = URL(string: imageUrl) {
-                ReaderImageOverlay(url: url) {
-                    withAnimation(IllumeTheme.spring) {
-                        app.readerImageResponse = nil
-                    }
-                }
-            }
-
             if let book = app.activeBook {
                 VStack {
                     Spacer()
@@ -113,12 +200,10 @@ struct ReaderView: View {
                             app.toggleNarration(for: book, from: currentIndex)
                         }
 
-                        ReaderImageModeButton(
-                            isEnabled: imageModeEnabled,
-                            isLoading: app.isLoading,
-                            isDisabled: imageParagraph(in: book) == nil
+                        ReaderTableOfContentsButton(
+                            hasTableOfContents: !tableOfContentsEntries(for: book).isEmpty
                         ) {
-                            toggleImageMode(for: book)
+                            tableOfContentsOpen = true
                         }
                     }
                     .padding(.horizontal, 22)
@@ -128,7 +213,14 @@ struct ReaderView: View {
         }
         .foregroundStyle(theme.foreground)
         .sheet(isPresented: $settingsOpen) {
-            ReaderSettingsSheet()
+            ReaderSettingsSheet(
+                imageModeEnabled: $imageModeEnabled,
+                imageModeLoading: app.readerImagePhase == .checking || app.readerImagePhase == .generating,
+                imageModeDisabled: app.activeBook.map { imageParagraph(in: $0) == nil } ?? true
+            ) {
+                guard let book = app.activeBook else { return }
+                toggleImageMode(for: book)
+            }
                 .presentationDetents([.medium])
                 .presentationCornerRadius(30)
         }
@@ -157,9 +249,18 @@ struct ReaderView: View {
             guard imageModeEnabled, let book = app.activeBook else { return }
             scheduleImageGeneration(for: book)
         }
+        .onChange(of: app.activeBookRow?.id) {
+            guard imageModeEnabled, let book = app.activeBook else { return }
+            scheduledImageChunkIndex = nil
+            scheduleImageGeneration(for: book, delay: .zero)
+        }
         .onChange(of: app.readerSettings.imageStyle) {
             guard imageModeEnabled, let book = app.activeBook else { return }
             scheduledImageChunkIndex = nil
+            scheduleImageGeneration(for: book, delay: .zero)
+        }
+        .onAppear {
+            guard imageModeEnabled, let book = app.activeBook else { return }
             scheduleImageGeneration(for: book, delay: .zero)
         }
         .onDisappear {
@@ -172,6 +273,7 @@ struct ReaderView: View {
         imageModeEnabled.toggle()
         if !imageModeEnabled {
             app.readerImageResponse = nil
+            app.readerImagePhase = .idle
             scheduledImageChunkIndex = nil
         }
 
@@ -193,7 +295,7 @@ struct ReaderView: View {
                 try? await Task.sleep(for: delay)
             }
             guard !Task.isCancelled else { return }
-            await app.generateImage(text: chunk.text, startWord: chunk.startWord, endWord: chunk.endWord)
+            await app.generateImage(text: chunk.text, chunkIndex: chunk.index, startWord: chunk.startWord, endWord: chunk.endWord)
         }
     }
 
@@ -214,92 +316,46 @@ struct ReaderView: View {
 
     private func imageChunk(in book: ReaderBook) -> ReaderImageChunk? {
         guard !book.paragraphs.isEmpty else { return nil }
-        let target = min(max(currentIndex, 0), book.paragraphs.count - 1)
-        var wordsBeforeTarget = 0
-        var allWords: [String] = []
-
-        for (index, paragraph) in book.paragraphs.enumerated() {
-            if paragraph.kind == .heading { continue }
-            let paragraphWords = paragraph.text.split(whereSeparator: \.isWhitespace).map(String.init)
-            if index < target {
-                wordsBeforeTarget += paragraphWords.count
-            }
-            allWords.append(contentsOf: paragraphWords)
+        let bookID = app.activeBookRow?.id
+        if !imageChunkCache.matches(bookID: bookID, book: book) {
+            imageChunkCache = ReaderImageChunkCache.build(bookID: bookID, book: book)
         }
 
-        guard !allWords.isEmpty else { return nil }
+        let target = min(max(currentIndex, 0), book.paragraphs.count - 1)
+        guard imageChunkCache.paragraphWordStarts.indices.contains(target),
+              !imageChunkCache.chunks.isEmpty else { return nil }
+        let wordsBeforeTarget = imageChunkCache.paragraphWordStarts[target]
         let chunkIndex = wordsBeforeTarget / readerImageChunkWords
-        let startOffset = min(chunkIndex * readerImageChunkWords, allWords.count - 1)
-        let endOffset = min(startOffset + readerImageChunkWords, allWords.count)
-        guard startOffset < endOffset else { return nil }
-
-        return ReaderImageChunk(
-            endWord: endOffset,
-            index: chunkIndex,
-            startWord: startOffset + 1,
-            text: allWords[startOffset..<endOffset].joined(separator: " ")
-        )
+        guard imageChunkCache.chunks.indices.contains(chunkIndex) else { return nil }
+        return imageChunkCache.chunks[chunkIndex]
     }
 
     private func tableOfContentsEntries(for book: ReaderBook) -> [TableOfContentsEntry] {
-        var entries: [TableOfContentsEntry] = []
-        for (chapterIndex, title) in book.chapters.enumerated() where !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        book.chapters.enumerated().compactMap { chapterIndex, title in
+            let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedTitle.isEmpty else { return nil }
             guard let paragraphIndex = book.paragraphs.firstIndex(where: { $0.chapterIndex == chapterIndex }) else {
-                continue
+                return nil
             }
-            entries.append(
-                TableOfContentsEntry(
-                    title: title,
-                    paragraphIndex: paragraphIndex,
-                    paragraphID: book.paragraphs[paragraphIndex].id,
-                    pageNumber: book.paragraphs[paragraphIndex].pageNumber
-                )
+
+            return TableOfContentsEntry(
+                title: trimmedTitle,
+                paragraphIndex: paragraphIndex,
+                paragraphID: book.paragraphs[paragraphIndex].id,
+                pageNumber: book.paragraphs[paragraphIndex].pageNumber
             )
         }
-
-        let hasOnlyBookTitle = entries.count == 1 && entries.first?.title == book.title
-        if entries.isEmpty || hasOnlyBookTitle {
-            let headingEntries: [TableOfContentsEntry] = book.paragraphs.enumerated().compactMap { index, paragraph in
-                guard paragraph.kind == .heading else { return nil }
-                return TableOfContentsEntry(
-                    title: paragraph.text,
-                    paragraphIndex: index,
-                    paragraphID: paragraph.id,
-                    pageNumber: paragraph.pageNumber
-                )
-            }
-            if !headingEntries.isEmpty {
-                entries = headingEntries.map { entry in
-                    TableOfContentsEntry(
-                        title: entry.title,
-                        paragraphIndex: entry.paragraphIndex,
-                        paragraphID: entry.paragraphID,
-                        pageNumber: entry.pageNumber
-                    )
-                }
-            }
-        }
-
-        if entries.isEmpty, !book.paragraphs.isEmpty {
-            entries = [TableOfContentsEntry(title: book.title, paragraphIndex: 0, paragraphID: book.paragraphs[0].id, pageNumber: book.paragraphs.first?.pageNumber)]
-        }
-
-        return entries
     }
 }
 
 struct ReaderToolbar: View {
-    @Binding var tableOfContentsOpen: Bool
     @Binding var settingsOpen: Bool
-    let hasTableOfContents: Bool
     let close: () -> Void
 
     var body: some View {
         HStack {
             SoftIconButton(systemName: "chevron.down", action: close)
             Spacer()
-            SoftIconButton(systemName: "list.bullet") { tableOfContentsOpen = true }
-                .disabled(!hasTableOfContents)
             SoftIconButton(systemName: "textformat.size") { settingsOpen = true }
         }
         .padding(.horizontal, 18)
@@ -480,11 +536,26 @@ struct ReaderAttributedText: UIViewRepresentable {
     func updateUIView(_ textView: UITextView, context: Context) {
         context.coordinator.selectParagraph = selectParagraph
         context.coordinator.selectWord = selectWord
-        context.coordinator.wordRanges = IllumeAppModel.wordRanges(in: text)
+        if context.coordinator.cachedText != text {
+            context.coordinator.cachedText = text
+            context.coordinator.wordRanges = IllumeAppModel.wordRanges(in: text)
+        }
+
         textView.linkTextAttributes = [
             .foregroundColor: textColor,
             .underlineStyle: 0
         ]
+
+        let renderKey = RenderKey(
+            text: text,
+            fontName: font.fontName,
+            fontSize: font.pointSize,
+            textColor: textColor,
+            lineSpacing: lineSpacing,
+            activeRange: activeRange
+        )
+        guard context.coordinator.renderKey != renderKey else { return }
+        context.coordinator.renderKey = renderKey
         textView.attributedText = attributedString
     }
 
@@ -532,6 +603,8 @@ struct ReaderAttributedText: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate {
         var selectParagraph: () -> Void
         var selectWord: (Int) -> Void
+        var cachedText = ""
+        var renderKey: RenderKey?
         var wordRanges: [NSRange] = []
 
         lazy var tapRecognizer: UITapGestureRecognizer = {
@@ -583,6 +656,24 @@ struct ReaderAttributedText: UIViewRepresentable {
             return characterIndex
         }
     }
+
+    struct RenderKey: Equatable {
+        let text: String
+        let fontName: String
+        let fontSize: CGFloat
+        let textColor: UIColor
+        let lineSpacing: CGFloat
+        let activeRange: NSRange?
+
+        static func == (lhs: RenderKey, rhs: RenderKey) -> Bool {
+            lhs.text == rhs.text
+                && lhs.fontName == rhs.fontName
+                && lhs.fontSize == rhs.fontSize
+                && lhs.textColor.isEqual(rhs.textColor)
+                && lhs.lineSpacing == rhs.lineSpacing
+                && lhs.activeRange == rhs.activeRange
+        }
+    }
 }
 
 struct ReaderNarrationButton: View {
@@ -590,18 +681,70 @@ struct ReaderNarrationButton: View {
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                .font(.system(size: 22, weight: .black))
-                .foregroundStyle(IllumeTheme.ink)
-                .frame(width: 58, height: 58)
-                .illumeLiquidGlassCircle(
-                    tint: isPlaying ? IllumeTheme.mist : IllumeTheme.paper,
-                    isInteractive: true
-                )
+        if #available(iOS 26.0, *) {
+            Button(action: action) {
+                narrationIcon
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .tint(isPlaying ? IllumeTheme.mist : IllumeTheme.paper)
+            .accessibilityLabel(isPlaying ? "Stop narration" : "Play narration")
+        } else {
+            Button(action: action) {
+                narrationIcon
+                    .illumeLiquidGlassCircle(
+                        tint: isPlaying ? IllumeTheme.mist : IllumeTheme.paper,
+                        isInteractive: true
+                    )
+            }
+            .buttonStyle(LiquidLiftButtonStyle())
+            .accessibilityLabel(isPlaying ? "Stop narration" : "Play narration")
         }
-        .buttonStyle(LiquidLiftButtonStyle())
-        .accessibilityLabel(isPlaying ? "Stop narration" : "Play narration")
+    }
+
+    private var narrationIcon: some View {
+        Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+            .font(.system(size: 22, weight: .black))
+            .foregroundStyle(IllumeTheme.ink)
+            .frame(width: 58, height: 58)
+    }
+}
+
+struct ReaderTableOfContentsButton: View {
+    let hasTableOfContents: Bool
+    let action: () -> Void
+
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            Button(action: action) {
+                contentsIcon
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .tint(IllumeTheme.paper)
+            .disabled(!hasTableOfContents)
+            .opacity(hasTableOfContents ? 1 : 0.5)
+            .accessibilityLabel("Open table of contents")
+        } else {
+            Button(action: action) {
+                contentsIcon
+                    .illumeLiquidGlassCircle(
+                        tint: IllumeTheme.paper,
+                        isInteractive: true
+                    )
+            }
+            .buttonStyle(LiquidLiftButtonStyle())
+            .disabled(!hasTableOfContents)
+            .opacity(hasTableOfContents ? 1 : 0.5)
+            .accessibilityLabel("Open table of contents")
+        }
+    }
+
+    private var contentsIcon: some View {
+        Image(systemName: "list.bullet")
+            .font(.system(size: 21, weight: .black))
+            .foregroundStyle(IllumeTheme.ink)
+            .frame(width: 58, height: 58)
     }
 }
 
@@ -612,45 +755,75 @@ struct ReaderImageModeButton: View {
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                if isLoading && isEnabled {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(IllumeTheme.ink)
-                } else {
-                    Image(systemName: isEnabled ? "photo.stack.fill" : "photo.stack")
-                        .font(.system(size: 17, weight: .bold))
+        if #available(iOS 26.0, *) {
+            if isEnabled {
+                Button(action: action) {
+                    imageModeLabel
                 }
-
-                Text("Image mode")
-                    .font(.system(.subheadline, design: .rounded, weight: .bold))
-
-                Text(isEnabled ? "On" : "Off")
-                    .font(.system(.caption, design: .rounded, weight: .black))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(isEnabled ? IllumeTheme.coral : IllumeTheme.ink.opacity(0.42), in: Capsule())
+                .buttonStyle(.glassProminent)
+                .buttonBorderShape(.capsule)
+                .tint(IllumeTheme.coral)
+                .disabled(isDisabled)
+                .opacity(isDisabled ? 0.5 : 1)
+            } else {
+                Button(action: action) {
+                    imageModeLabel
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.capsule)
+                .tint(IllumeTheme.paper)
+                .disabled(isDisabled)
+                .opacity(isDisabled ? 0.5 : 1)
             }
-            .foregroundStyle(IllumeTheme.ink)
-            .padding(.leading, 16)
-            .padding(.trailing, 12)
-            .frame(height: 54)
-            .illumeLiquidGlassCapsule(
-                tint: isEnabled ? IllumeTheme.coral : IllumeTheme.paper,
-                isInteractive: true
-            )
-            .scaleEffect(isEnabled ? 1.02 : 1)
+        } else {
+            Button(action: action) {
+                imageModeLabel
+                    .illumeLiquidGlassCapsule(
+                        tint: isEnabled ? IllumeTheme.coral : IllumeTheme.paper,
+                        isInteractive: true
+                    )
+                    .scaleEffect(isEnabled ? 1.02 : 1)
+            }
+            .buttonStyle(LiquidLiftButtonStyle())
+            .disabled(isDisabled)
+            .opacity(isDisabled ? 0.5 : 1)
         }
-        .buttonStyle(LiquidLiftButtonStyle())
-        .disabled(isDisabled)
-        .opacity(isDisabled ? 0.5 : 1)
+    }
+
+    private var imageModeLabel: some View {
+        HStack(spacing: 10) {
+            if isLoading && isEnabled {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(IllumeTheme.ink)
+            } else {
+                Image(systemName: isEnabled ? "photo.stack.fill" : "photo.stack")
+                    .font(.system(size: 17, weight: .bold))
+            }
+
+            Text("Image mode")
+                .font(.system(.subheadline, design: .rounded, weight: .bold))
+
+            Text(isEnabled ? "On" : "Off")
+                .font(.system(.caption, design: .rounded, weight: .black))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(isEnabled ? IllumeTheme.coral : IllumeTheme.ink.opacity(0.42), in: Capsule())
+        }
+        .foregroundStyle(IllumeTheme.ink)
+        .padding(.leading, 16)
+        .padding(.trailing, 12)
+        .frame(height: 54)
     }
 }
 
 struct ReaderSettingsSheet: View {
     @EnvironmentObject private var app: IllumeAppModel
+    @Binding var imageModeEnabled: Bool
+    let imageModeLoading: Bool
+    let imageModeDisabled: Bool
+    let toggleImageMode: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
@@ -677,6 +850,13 @@ struct ReaderSettingsSheet: View {
             }
             .padding(16)
             .illumeLiquidGlassRounded(cornerRadius: 22, tint: IllumeTheme.paper)
+
+            ReaderImageModeButton(
+                isEnabled: imageModeEnabled,
+                isLoading: imageModeLoading,
+                isDisabled: imageModeDisabled,
+                action: toggleImageMode
+            )
 
             Picker("Image style", selection: $app.readerSettings.imageStyle) {
                 Text("Cartoon").tag(ReaderImageStyle.cartoon)
@@ -707,42 +887,174 @@ struct SliderRow: View {
     }
 }
 
-struct ReaderImageOverlay: View {
-    let url: URL
-    let close: () -> Void
+struct ReaderImageTopPanel: View {
+    let urlString: String?
+    let phase: ReaderImagePhase
+
+    private var panelHeight: CGFloat {
+        min(max(UIScreen.main.bounds.height * 0.52, 380), 520)
+    }
 
     var body: some View {
-        VStack {
-            Spacer()
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let image):
-                    image
-                        .resizable()
-                        .scaledToFit()
-                        .blurLoadIn(radius: 10)
-                case .failure:
-                    Image(systemName: "photo")
-                        .font(.largeTitle)
-                default:
-                    ProgressView()
+        ZStack {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(IllumeTheme.paper.opacity(0.72))
+
+            if let urlString, Self.isDataImageURL(urlString) {
+                ReaderImageDataURLView(dataURL: urlString)
+            } else if let urlString, let url = URL(string: urlString) {
+                AsyncImage(url: url) { imagePhase in
+                    switch imagePhase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    case .failure:
+                        Image(systemName: "photo")
+                            .font(.largeTitle)
+                            .foregroundStyle(IllumeTheme.ink.opacity(0.45))
+                    default:
+                        ProgressView()
+                            .controlSize(.large)
+                    }
                 }
+            } else if phase == .checking || phase == .generating {
+                ReaderImageGeneratingView(isFreshGeneration: phase == .generating)
+            } else {
+                Image(systemName: "photo.on.rectangle.angled")
+                    .font(.system(size: 38, weight: .semibold))
+                    .foregroundStyle(IllumeTheme.ink.opacity(0.34))
             }
-            .frame(maxHeight: 360)
-            .padding(12)
-            .illumeLiquidGlassRounded(cornerRadius: 28, tint: IllumeTheme.paper)
-            .overlay(alignment: .topTrailing) {
-                SoftIconButton(systemName: "xmark", action: close)
-                    .padding(16)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: panelHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            .white.opacity(0.46),
+                            IllumeTheme.ink.opacity(0.12)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+        }
+        .accessibilityLabel("Generated scene image")
+    }
+
+    private static func isDataImageURL(_ value: String) -> Bool {
+        value.lowercased().hasPrefix("data:image/")
+    }
+}
+
+struct ReaderImageDataURLView: View {
+    let dataURL: String
+    @State private var image: UIImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                ProgressView()
+                    .controlSize(.large)
             }
-            .padding(18)
         }
-        .background {
-            Color.black.opacity(0.18)
-                .ignoresSafeArea()
-                .onTapGesture(perform: close)
+        .task(id: dataURL) {
+            image = nil
+            let source = dataURL
+            let decodedImage = await Task.detached(priority: .utility) {
+                Self.decodeDataURL(source)
+            }.value
+            guard !Task.isCancelled else { return }
+            image = decodedImage
         }
-        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    nonisolated private static func decodeDataURL(_ source: String) -> UIImage? {
+        guard let commaIndex = source.firstIndex(of: ",") else { return nil }
+        let base64Start = source.index(after: commaIndex)
+        let base64 = String(source[base64Start...])
+        guard let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters) else {
+            return nil
+        }
+        return UIImage(data: data)
+    }
+}
+
+struct ReaderImageGeneratingView: View {
+    let isFreshGeneration: Bool
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.03, green: 0.04, blue: 0.06),
+                    Color(red: 0.05, green: 0.07, blue: 0.11),
+                    Color(red: 0.04, green: 0.08, blue: 0.06)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            ReaderImageLight(color: Color(red: 0.55, green: 0.50, blue: 1.0), size: 250)
+                .offset(x: -92, y: -78)
+                .opacity(0.52)
+
+            ReaderImageLight(color: Color(red: 0.15, green: 0.9, blue: 0.78), size: 270)
+                .offset(x: 104, y: 80)
+                .opacity(0.74)
+
+            ReaderImageLight(color: Color(red: 1.0, green: 0.63, blue: 0.42), size: 150)
+                .offset(x: -18, y: 36)
+                .opacity(0.38)
+
+            HStack(spacing: 9) {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(.white)
+                Text(isFreshGeneration ? "Generating" : "Checking")
+                    .font(.system(size: 12, weight: .black, design: .rounded))
+                    .textCase(.uppercase)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14)
+            .frame(height: 34)
+            .background(.black.opacity(0.42), in: Capsule())
+            .overlay(Capsule().stroke(.white.opacity(0.26), lineWidth: 1))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(16)
+        }
+    }
+}
+
+private struct ReaderImageLight: View {
+    let color: Color
+    let size: CGFloat
+
+    var body: some View {
+        Circle()
+            .fill(
+                RadialGradient(
+                    colors: [
+                        color.opacity(0.82),
+                        color.opacity(0.34),
+                        color.opacity(0)
+                    ],
+                    center: .center,
+                    startRadius: 0,
+                    endRadius: size * 0.5
+                )
+            )
+            .frame(width: size, height: size)
+            .blur(radius: 28)
+            .blendMode(.screen)
     }
 }
 

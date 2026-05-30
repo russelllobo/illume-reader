@@ -2597,15 +2597,12 @@ type CombinedPerformanceSortKey =
   | "totalViews"
   | "ytViews"
   | "igViews"
-  | "engagedViews"
   | "averageViewPercentage"
   | "ytAverageViewPercentage"
   | "igAverageViewPercentage"
   | "stayedToWatch"
   | "ytStayedToWatch"
-  | "igStayedToWatch"
-  | "igEngagedViews"
-  | "ytEngagedViews";
+  | "igStayedToWatch";
 
 const compareText = (left: string, right: string) =>
   left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
@@ -3352,16 +3349,12 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
             <h2>Interactive Media Feed</h2>
             <p>Latest content is fetched automatically when this tab opens.</p>
           </div>
-          <button className="dashboard-primary-button" onClick={() => handleFetchFeed()} disabled={feedLoading} type="button" style={{ width: 'auto', margin: 0, padding: '0 16px' }}>
-            {feedLoading ? (
-              <>
-                <Loader2 className="spin" size={16} aria-hidden="true" />
-                <span>Pulling API Content...</span>
-              </>
-            ) : (
-                <span>Refresh Content</span>
-            )}
-          </button>
+          {feedLoading && (
+            <span className="feed-refresh-status">
+              <Loader2 className="spin" size={16} aria-hidden="true" />
+              Pulling API content...
+            </span>
+          )}
           {!youtubeAnalytics && ytStatus !== "disconnected" && (
             <button className="dashboard-secondary-button" onClick={handleYtOAuth} type="button" style={{ width: 'auto', margin: 0, padding: '0 16px' }}>
               Link Google
@@ -3453,73 +3446,6 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
                     <span>Avg viewed</span>
                     <strong>{formatAnalyticsNumber(youtubeAnalytics.averageViewPercentage)}%</strong>
                   </article>
-                </div>
-
-                <div className="youtube-analytics-table-wrap">
-                  <table className="youtube-analytics-table">
-                    <thead>
-                      <tr>
-                        <th className="content-column metric-help" colSpan={3} data-definition="Video duration, publish date, thumbnail, and title." tabIndex={0}>Content</th>
-                        <th className="metric-help sortable-heading" data-definition="The average percentage of the video watched, weighted by views." tabIndex={0}>{youtubeSortButton("averageViewPercentage", "Average duration watched")}</th>
-                        <th className="metric-help sortable-heading" data-definition="YouTube engaged views divided by views. This approximates how many viewers stayed to watch." tabIndex={0}>{youtubeSortButton("stayedToWatch", "Stayed to watch")}</th>
-                        <th className="metric-help sortable-heading" data-definition="Total YouTube views in the selected analytics period." tabIndex={0}>{youtubeSortButton("views", "Views")}</th>
-                        <th className="metric-help sortable-heading" data-definition="Estimated total hours watched in the selected analytics period." tabIndex={0}>{youtubeSortButton("watchHours", "Watch time (hours)")}</th>
-                        <th className="metric-help sortable-heading" data-definition="How many times YouTube showed the video thumbnail to viewers." tabIndex={0}>{youtubeSortButton("impressions", "Impressions")}</th>
-                        <th className="metric-help sortable-heading" data-definition="The percentage of impressions that became views." tabIndex={0}>{youtubeSortButton("impressionsClickThroughRate", "Impressions click-through rate")}</th>
-                      </tr>
-                      <tr>
-                        <th className="duration-heading metric-help sortable-heading" data-definition="Video length." tabIndex={0}>{youtubeSortButton("duration", "Duration")}</th>
-                        <th className="date-heading metric-help sortable-heading" data-definition="Date the video was published." tabIndex={0}>{youtubeSortButton("publishedAt", "Publishing date")}</th>
-                        <th className="sortable-heading">{youtubeSortButton("title", "Title")}</th>
-                        <th></th>
-                        <th></th>
-                        <th></th>
-                        <th></th>
-                        <th></th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sortedYoutubeAnalyticsRows.map((row) => (
-                        <tr key={row.id}>
-                          <td className="duration-cell">
-                            <span className="analytics-row-accent" style={{ background: row.color }} />
-                            <span className="analytics-duration-pill">{row.duration}</span>
-                          </td>
-                          <td>{formatPublishDate(row.publishedAt)}</td>
-                          <td className="analytics-content-cell">
-                            <div className="analytics-content-inner">
-                              <img src={row.imageUrl} alt="" />
-                              <span>{row.title}</span>
-                            </div>
-                          </td>
-                          <td>{formatAnalyticsPercent(row.averageViewPercentage)}</td>
-                          <td>{formatAnalyticsPercent(row.stayedToWatch)}</td>
-                          <td>
-                            {formatAnalyticsNumber(row.views)}
-                            <small>{formatAnalyticsPercent(row.viewsShare)}</small>
-                          </td>
-                          <td>
-                            {formatAnalyticsNumber(row.watchHours)}
-                            <small>{formatAnalyticsPercent(row.watchTimeShare)}</small>
-                          </td>
-                          <td>{formatOptionalAnalyticsNumber(row.impressions)}</td>
-                          <td>{formatOptionalAnalyticsPercent(row.impressionsClickThroughRate)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                    <tfoot>
-                      <tr>
-                        <th colSpan={3}>Total / average</th>
-                        <th>{formatAnalyticsPercent(youtubeAnalyticsTotals.averageViewPercentage)}</th>
-                        <th>{formatAnalyticsPercent(youtubeAnalyticsTotals.stayedToWatch)}</th>
-                        <th>{formatAnalyticsNumber(youtubeAnalyticsTotals.views)}</th>
-                        <th>{formatAnalyticsNumber(youtubeAnalyticsTotals.watchHours)}</th>
-                        <th>{formatOptionalAnalyticsNumber(youtubeAnalyticsTotals.impressions)}</th>
-                        <th>{formatOptionalAnalyticsPercent(youtubeAnalyticsTotals.impressionsClickThroughRate)}</th>
-                      </tr>
-                    </tfoot>
-                  </table>
                 </div>
               </div>
             )}
@@ -3855,16 +3781,12 @@ function InstagramIntegrationSection({ refreshSignal, onLinksChanged }: { refres
             <h2>Instagram Media Feed</h2>
             <p>Latest posts fetched automatically using your connection credentials.</p>
           </div>
-          <button className="dashboard-primary-button" onClick={() => handleFetchFeed()} disabled={feedLoading} type="button" style={{ width: 'auto', margin: 0, padding: '0 16px' }}>
-            {feedLoading ? (
-              <>
-                <Loader2 className="spin" size={16} aria-hidden="true" />
-                <span>Pulling API Content...</span>
-              </>
-            ) : (
-                <span>Refresh Content</span>
-            )}
-          </button>
+          {feedLoading && (
+            <span className="feed-refresh-status">
+              <Loader2 className="spin" size={16} aria-hidden="true" />
+              Pulling API content...
+            </span>
+          )}
         </div>
 
         {fetchError && (
@@ -4114,7 +4036,6 @@ function InstagramIntegrationSection({ refreshSignal, onLinksChanged }: { refres
 function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: number; linksVersion?: number }) {
   const [hoveredWeekIndex, setHoveredWeekIndex] = useState<number | null>(null);
   const [averageViewExpanded, setAverageViewExpanded] = useState(false);
-  const [engagedViewsExpanded, setEngagedViewsExpanded] = useState(false);
   const [igVideoDurations, setIgVideoDurations] = useState<Record<string, number>>({});
   const [platformViewsExpanded, setPlatformViewsExpanded] = useState(false);
   const [stayedToWatchExpanded, setStayedToWatchExpanded] = useState(false);
@@ -4279,7 +4200,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 
   // 6. Compute weekly combined analytics
   const weeklyViewsData = useMemo(() => {
-    return weeklyViews.map((week) => {
+    const rows = weeklyViews.map((week) => {
       const ytViews = Number(week.views ?? 0);
       const igViews = getIgViewsForWeek(week.startDate, week.endDate);
       const totalViews = ytViews + igViews;
@@ -4288,6 +4209,21 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
         ytViews,
         igViews,
         totalViews
+      };
+    });
+
+    return rows.map((week, index) => {
+      const previousWeek = rows[index - 1];
+      const previousTotalViews = previousWeek?.totalViews ?? null;
+      const weeklyChangePercent = previousTotalViews === null
+        ? null
+        : previousTotalViews === 0
+          ? week.totalViews > 0 ? 100 : 0
+          : ((week.totalViews - previousTotalViews) / previousTotalViews) * 100;
+
+      return {
+        ...week,
+        weeklyChangePercent
       };
     });
   }, [weeklyViews, getIgViewsForWeek]);
@@ -4524,6 +4460,21 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
   const formatAnalyticsPercent = (value: number | null) =>
     value === null ? "-" : `${new Intl.NumberFormat("en-GB", { maximumFractionDigits: 1 }).format(value || 0)}%`;
 
+  const formatWeeklyChange = (value: number | null) => {
+    if (value === null) return "-";
+    const formatted = new Intl.NumberFormat("en-GB", {
+      maximumFractionDigits: 1,
+      minimumFractionDigits: 1
+    }).format(Math.abs(value));
+    const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+    return `${sign}${formatted}%`;
+  };
+
+  const weeklyChangeTone = (value: number | null) => {
+    if (value === null || value === 0) return "amber";
+    return value > 0 ? "green" : "red";
+  };
+
   const combinedPerformanceTotals = useMemo(() => {
 	    const totalViews = combinedEntries.reduce((sum, entry) => sum + entry.totalViews, 0);
 	    const ytViews = combinedEntries.reduce((sum, entry) => sum + entry.ytViews, 0);
@@ -4748,6 +4699,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                     <th>YouTube Views</th>
                     <th>Instagram Views</th>
                     <th>Views</th>
+                    <th>Weekly Change</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -4758,6 +4710,11 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                       <td>{formatAnalyticsNumber(week.ytViews)}</td>
                       <td>{formatAnalyticsNumber(week.igViews)}</td>
                       <td><strong>{formatAnalyticsNumber(week.totalViews)}</strong></td>
+                      <td>
+                        <span className={`weekly-change-pill ${weeklyChangeTone(week.weeklyChangePercent)}`}>
+                          {formatWeeklyChange(week.weeklyChangePercent)}
+                        </span>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -4808,26 +4765,6 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 	                      <th className="expanded-metric-column metric-help sortable-heading" data-definition="Instagram views for this row." tabIndex={0}>{combinedSortButton("igViews", "Instagram views")}</th>
 	                    </>
 	                  )}
-			                  <th className="metric-help sortable-heading" data-definition="Combined YouTube engaged views and estimated Instagram engaged views. Instagram engaged views are estimated as Instagram views multiplied by (100 minus skip rate) percent." tabIndex={0}>
-		                    <span className="expandable-metric-heading">
-		                      {combinedSortButton("engagedViews", "Engaged views")}
-	                      <button
-	                        aria-label={engagedViewsExpanded ? "Hide platform engaged views split" : "Show platform engaged views split"}
-	                        className="metric-expand-toggle"
-	                        onClick={() => setEngagedViewsExpanded((expanded) => !expanded)}
-	                        title={engagedViewsExpanded ? "Hide YouTube and Instagram engaged views" : "Show YouTube and Instagram engaged views"}
-	                        type="button"
-	                      >
-	                        {engagedViewsExpanded ? <Minus size={12} aria-hidden="true" /> : <Plus size={12} aria-hidden="true" />}
-	                      </button>
-	                    </span>
-		                  </th>
-		                  {engagedViewsExpanded && (
-		                    <>
-		                      <th className="expanded-metric-column expanded-metric-column-start metric-help sortable-heading" data-definition="YouTube engaged views from YouTube Analytics." tabIndex={0}>{combinedSortButton("ytEngagedViews", "YouTube engaged views")}</th>
-			                      <th className="expanded-metric-column metric-help sortable-heading" data-definition="Estimated Instagram engaged views: Instagram views multiplied by (100 minus skip rate) percent." tabIndex={0}>{combinedSortButton("igEngagedViews", "Instagram engaged views")}</th>
-		                    </>
-		                  )}
 		                  <th className="metric-help sortable-heading" data-definition="Combined average percentage viewed. YouTube uses Analytics average percentage viewed; Instagram is estimated from average watch time divided by reel duration." tabIndex={0}>
 	                    <span className="expandable-metric-heading">
 	                      {combinedSortButton("averageViewPercentage", "Average duration watched")}
@@ -4911,13 +4848,6 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 	                        <td className="expanded-metric-column">{entry.igViews > 0 ? formatAnalyticsNumber(entry.igViews) : "-"}</td>
 	                      </>
 		                    )}
-		                    <td>{entry.engagedViews !== null ? formatAnalyticsNumber(entry.engagedViews) : "-"}</td>
-		                    {engagedViewsExpanded && (
-		                      <>
-		                        <td className="expanded-metric-column expanded-metric-column-start">{entry.ytEngagedViews !== null ? formatAnalyticsNumber(entry.ytEngagedViews) : "-"}</td>
-		                        <td className="expanded-metric-column">{entry.igEngagedViews !== null ? formatAnalyticsNumber(entry.igEngagedViews) : "-"}</td>
-		                      </>
-		                    )}
 		                    <td>{formatAnalyticsPercent(entry.averageViewPercentage)}</td>
 		                    {averageViewExpanded && (
 		                      <>
@@ -4944,13 +4874,6 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 	                      <th className="expanded-metric-column expanded-metric-column-start">{formatAnalyticsNumber(combinedPerformanceTotals.ytViews)}</th>
 	                      <th className="expanded-metric-column">{formatAnalyticsNumber(combinedPerformanceTotals.igViews)}</th>
 	                    </>
-		                  )}
-		                  <th>{formatAnalyticsNumber(combinedPerformanceTotals.engagedViews)}</th>
-		                  {engagedViewsExpanded && (
-		                    <>
-		                      <th className="expanded-metric-column expanded-metric-column-start">{formatAnalyticsNumber(combinedPerformanceTotals.ytEngagedViews)}</th>
-		                      <th className="expanded-metric-column">{formatAnalyticsNumber(combinedPerformanceTotals.igEngagedViews)}</th>
-		                    </>
 		                  )}
 		                  <th>{formatAnalyticsPercent(combinedPerformanceTotals.averageViewPercentage)}</th>
 		                  {averageViewExpanded && (
@@ -5223,7 +5146,7 @@ function ReaderDashboard({
         <div className="dashboard-actions">
           <button className="dashboard-secondary-button" disabled={busy} onClick={onRefresh} type="button">
             {busy ? <Loader2 className="spin" size={17} aria-hidden="true" /> : <RefreshCw size={17} aria-hidden="true" />}
-            <span>Refresh</span>
+            <span>Refresh all</span>
           </button>
           <button className="dashboard-secondary-button" onClick={onSignOut} type="button">
             <LogOut size={17} aria-hidden="true" />

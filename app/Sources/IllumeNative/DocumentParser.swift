@@ -11,6 +11,11 @@ struct ParsedDocument {
 }
 
 enum DocumentParser {
+    private struct EpubTocEntry {
+        let href: String
+        let title: String
+    }
+
     static func parse(data: Data, fileName: String, type: DocumentType) throws -> ParsedDocument {
         switch type {
         case .epub:
@@ -26,20 +31,50 @@ enum DocumentParser {
         let opfPath = captureAttribute("full-path", in: container)
         let opf = try string(named: opfPath, in: archive)
         var book = EpubMetadataExtractor.metadata(opfXML: opf, fileName: fileName)
+        let items = manifestItems(opf: opf)
+        let manifest = manifestByID(items: items, opfPath: opfPath)
+        let spineIDs = spineItemIDs(opf: opf)
+        let spinePaths = spineIDs.compactMap { manifest[$0] }
+        let tocBySpine = tocEntries(opf: opf, opfPath: opfPath, items: items, manifest: manifest, in: archive)
+            .compactMap { entry -> (href: String, title: String, spineIndex: Int)? in
+                guard let spineIndex = spinePaths.firstIndex(of: entry.href) else { return nil }
+                return (entry.href, entry.title, spineIndex)
+            }
+            .sorted { $0.spineIndex < $1.spineIndex }
 
-        let chapterPaths = manifestItemPaths(opf: opf, opfPath: opfPath)
         var paragraphs: [ReaderParagraph] = []
         var chapters: [String] = []
+        var currentChapterTitle = ""
+        var currentChapterIndex = -1
+        var tocIndex = 0
 
-        for chapterPath in chapterPaths {
+        for (spineIndex, chapterPath) in spinePaths.enumerated() {
             guard let html = try? string(named: chapterPath, in: archive) else { continue }
             let extracted = EpubMetadataExtractor.paragraphs(fromHTML: html, chapterTitle: book.title)
-            let chapterTitle = extracted.first(where: { $0.kind == .heading })?.text ?? chapterTitle(from: chapterPath, fallback: book.title)
-            chapters.append(chapterTitle)
+            guard !extracted.isEmpty else { continue }
+
+            while tocIndex + 1 < tocBySpine.count,
+                  tocBySpine[tocIndex + 1].spineIndex <= spineIndex {
+                tocIndex += 1
+            }
+
+            let activeToc = tocBySpine.indices.contains(tocIndex) ? tocBySpine[tocIndex] : nil
+            let tocTitle = activeToc?.spineIndex ?? Int.max <= spineIndex ? activeToc?.title ?? "" : ""
+            let fallbackTitle = extracted.first(where: { $0.kind == .heading })?.text ?? chapterTitle(from: chapterPath, fallback: book.title)
+            let chapterTitle = tocTitle.isEmpty
+                ? (fallbackTitle == book.title ? "Chapter \(chapters.count + 1)" : fallbackTitle)
+                : tocTitle
+
+            if chapterTitle != currentChapterTitle {
+                currentChapterTitle = chapterTitle
+                currentChapterIndex = chapters.count
+                chapters.append(chapterTitle)
+            }
+
             paragraphs.append(contentsOf: extracted.map { paragraph in
                 var copy = paragraph
                 copy.id = "epub-\(paragraphs.count)-\(copy.id)"
-                copy.chapterIndex = max(0, chapters.count - 1)
+                copy.chapterIndex = max(0, currentChapterIndex)
                 copy.chapterTitle = chapterTitle
                 return copy
             })
@@ -153,6 +188,109 @@ enum DocumentParser {
         }
     }
 
+    private static func manifestByID(items: [[String: String]], opfPath: String) -> [String: String] {
+        items.reduce(into: [String: String]()) { manifest, item in
+            guard let id = item["id"],
+                  let href = item["href"],
+                  let path = resolvedPath(href: href, relativeTo: opfPath) else {
+                return
+            }
+            manifest[id] = path
+        }
+    }
+
+    private static func spineItemIDs(opf: String) -> [String] {
+        guard let spine = spineElement(opf) else {
+            return []
+        }
+
+        guard let itemRefRegex = try? NSRegularExpression(pattern: #"<itemref\b[^>]*\bidref\s*=\s*["']([^"']+)["'][^>]*/?>"#, options: [.caseInsensitive]) else {
+            return []
+        }
+
+        let range = NSRange(spine.startIndex..<spine.endIndex, in: spine)
+        return itemRefRegex.matches(in: spine, range: range).compactMap { match in
+            guard let idRange = Range(match.range(at: 1), in: spine) else { return nil }
+            return String(spine[idRange])
+        }
+    }
+
+    private static func spineElement(_ opf: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: #"<spine\b[^>]*>.*?</spine>"#, options: [.caseInsensitive, .dotMatchesLineSeparators]),
+              let match = regex.firstMatch(in: opf, range: NSRange(opf.startIndex..<opf.endIndex, in: opf)),
+              let range = Range(match.range, in: opf) else {
+            return nil
+        }
+        return String(opf[range])
+    }
+
+    private static func tocEntries(
+        opf: String,
+        opfPath: String,
+        items: [[String: String]],
+        manifest: [String: String],
+        in archive: Archive
+    ) -> [EpubTocEntry] {
+        let navEntries = navEntries(opfPath: opfPath, items: items, in: archive)
+        return navEntries.isEmpty ? ncxEntries(opf: opf, opfPath: opfPath, items: items, manifest: manifest, in: archive) : navEntries
+    }
+
+    private static func navEntries(opfPath: String, items: [[String: String]], in archive: Archive) -> [EpubTocEntry] {
+        guard let navItem = items.first(where: { item in
+            item["properties"]?.split(whereSeparator: \.isWhitespace).contains("nav") == true
+        }),
+              let href = navItem["href"],
+              let navPath = resolvedPath(href: href, relativeTo: opfPath),
+              let navHTML = try? string(named: navPath, in: archive),
+              let linkRegex = try? NSRegularExpression(pattern: #"<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a>"#, options: [.caseInsensitive, .dotMatchesLineSeparators]) else {
+            return []
+        }
+
+        let range = NSRange(navHTML.startIndex..<navHTML.endIndex, in: navHTML)
+        return linkRegex.matches(in: navHTML, range: range).compactMap { match in
+            guard let hrefRange = Range(match.range(at: 1), in: navHTML),
+                  let titleRange = Range(match.range(at: 2), in: navHTML),
+                  let path = resolvedPath(href: withoutHashOrQuery(String(navHTML[hrefRange])), relativeTo: navPath) else {
+                return nil
+            }
+            let title = TextCleaning.stripTags(String(navHTML[titleRange]))
+            return title.isEmpty ? nil : EpubTocEntry(href: path, title: title)
+        }
+    }
+
+    private static func ncxEntries(
+        opf: String,
+        opfPath: String,
+        items: [[String: String]],
+        manifest: [String: String],
+        in archive: Archive
+    ) -> [EpubTocEntry] {
+        let tocID = spineElement(opf).map { captureAttribute("toc", in: $0) } ?? ""
+        let ncxPath = (!tocID.isEmpty ? manifest[tocID] : nil)
+            ?? items.first(where: { $0["media-type"] == "application/x-dtbncx+xml" })
+                .flatMap { item in item["href"].flatMap { resolvedPath(href: $0, relativeTo: opfPath) } }
+
+        guard let ncxPath,
+              let ncx = try? string(named: ncxPath, in: archive),
+              let pointRegex = try? NSRegularExpression(pattern: #"<navPoint\b[^>]*>(.*?)</navPoint>"#, options: [.caseInsensitive, .dotMatchesLineSeparators]) else {
+            return []
+        }
+
+        let range = NSRange(ncx.startIndex..<ncx.endIndex, in: ncx)
+        return pointRegex.matches(in: ncx, range: range).compactMap { match in
+            guard let pointRange = Range(match.range(at: 1), in: ncx) else { return nil }
+            let point = String(ncx[pointRange])
+            let title = TextCleaning.stripTags(capture(point, pattern: #"<text\b[^>]*>(.*?)</text>"#))
+            let src = captureAttribute("src", in: point)
+            guard !title.isEmpty,
+                  !src.isEmpty,
+                  let path = resolvedPath(href: withoutHashOrQuery(src), relativeTo: ncxPath) else {
+                return nil
+            }
+            return EpubTocEntry(href: path, title: title)
+        }
+    }
+
     private static func manifestItems(opf: String) -> [[String: String]] {
         guard let itemRegex = try? NSRegularExpression(pattern: #"<item\b[^>]*/?>"#, options: [.caseInsensitive]),
               let attrRegex = try? NSRegularExpression(pattern: #"([\w:-]+)\s*=\s*["']([^"']*)["']"#, options: [.caseInsensitive]) else {
@@ -182,6 +320,11 @@ enum DocumentParser {
         }
         let base = opfPath.split(separator: "/").dropLast().joined(separator: "/")
         return base.isEmpty ? decodedHref : "\(base)/\(decodedHref)"
+    }
+
+    private static func withoutHashOrQuery(_ href: String) -> String {
+        String(href.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)[0]
+            .split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)[0])
     }
 
     private static func imageMimeType(for path: String) -> String {

@@ -35,14 +35,21 @@ struct EdgeFunctionError: Codable, LocalizedError {
 }
 
 struct ReaderImageFunctionRequest: Codable {
+    let author: String
     let bookId: UUID
+    let bookTitle: String
+    let checkOnly: Bool?
+    let chunkIndex: Int
     let startWord: Int
     let endWord: Int
+    let imageStyle: ReaderImageStyle
     let text: String
     let style: ReaderImageStyle
 }
 
 struct ReaderImageFunctionResponse: Codable, Equatable {
+    let cached: Bool?
+    let exists: Bool?
     let imageUrl: String?
     let prompt: String?
     let imageCount: Int?
@@ -262,7 +269,13 @@ final class SupabaseBackend: @unchecked Sendable {
     }
 
     private func invoke<T: Decodable, Body: Encodable>(function: String, accessToken: String, body: Body) async throws -> T {
-        try await request(path: "/functions/v1/\(function)", method: "POST", accessToken: accessToken, body: body)
+        try await request(
+            path: "/functions/v1/\(function)",
+            method: "POST",
+            accessToken: accessToken,
+            body: body,
+            encoder: Self.edgeFunctionEncoder()
+        )
     }
 
     private func request<T: Decodable>(
@@ -270,6 +283,7 @@ final class SupabaseBackend: @unchecked Sendable {
         method: String,
         accessToken: String?,
         body: (some Encodable)? = Optional<String>.none,
+        encoder: JSONEncoder = IllumeJSON.encoder(),
         preferMinimal: Bool = false,
         preferRepresentation: Bool = false
     ) async throws -> T {
@@ -281,7 +295,7 @@ final class SupabaseBackend: @unchecked Sendable {
             request.setValue("return=representation", forHTTPHeaderField: "Prefer")
         }
         if let body {
-            request.httpBody = try IllumeJSON.encoder().encode(AnyEncodable(body))
+            request.httpBody = try encoder.encode(AnyEncodable(body))
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
 
@@ -304,7 +318,7 @@ final class SupabaseBackend: @unchecked Sendable {
     private func rawFunction<Body: Encodable>(function: String, accessToken: String, body: Body) async throws -> Data {
         var request = baseRequest(path: "/functions/v1/\(function)", accessToken: accessToken)
         request.httpMethod = "POST"
-        request.httpBody = try IllumeJSON.encoder().encode(AnyEncodable(body))
+        request.httpBody = try Self.edgeFunctionEncoder().encode(AnyEncodable(body))
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
 
@@ -360,6 +374,12 @@ final class SupabaseBackend: @unchecked Sendable {
 
     private static func queryValue(_ value: String) -> String {
         value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? value
+    }
+
+    private static func edgeFunctionEncoder() -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
     }
 }
 

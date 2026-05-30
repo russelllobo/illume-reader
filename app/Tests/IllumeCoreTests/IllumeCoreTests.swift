@@ -206,6 +206,26 @@ import Testing
     #expect(BillingAccess.imageUsageCount(usage: nil, rowCount: 4, isPro: true) == 4)
 }
 
+@Test func decodesReaderImageUsageDateOnlyPeriodStart() throws {
+    let json = """
+    {
+      "user_id": "65F14940-3328-4D38-8947-B3A8D5F5C3C6",
+      "generated_count": 40,
+      "monthly_generated_count": 12,
+      "monthly_period_start": "2026-05-01"
+    }
+    """.data(using: .utf8)!
+
+    let usage = try IllumeJSON.decoder().decode(ReaderImageUsage.self, from: json)
+
+    #expect(usage.generatedCount == 40)
+    #expect(usage.monthlyGeneratedCount == 12)
+    let components = Calendar(identifier: .gregorian).dateComponents(in: TimeZone(secondsFromGMT: 0)!, from: try #require(usage.monthlyPeriodStart))
+    #expect(components.year == 2026)
+    #expect(components.month == 5)
+    #expect(components.day == 1)
+}
+
 @Test func proImageUsageIgnoresPreviousMonthUsageRows() {
     let now = Date(timeIntervalSince1970: 1_768_003_200) // 2026-01-10T00:00:00Z
     let previousMonth = Date(timeIntervalSince1970: 1_764_547_200) // 2025-12-01T00:00:00Z

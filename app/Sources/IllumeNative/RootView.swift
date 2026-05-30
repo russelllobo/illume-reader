@@ -271,7 +271,7 @@ struct LibraryHeader: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Illume")
                         .font(IllumeTypography.logo(36, weight: .bold))
-                    Text("\(app.books.count) books · \(app.imageUsageCount)/\(app.imageLimit) images")
+                    Text("\(app.books.count) books · AI Images \(app.imageUsageLabel) \(app.imageUsageSuffix)")
                         .font(.system(.subheadline, design: .rounded, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
@@ -522,7 +522,12 @@ struct ProfileSheet: View {
                     max: Double(app.storageQuotaBytes),
                     valueText: "\(ByteCountFormatter.illumeStorage.string(fromByteCount: Int64(app.storageUsed))) / \(ByteCountFormatter.illumeStorage.string(fromByteCount: Int64(app.storageQuotaBytes)))"
                 )
-                Meter(label: "Reader images", value: Double(app.imageUsageCount), max: Double(app.imageLimit))
+                Meter(
+                    label: "AI Images",
+                    value: Double(app.imageUsageCount),
+                    max: Double(app.imageLimit),
+                    valueText: "\(app.imageUsageLabel) \(app.imageUsageSuffix)"
+                )
             }
 
             if app.isPro {
