@@ -76,19 +76,10 @@ struct SoftIconButton: View {
     let action: () -> Void
 
     var body: some View {
-        if #available(iOS 26.0, *) {
-            Button(action: action) {
-                icon
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .tint(IllumeTheme.paper)
-        } else {
-            Button(action: action) {
-                icon
-            }
-            .buttonStyle(LiquidIconButtonStyle())
+        Button(action: action) {
+            icon
         }
+        .buttonStyle(LiquidIconButtonStyle())
     }
 
     private var icon: some View {

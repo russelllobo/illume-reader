@@ -12,7 +12,10 @@ struct RootView: View {
         ZStack {
             IllumeTheme.paper.ignoresSafeArea()
 
-            if app.isSignedIn {
+            if !app.canLaunch {
+                LaunchLoadingView()
+                    .transition(.opacity)
+            } else if app.isSignedIn {
                 LibraryShell()
                     .blurLoadIn(radius: 7)
                     .transition(.scale(scale: 0.98).combined(with: .opacity))
@@ -36,10 +39,23 @@ struct RootView: View {
             }
         }
         .animation(IllumeTheme.spring, value: app.isSignedIn)
+        .animation(IllumeTheme.spring, value: app.canLaunch)
         .animation(IllumeTheme.spring, value: app.openingBook?.id)
         .animation(IllumeTheme.blurLoadIn, value: app.activeBookRow?.id)
         .animation(IllumeTheme.blurLoadIn, value: app.isLoading)
         .animation(IllumeTheme.blurLoadIn, value: app.isImporting)
+    }
+}
+
+struct LaunchLoadingView: View {
+    var body: some View {
+        ZStack {
+            IllumeTheme.paper.ignoresSafeArea()
+
+            Text("Illume")
+                .font(IllumeTypography.logo(48, weight: .bold))
+                .foregroundStyle(IllumeTheme.ink)
+        }
     }
 }
 
@@ -163,7 +179,6 @@ struct LibraryShell: View {
                         EmptyLibrary(importerOpen: $importerOpen)
                     } else {
                         ContinueSection(renameBook: beginRenaming, deleteBook: beginDeleting)
-                        BookGrid(renameBook: beginRenaming, deleteBook: beginDeleting)
                     }
                 }
                 .padding(.horizontal, 20)
@@ -271,7 +286,7 @@ struct LibraryHeader: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Illume")
                         .font(IllumeTypography.logo(36, weight: .bold))
-                    Text("\(app.books.count) books · AI Images \(app.imageUsageLabel) \(app.imageUsageSuffix)")
+                    Text("\(app.books.count) books")
                         .font(.system(.subheadline, design: .rounded, weight: .medium))
                         .foregroundStyle(.secondary)
                 }

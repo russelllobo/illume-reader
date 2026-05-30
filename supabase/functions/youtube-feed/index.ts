@@ -87,6 +87,14 @@ const formatTimeAgo = (dateStr: string | undefined) => {
   return "just now";
 };
 
+const chunks = <T,>(items: T[], size: number) => {
+  const groups: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    groups.push(items.slice(index, index + size));
+  }
+  return groups;
+};
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
@@ -122,26 +130,34 @@ Deno.serve(async (req) => {
     const uploadsPlaylist = channelData.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
     if (!uploadsPlaylist) throw new Error("No uploads playlist associated with this YouTube channel.");
 
-    const playlistUrl = new URL("https://youtube.googleapis.com/youtube/v3/playlistItems");
-    playlistUrl.searchParams.set("part", "snippet,contentDetails");
-    playlistUrl.searchParams.set("playlistId", uploadsPlaylist);
-    playlistUrl.searchParams.set("maxResults", "6");
-    playlistUrl.searchParams.set("key", apiKey);
+    const items: any[] = [];
+    let pageToken = "";
 
-    const playlistRes = await fetch(playlistUrl);
-    const playlistData = await playlistRes.json();
-    if (!playlistRes.ok) {
-      throw new Error(playlistData.error?.message || "Failed to fetch upload playlist items.");
-    }
+    do {
+      const playlistUrl = new URL("https://youtube.googleapis.com/youtube/v3/playlistItems");
+      playlistUrl.searchParams.set("part", "snippet,contentDetails");
+      playlistUrl.searchParams.set("playlistId", uploadsPlaylist);
+      playlistUrl.searchParams.set("maxResults", "50");
+      playlistUrl.searchParams.set("key", apiKey);
+      if (pageToken) playlistUrl.searchParams.set("pageToken", pageToken);
 
-    const items = playlistData.items ?? [];
-    const videoIds = items.map((item: any) => item.contentDetails?.videoId).filter(Boolean).join(",");
+      const playlistRes = await fetch(playlistUrl);
+      const playlistData = await playlistRes.json();
+      if (!playlistRes.ok) {
+        throw new Error(playlistData.error?.message || "Failed to fetch upload playlist items.");
+      }
+
+      items.push(...(playlistData.items ?? []));
+      pageToken = playlistData.nextPageToken ?? "";
+    } while (pageToken);
+
+    const videoIds = items.map((item: any) => item.contentDetails?.videoId).filter(Boolean);
     const statsMap = new Map<string, { comments: string; duration: string; likes: string; views: string }>();
 
-    if (videoIds) {
+    for (const videoIdChunk of chunks(videoIds, 50)) {
       const videosUrl = new URL("https://youtube.googleapis.com/youtube/v3/videos");
       videosUrl.searchParams.set("part", "contentDetails,statistics");
-      videosUrl.searchParams.set("id", videoIds);
+      videosUrl.searchParams.set("id", videoIdChunk.join(","));
       videosUrl.searchParams.set("key", apiKey);
 
       const videosRes = await fetch(videosUrl);

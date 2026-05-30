@@ -2629,6 +2629,14 @@ const durationToSeconds = (duration?: string) => {
   return parts.reduce((total, part) => total * 60 + part, 0);
 };
 
+const chunks = <T,>(items: T[], size: number) => {
+  const groups: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    groups.push(items.slice(index, index + size));
+  }
+  return groups;
+};
+
 const numericSortDirectionFor = (direction: SortDirection) => (direction === "asc" ? 1 : -1);
 
 const YOUTUBE_OAUTH_SCOPES = [
@@ -3188,18 +3196,30 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
           throw new Error("No uploads playlist associated with this YouTube channel.");
         }
 
-        // 2. Fetch videos in that uploads playlist
-        const playlistUrl = `https://youtube.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${uploadsPlaylist}&maxResults=6`;
-        const playlistRes = await fetch(playlistUrl, {
-          headers: isOAuth ? { Authorization: `Bearer ${token}` } : {}
-        });
+        // 2. Fetch every page in the channel uploads playlist
+        const items: any[] = [];
+        let pageToken = "";
 
-        if (!playlistRes.ok) {
-          throw new Error("Failed to fetch upload playlist items.");
-        }
+        do {
+          const playlistParams = new URLSearchParams({
+            part: "snippet,contentDetails",
+            playlistId: uploadsPlaylist,
+            maxResults: "50"
+          });
+          if (pageToken) playlistParams.set("pageToken", pageToken);
 
-        const playlistData = await playlistRes.json();
-        const items = playlistData.items ?? [];
+          const playlistRes = await fetch(`https://youtube.googleapis.com/youtube/v3/playlistItems?${playlistParams.toString()}`, {
+            headers: isOAuth ? { Authorization: `Bearer ${token}` } : {}
+          });
+
+          if (!playlistRes.ok) {
+            throw new Error("Failed to fetch upload playlist items.");
+          }
+
+          const playlistData = await playlistRes.json();
+          items.push(...(playlistData.items ?? []));
+          pageToken = playlistData.nextPageToken ?? "";
+        } while (pageToken);
 
         if (items.length === 0) {
           setYoutubeVideos([]);
@@ -3208,11 +3228,11 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
         }
 
         // 3. Query video durations & view statistics
-        const videoIds = items.map((item: any) => item.contentDetails?.videoId).filter(Boolean).join(",");
+        const videoIds = items.map((item: any) => item.contentDetails?.videoId).filter(Boolean);
         const statsMap = new Map();
 
-        if (videoIds) {
-          const videosUrl = `https://youtube.googleapis.com/youtube/v3/videos?part=contentDetails,statistics&id=${videoIds}`;
+        for (const videoIdChunk of chunks(videoIds, 50)) {
+          const videosUrl = `https://youtube.googleapis.com/youtube/v3/videos?part=contentDetails,statistics&id=${videoIdChunk.join(",")}`;
           const videosRes = await fetch(videosUrl, {
             headers: isOAuth ? { Authorization: `Bearer ${token}` } : {}
           });
@@ -4198,17 +4218,50 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
     return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", timeZone: "UTC" }).format(date);
   };
 
+  const releasedVideoDates = useMemo(() => {
+    const dates: string[] = [];
+    const processedIgIds = new Set<string>();
+
+    ytVideos.forEach((ytVideo) => {
+      const linkedIg = igPosts.find((post) => links[post.id] === ytVideo.id);
+      if (linkedIg) processedIgIds.add(linkedIg.id);
+      const publishedAt = ytVideo.publishedAt || linkedIg?.publishedAt;
+      if (publishedAt) dates.push(publishedAt);
+    });
+
+    igPosts.forEach((igPost) => {
+      if (!processedIgIds.has(igPost.id) && igPost.publishedAt) {
+        dates.push(igPost.publishedAt);
+      }
+    });
+
+    return dates;
+  }, [igPosts, links, ytVideos]);
+
+  const getReleasedVideoCountForWeek = useCallback((startDateStr: string, endDateStr: string) => {
+    const startTime = dateFromIsoDate(startDateStr).getTime();
+    const endTime = dateFromIsoDate(endDateStr).getTime() + 24 * 60 * 60 * 1000 - 1;
+
+    return releasedVideoDates.filter((publishedAt) => {
+      const publishedTime = new Date(publishedAt).getTime();
+      return Number.isFinite(publishedTime) && publishedTime >= startTime && publishedTime <= endTime;
+    }).length;
+  }, [dateFromIsoDate, releasedVideoDates]);
+
   // 6. Compute weekly combined analytics
   const weeklyViewsData = useMemo(() => {
     const rows = weeklyViews.map((week) => {
       const ytViews = Number(week.views ?? 0);
       const igViews = getIgViewsForWeek(week.startDate, week.endDate);
       const totalViews = ytViews + igViews;
+      const releasedVideoCount = getReleasedVideoCountForWeek(week.startDate, week.endDate);
       return {
         ...week,
         ytViews,
         igViews,
-        totalViews
+        totalViews,
+        releasedVideoCount,
+        averageViewsPerReleasedVideo: releasedVideoCount ? totalViews / releasedVideoCount : null
       };
     });
 
@@ -4226,7 +4279,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
         weeklyChangePercent
       };
     });
-  }, [weeklyViews, getIgViewsForWeek]);
+  }, [weeklyViews, getIgViewsForWeek, getReleasedVideoCountForWeek]);
 
   const weeklyViewsDateRange = useMemo(() => {
     if (!weeklyViewsData.length) return "";
@@ -4243,6 +4296,21 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 
   const weeklyViewsMax = useMemo(() => {
     return Math.max(...weeklyViewsData.map((week) => week.totalViews), 1);
+  }, [weeklyViewsData]);
+
+  const weeklyViewsTotals = useMemo(() => {
+    const ytViews = weeklyViewsData.reduce((sum, week) => sum + week.ytViews, 0);
+    const igViews = weeklyViewsData.reduce((sum, week) => sum + week.igViews, 0);
+    const totalViews = weeklyViewsData.reduce((sum, week) => sum + week.totalViews, 0);
+    const releasedVideoCount = weeklyViewsData.reduce((sum, week) => sum + week.releasedVideoCount, 0);
+
+    return {
+      averageViewsPerReleasedVideo: releasedVideoCount ? totalViews / releasedVideoCount : null,
+      igViews,
+      releasedVideoCount,
+      totalViews,
+      ytViews
+    };
   }, [weeklyViewsData]);
 
   // 7. Aggregate combined video entries (linked items merged into one entry)
@@ -4694,22 +4762,24 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
               <table className="weekly-views-table">
                 <thead>
                   <tr>
-                    <th>Week</th>
-                    <th>Date range</th>
-                    <th>YouTube Views</th>
-                    <th>Instagram Views</th>
+                    <th>Date</th>
+                    <th>YT Views</th>
+                    <th>IG Views</th>
                     <th>Views</th>
-                    <th>Weekly Change</th>
+                    <th>Videos</th>
+                    <th>Avg / Video</th>
+                    <th>Change</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {weeklyViewsData.map((week, index) => (
+                  {weeklyViewsData.map((week) => (
                     <tr key={week.startDate}>
-                      <td>Week {index + 1}</td>
-                      <td>{formatShortWeeklyDate(week.startDate)} - {formatShortWeeklyDate(week.endDate)}</td>
+                      <td>{formatShortWeeklyDate(week.startDate)}</td>
                       <td>{formatAnalyticsNumber(week.ytViews)}</td>
                       <td>{formatAnalyticsNumber(week.igViews)}</td>
                       <td><strong>{formatAnalyticsNumber(week.totalViews)}</strong></td>
+                      <td>{formatAnalyticsNumber(week.releasedVideoCount)}</td>
+                      <td>{week.averageViewsPerReleasedVideo === null ? "-" : formatAnalyticsNumber(week.averageViewsPerReleasedVideo)}</td>
                       <td>
                         <span className={`weekly-change-pill ${weeklyChangeTone(week.weeklyChangePercent)}`}>
                           {formatWeeklyChange(week.weeklyChangePercent)}
@@ -4718,6 +4788,17 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                     </tr>
                   ))}
                 </tbody>
+                <tfoot>
+                  <tr>
+                    <th>Total</th>
+                    <th>{formatAnalyticsNumber(weeklyViewsTotals.ytViews)}</th>
+                    <th>{formatAnalyticsNumber(weeklyViewsTotals.igViews)}</th>
+                    <th>{formatAnalyticsNumber(weeklyViewsTotals.totalViews)}</th>
+                    <th>{formatAnalyticsNumber(weeklyViewsTotals.releasedVideoCount)}</th>
+                    <th>{weeklyViewsTotals.averageViewsPerReleasedVideo === null ? "-" : formatAnalyticsNumber(weeklyViewsTotals.averageViewsPerReleasedVideo)}</th>
+                    <th>-</th>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           </div>

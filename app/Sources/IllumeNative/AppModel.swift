@@ -9,6 +9,8 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+private let readerImageRequestChunkWords = 750
+
 @MainActor
 final class IllumeAppModel: NSObject, ObservableObject {
     @Published var session: AuthSession?
@@ -19,18 +21,21 @@ final class IllumeAppModel: NSObject, ObservableObject {
     @Published var billingProfile: BillingProfile?
     @Published var readerImageUsage: ReaderImageUsage?
     @Published var readerImageRowCount = 0
+    @Published var hasBootstrapped = false
+    @Published var isLibraryLoaded = false
     @Published var isLoading = false
     @Published var isImporting = false
     @Published var authMode: AuthMode = .signIn
     @Published var notice = ""
     @Published var readerSettings = ReaderSettings()
     @Published var readerImageResponse: ReaderImageFunctionResponse?
+    @Published var readerImageChunkIndex: Int?
+    @Published var readerImageStyle: ReaderImageStyle?
     @Published var readerImagePhase: ReaderImagePhase = .idle
     @Published var narration = NarrationState()
 
     let backend = SupabaseBackend()
     lazy var billing = BillingService(backend: backend)
-    private let synthesizer = AVSpeechSynthesizer()
     private var audioPlayer: AVPlayer?
     private var audioEndObserver: NSObjectProtocol?
     private var audioFailedObserver: NSObjectProtocol?
@@ -38,13 +43,13 @@ final class IllumeAppModel: NSObject, ObservableObject {
     private var audioTimeObserver: Any?
     private var narrationAudioURL: URL?
     private var narrationTask: Task<Void, Never>?
+    private var readerImageGenerationTask: Task<Void, Never>?
     private var narrationParagraphIndex: Int?
     private var narrationTextStartOffset = 0
     private var currentNarrationText = ""
     private var narrationWordRanges: [NSRange] = []
     private var narrationWordIndex = 0
     private var narrationRateSnapshot = 1.0
-    private var isUsingSystemNarration = false
     private var progressTask: Task<Void, Never>?
     private var appleContinuation: CheckedContinuation<AuthSession, Error>?
     private var googleWebAuthSession: ASWebAuthenticationSession?
@@ -57,6 +62,10 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
     var isSignedIn: Bool {
         session != nil
+    }
+
+    var canLaunch: Bool {
+        hasBootstrapped && (!isSignedIn || isLibraryLoaded)
     }
 
     var isPro: Bool {
@@ -88,7 +97,8 @@ final class IllumeAppModel: NSObject, ObservableObject {
     }
 
     func bootstrap() async {
-        synthesizer.delegate = self
+        hasBootstrapped = false
+        isLibraryLoaded = false
         session = KeychainStore.loadSession()
         if let refreshToken = session?.refreshToken {
             do {
@@ -99,8 +109,14 @@ final class IllumeAppModel: NSObject, ObservableObject {
                 session = nil
             }
         }
-        await reload()
+        if session != nil {
+            await reload()
+        } else {
+            books = []
+            isLibraryLoaded = true
+        }
         await billing.loadProducts()
+        hasBootstrapped = true
     }
 
     func authenticate(email: String, password: String) async {
@@ -109,6 +125,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
                 ? try await backend.signIn(email: email, password: password)
                 : try await backend.signUp(email: email, password: password)
             apply(session: next)
+            isLibraryLoaded = false
             await reload()
         }
     }
@@ -117,6 +134,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
         do {
             let next = try await performAppleSignIn()
             apply(session: next)
+            isLibraryLoaded = false
             await reload()
         } catch {
             notice = "Apple sign in was cancelled."
@@ -127,6 +145,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
         do {
             let next = try await performGoogleSignIn()
             apply(session: next)
+            isLibraryLoaded = false
             await reload()
         } catch {
             notice = error.localizedDescription
@@ -137,8 +156,11 @@ final class IllumeAppModel: NSObject, ObservableObject {
         stopSpeaking()
         googleWebAuthSession?.cancel()
         googleWebAuthSession = nil
+        readerImageGenerationTask?.cancel()
+        readerImageGenerationTask = nil
         KeychainStore.deleteSession()
         session = nil
+        isLibraryLoaded = true
         books = []
         activeBook = nil
         activeBookRow = nil
@@ -147,12 +169,25 @@ final class IllumeAppModel: NSObject, ObservableObject {
         readerImageUsage = nil
         readerImageRowCount = 0
         readerImageResponse = nil
+        readerImageChunkIndex = nil
+        readerImageStyle = nil
         readerImagePhase = .idle
     }
 
     func reload() async {
-        guard let accessToken = session?.accessToken else { return }
-        await runBusy { [self] in
+        guard let accessToken = session?.accessToken else {
+            books = []
+            isLibraryLoaded = true
+            return
+        }
+
+        let shouldGateLibrary = !hasBootstrapped || !isLibraryLoaded
+        isLoading = true
+        if shouldGateLibrary {
+            isLibraryLoaded = false
+        }
+        notice = ""
+        do {
             async let library = backend.loadLibrary(accessToken: accessToken)
             async let profile = backend.loadBillingProfile(accessToken: accessToken)
             async let usage = backend.loadReaderImageUsage(accessToken: accessToken)
@@ -170,7 +205,11 @@ final class IllumeAppModel: NSObject, ObservableObject {
             billingProfile = loadedProfile
             readerImageUsage = loadedUsage
             readerImageRowCount = imageRows ?? 0
+            isLibraryLoaded = true
+        } catch {
+            notice = error.localizedDescription
         }
+        isLoading = false
     }
 
     func importDocument(from url: URL) async {
@@ -252,7 +291,10 @@ final class IllumeAppModel: NSObject, ObservableObject {
             activeBookRow = row
             activeBook = parsed
             readerImageResponse = nil
+            readerImageChunkIndex = nil
+            readerImageStyle = nil
             readerImagePhase = .idle
+            await prepareReaderImageForOpening(book: parsed, row: row, accessToken: accessToken)
             try await backend.saveProgress(
                 bookId: row.id,
                 progress: ReadingProgress(currentIndex: row.currentIndex, currentPage: row.currentPage ?? 1),
@@ -263,10 +305,14 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
     func closeReader() {
         stopSpeaking()
+        readerImageGenerationTask?.cancel()
+        readerImageGenerationTask = nil
         activeBook = nil
         activeBookRow = nil
         openingBook = nil
         readerImageResponse = nil
+        readerImageChunkIndex = nil
+        readerImageStyle = nil
         readerImagePhase = .idle
     }
 
@@ -343,8 +389,6 @@ final class IllumeAppModel: NSObject, ObservableObject {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
         stopPlayback(keepNarrationState: true)
-        synthesizer.stopSpeaking(at: .immediate)
-        isUsingSystemNarration = false
 
         narrationParagraphIndex = paragraphIndex
         narrationTextStartOffset = safeWordStart
@@ -352,6 +396,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
         narrationWordRanges = Self.wordRanges(in: text)
         narrationWordIndex = 0
         narrationRateSnapshot = Self.edgeSpeechRate(from: readerSettings.narrationRate)
+        let narrationVoiceSnapshot = readerSettings.narrationVoice
         if let firstRange = narrationWordRanges.first {
             narration = NarrationState(
                 isPlaying: true,
@@ -363,8 +408,8 @@ final class IllumeAppModel: NSObject, ObservableObject {
         }
 
         guard let accessToken = session?.accessToken else {
-            playSystemNarration(text)
-            notice = "Using device narration. Sign in for enhanced narration."
+            stopSpeaking()
+            notice = "Sign in to use Edge narration."
             return
         }
 
@@ -375,13 +420,13 @@ final class IllumeAppModel: NSObject, ObservableObject {
                         EdgeTTSRequest(
                             rate: narrationRateSnapshot,
                             text: text,
-                            voice: "en-US-AvaMultilingualNeural"
+                            voice: narrationVoiceSnapshot
                         ),
                         accessToken: accessToken
                     )
                 }
                 group.addTask {
-                    try await Task.sleep(for: .seconds(6))
+                    try await Task.sleep(for: .seconds(20))
                     throw NarrationPlaybackError.edgeTimedOut
                 }
                 guard let data = try await group.next() else {
@@ -400,8 +445,8 @@ final class IllumeAppModel: NSObject, ObservableObject {
             try playNarrationAudio(data)
         } catch {
             guard !Task.isCancelled else { return }
-            playSystemNarration(text)
-            notice = "Using device narration because enhanced narration is unavailable."
+            stopSpeaking()
+            notice = error.localizedDescription.isEmpty ? "Edge voice could not play this paragraph." : error.localizedDescription
         }
     }
 
@@ -409,8 +454,6 @@ final class IllumeAppModel: NSObject, ObservableObject {
         narrationTask?.cancel()
         narrationTask = nil
         stopPlayback(keepNarrationState: false)
-        synthesizer.stopSpeaking(at: .immediate)
-        isUsingSystemNarration = false
         narrationParagraphIndex = nil
         narrationTextStartOffset = 0
         currentNarrationText = ""
@@ -439,13 +482,8 @@ final class IllumeAppModel: NSObject, ObservableObject {
             let message = item.error?.localizedDescription ?? "Narration audio could not load."
             Task { @MainActor in
                 guard let self else { return }
-                if self.narration.isPlaying, !self.currentNarrationText.isEmpty {
-                    self.playSystemNarration(self.currentNarrationText)
-                    self.notice = "Using device narration because enhanced narration could not load."
-                } else {
-                    self.stopSpeaking()
-                    self.notice = message
-                }
+                self.stopSpeaking()
+                self.notice = message
             }
         }
         audioTimeObserver = player.addPeriodicTimeObserver(
@@ -474,33 +512,12 @@ final class IllumeAppModel: NSObject, ObservableObject {
                 ?? "Narration audio could not play."
             Task { @MainActor in
                 guard let self else { return }
-                if self.narration.isPlaying, !self.currentNarrationText.isEmpty {
-                    self.playSystemNarration(self.currentNarrationText)
-                    self.notice = "Using device narration because enhanced narration could not play."
-                } else {
-                    self.stopSpeaking()
-                    self.notice = message
-                }
+                self.stopSpeaking()
+                self.notice = message
             }
         }
 
         player.play()
-    }
-
-    private func playSystemNarration(_ text: String) {
-        stopPlayback(keepNarrationState: true)
-        synthesizer.stopSpeaking(at: .immediate)
-        #if os(iOS)
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
-        try? AVAudioSession.sharedInstance().setActive(true)
-        #endif
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.rate = Self.systemSpeechRate(from: readerSettings.narrationRate)
-        utterance.volume = 1
-        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
-            ?? AVSpeechSynthesisVoice(language: "en-GB")
-        isUsingSystemNarration = true
-        synthesizer.speak(utterance)
     }
 
     private func stopPlayback(keepNarrationState: Bool) {
@@ -575,7 +592,6 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
     private func finishCurrentNarrationItem() {
         stopPlayback(keepNarrationState: true)
-        isUsingSystemNarration = false
         continueNarrationAfterCurrentParagraph()
     }
 
@@ -596,18 +612,19 @@ final class IllumeAppModel: NSObject, ObservableObject {
         min(2.0, max(0.7, value))
     }
 
-    private static func systemSpeechRate(from value: Double) -> Float {
-        let clampedValue = min(2.0, max(0.7, Float(value)))
-        let normalizedValue = (clampedValue - 0.7) / 1.3
-        return Float(AVSpeechUtteranceMinimumSpeechRate + normalizedValue * (AVSpeechUtteranceMaximumSpeechRate - AVSpeechUtteranceMinimumSpeechRate))
-    }
-
     func generateImage(text: String, chunkIndex: Int, startWord: Int, endWord: Int) async {
         guard let row = activeBookRow, let accessToken = session?.accessToken else { return }
+        if readerImageChunkIndex == chunkIndex,
+           readerImageStyle == readerSettings.imageStyle,
+           readerImagePhase == .checking || readerImagePhase == .generating || readerImagePhase == .ready {
+            return
+        }
         let bookTitle = activeBook?.title ?? row.title
         let author = activeBook?.author ?? row.author
         let style = readerSettings.imageStyle
         await runReaderImageTask { [self] in
+            readerImageChunkIndex = chunkIndex
+            readerImageStyle = style
             readerImagePhase = .checking
             let checkResponse = try await backend.invokeReaderImage(
                 ReaderImageFunctionRequest(
@@ -628,6 +645,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
             applyReaderImageCount(checkResponse.imageCount, plan: checkResponse.plan)
             if checkResponse.imageUrl != nil {
                 readerImageResponse = checkResponse
+                await preloadReaderImageIfNeeded(checkResponse.imageUrl)
                 readerImagePhase = .ready
                 return
             }
@@ -649,6 +667,8 @@ final class IllumeAppModel: NSObject, ObservableObject {
                 accessToken: accessToken
             )
             readerImageResponse = generationResponse
+            readerImageChunkIndex = chunkIndex
+            readerImageStyle = style
             applyReaderImageCount(generationResponse.imageCount, plan: generationResponse.plan)
             if generationResponse.imageUrl != nil {
                 readerImagePhase = .ready
@@ -659,6 +679,191 @@ final class IllumeAppModel: NSObject, ObservableObject {
                 await reload()
             }
         }
+    }
+
+    private func prepareReaderImageForOpening(book: ReaderBook, row: BookRow, accessToken: String) async {
+        guard let chunk = Self.readerImageChunk(in: book, currentIndex: row.currentIndex) else { return }
+        let style = readerSettings.imageStyle
+        let request = ReaderImageFunctionRequest(
+            author: book.author ?? row.author,
+            bookId: row.id,
+            bookTitle: book.title,
+            checkOnly: true,
+            chunkIndex: chunk.index,
+            startWord: chunk.startWord,
+            endWord: chunk.endWord,
+            imageStyle: style,
+            text: chunk.text,
+            style: style
+        )
+
+        await runReaderImageTask { [self] in
+            readerImageChunkIndex = chunk.index
+            readerImageStyle = style
+            readerImagePhase = .checking
+            let checkResponse = try await backend.invokeReaderImage(request, accessToken: accessToken)
+            applyReaderImageCount(checkResponse.imageCount, plan: checkResponse.plan)
+
+            if checkResponse.imageUrl != nil {
+                readerImageResponse = checkResponse
+                await preloadReaderImageIfNeeded(checkResponse.imageUrl)
+                readerImagePhase = .ready
+                return
+            }
+
+            readerImageResponse = nil
+            readerImagePhase = .generating
+            startReaderImageGeneration(
+                book: book,
+                row: row,
+                chunk: chunk,
+                accessToken: accessToken,
+                style: style
+            )
+        }
+    }
+
+    private func startReaderImageGeneration(
+        book: ReaderBook,
+        row: BookRow,
+        chunk: ReaderImageRequestChunk,
+        accessToken: String,
+        style: ReaderImageStyle
+    ) {
+        readerImageGenerationTask?.cancel()
+        readerImageGenerationTask = Task { [weak self] in
+            guard let self else { return }
+            await self.finishReaderImageGeneration(
+                book: book,
+                row: row,
+                chunk: chunk,
+                accessToken: accessToken,
+                style: style
+            )
+        }
+    }
+
+    private func finishReaderImageGeneration(
+        book: ReaderBook,
+        row: BookRow,
+        chunk: ReaderImageRequestChunk,
+        accessToken: String,
+        style: ReaderImageStyle
+    ) async {
+        await runReaderImageTask { [self] in
+            let generationResponse = try await backend.invokeReaderImage(
+                ReaderImageFunctionRequest(
+                    author: book.author ?? row.author,
+                    bookId: row.id,
+                    bookTitle: book.title,
+                    checkOnly: nil,
+                    chunkIndex: chunk.index,
+                    startWord: chunk.startWord,
+                    endWord: chunk.endWord,
+                    imageStyle: style,
+                    text: chunk.text,
+                    style: style
+                ),
+                accessToken: accessToken
+            )
+            guard activeBookRow?.id == row.id,
+                  readerImageChunkIndex == chunk.index,
+                  readerImageStyle == style,
+                  !Task.isCancelled else { return }
+
+            readerImageResponse = generationResponse
+            applyReaderImageCount(generationResponse.imageCount, plan: generationResponse.plan)
+            if generationResponse.imageUrl != nil {
+                readerImagePhase = .ready
+            } else if generationResponse.limitReached == true {
+                readerImagePhase = .error
+            } else {
+                readerImagePhase = .generating
+            }
+            if generationResponse.imageCount == nil {
+                await reload()
+            }
+        }
+    }
+
+    private func preloadReaderImageIfNeeded(_ imageUrl: String?) async {
+        guard let imageUrl,
+              !imageUrl.lowercased().hasPrefix("data:image/"),
+              let url = URL(string: imageUrl) else { return }
+
+        _ = try? await withThrowingTaskGroup(of: Data?.self) { group in
+            group.addTask {
+                let (data, _) = try await URLSession.shared.data(from: url)
+                return data
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(6))
+                return nil
+            }
+            let data = try await group.next() ?? nil
+            group.cancelAll()
+            return data
+        }
+    }
+
+    private struct ReaderImageRequestChunk: Sendable {
+        let endWord: Int
+        let index: Int
+        let startWord: Int
+        let text: String
+    }
+
+    nonisolated private static func readerImageChunk(in book: ReaderBook, currentIndex: Int) -> ReaderImageRequestChunk? {
+        guard !book.paragraphs.isEmpty else { return nil }
+
+        var chunks: [ReaderImageRequestChunk] = []
+        var chunkWords: [String] = []
+        var chunkStartWord = 1
+        var totalWords = 0
+        let target = min(max(currentIndex, 0), book.paragraphs.count - 1)
+        var targetWordStart = 0
+
+        for (index, paragraph) in book.paragraphs.enumerated() {
+            if index == target {
+                targetWordStart = totalWords
+            }
+            guard paragraph.kind != .heading else { continue }
+
+            let words = paragraph.text.split(whereSeparator: \.isWhitespace).map(String.init)
+            for word in words {
+                if chunkWords.count == readerImageRequestChunkWords {
+                    let chunkIndex = chunks.count
+                    chunks.append(
+                        ReaderImageRequestChunk(
+                            endWord: chunkStartWord + chunkWords.count - 1,
+                            index: chunkIndex,
+                            startWord: chunkStartWord,
+                            text: chunkWords.joined(separator: " ")
+                        )
+                    )
+                    chunkStartWord += chunkWords.count
+                    chunkWords.removeAll(keepingCapacity: true)
+                }
+                chunkWords.append(word)
+                totalWords += 1
+            }
+        }
+
+        if !chunkWords.isEmpty {
+            let chunkIndex = chunks.count
+            chunks.append(
+                ReaderImageRequestChunk(
+                    endWord: chunkStartWord + chunkWords.count - 1,
+                    index: chunkIndex,
+                    startWord: chunkStartWord,
+                    text: chunkWords.joined(separator: " ")
+                )
+            )
+        }
+
+        let chunkIndex = targetWordStart / readerImageRequestChunkWords
+        guard chunks.indices.contains(chunkIndex) else { return nil }
+        return chunks[chunkIndex]
     }
 
     func purchasePro() async {
@@ -874,21 +1079,6 @@ private enum AuthSetupError: LocalizedError {
     }
 }
 
-extension IllumeAppModel: AVSpeechSynthesizerDelegate {
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        Task { @MainActor in
-            guard isUsingSystemNarration else { return }
-            finishCurrentNarrationItem()
-        }
-    }
-
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        Task { @MainActor in
-            isUsingSystemNarration = false
-        }
-    }
-}
-
 extension IllumeAppModel: ASAuthorizationControllerDelegate {
     nonisolated func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
         Task { @MainActor in
@@ -944,7 +1134,37 @@ struct ReaderSettings: Equatable {
     var lineHeight: Double = 1.55
     var lineWidth: Double = 42
     var narrationRate: Double = 1.0
+    var narrationVoice: String = EdgeNarrationVoice.americanWoman.id
     var imageStyle: ReaderImageStyle = .cartoon
+}
+
+enum EdgeNarrationVoice: String, CaseIterable, Identifiable {
+    case americanMan = "en-US-AndrewMultilingualNeural"
+    case americanWoman = "en-US-AvaMultilingualNeural"
+    case britishMan = "en-GB-RyanNeural"
+    case britishWoman = "en-GB-SoniaNeural"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .americanMan: "American Man"
+        case .americanWoman: "American Woman"
+        case .britishMan: "British Man"
+        case .britishWoman: "British Woman"
+        }
+    }
+
+    var flag: String {
+        switch self {
+        case .americanMan, .americanWoman: "🇺🇸"
+        case .britishMan, .britishWoman: "🇬🇧"
+        }
+    }
+
+    static func flag(for id: String) -> String {
+        Self(rawValue: id)?.flag ?? americanWoman.flag
+    }
 }
 
 enum ReaderImagePhase: Equatable {
