@@ -73,13 +73,14 @@ struct PillButtonStyle: ButtonStyle {
 
 struct SoftIconButton: View {
     let systemName: String
+    var tint: Color = IllumeTheme.paper
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             icon
         }
-        .buttonStyle(LiquidIconButtonStyle())
+        .buttonStyle(LiquidIconButtonStyle(tint: tint))
     }
 
     private var icon: some View {
@@ -93,10 +94,12 @@ struct SoftIconButton: View {
 struct LiquidIconButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
+    var tint: Color = IllumeTheme.paper
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .illumeLiquidGlassCircle(
-                tint: IllumeTheme.paper,
+                tint: tint,
                 isPressed: configuration.isPressed,
                 isEnabled: isEnabled,
                 isInteractive: true

@@ -115,6 +115,8 @@ struct ReaderView: View {
     @State private var controlsCollapsed = false
     @State private var imageChromeHidden = false
 
+    private let imageChromeToggleBottomExclusion: CGFloat = 128
+
     var body: some View {
         let theme = app.readerSettings.theme
 
@@ -144,11 +146,18 @@ struct ReaderView: View {
                                 isChromeHidden: imageChromeHidden
                             )
                             .contentShape(Rectangle())
-                            .onTapGesture {
-                                withAnimation(.easeOut(duration: 0.16)) {
-                                    imageChromeHidden.toggle()
-                                }
-                            }
+                            .gesture(
+                                SpatialTapGesture()
+                                    .onEnded { value in
+                                        guard value.location.y < UIScreen.main.bounds.height - imageChromeToggleBottomExclusion else {
+                                            return
+                                        }
+
+                                        withAnimation(.easeOut(duration: 0.16)) {
+                                            imageChromeHidden.toggle()
+                                        }
+                                    }
+                            )
 
                             ReaderToolbar {
                                 app.closeReader()
@@ -295,6 +304,7 @@ struct ReaderView: View {
                     .blur(radius: hideBottomControls ? 14 : 0)
                     .scaleEffect(hideBottomControls ? 0.96 : 1, anchor: .bottom)
                     .allowsHitTesting(!hideBottomControls)
+                    .zIndex(8)
                     .animation(.easeOut(duration: 0.16), value: hideBottomControls)
                 }
             }
@@ -497,12 +507,21 @@ struct ReaderToolbar: View {
 
     var body: some View {
         HStack {
-            SoftIconButton(systemName: "chevron.left", action: close)
+            Button(action: close) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 17, weight: .black))
+                    .foregroundStyle(IllumeTheme.ink)
+                    .frame(width: 48, height: 48)
+            }
+            .buttonStyle(ReaderGlassCircleButtonStyle(tint: .white.opacity(0.12), pressedScale: 0.86))
+            .contentShape(Circle())
+            .accessibilityLabel("Back to library")
             Spacer()
         }
         .padding(.horizontal, 18)
         .padding(.top, 8)
         .padding(.bottom, 8)
+        .zIndex(4)
     }
 }
 
@@ -1068,6 +1087,7 @@ struct ReaderGlassCircleButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     var tint: Color
+    var pressedScale: CGFloat = 0.9
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -1077,6 +1097,20 @@ struct ReaderGlassCircleButtonStyle: ButtonStyle {
                 isEnabled: isEnabled,
                 isInteractive: true
             )
+            .overlay {
+                Circle()
+                    .strokeBorder(.white.opacity(configuration.isPressed ? 0.68 : 0.2), lineWidth: configuration.isPressed ? 2 : 1)
+                    .scaleEffect(configuration.isPressed ? 1.1 : 1)
+                    .opacity(isEnabled ? 1 : 0.35)
+            }
+            .brightness(configuration.isPressed ? 0.12 : 0)
+            .shadow(
+                color: .white.opacity(configuration.isPressed ? 0.3 : 0),
+                radius: configuration.isPressed ? 14 : 0,
+                x: 0,
+                y: 0
+            )
+            .scaleEffect(configuration.isPressed ? pressedScale : 1)
             .animation(IllumeTheme.spring, value: configuration.isPressed)
             .animation(IllumeTheme.spring, value: isEnabled)
     }
@@ -1086,6 +1120,7 @@ struct ReaderGlassCapsuleButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     var tint: Color
+    var pressedScale: CGFloat = 0.94
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -1095,6 +1130,20 @@ struct ReaderGlassCapsuleButtonStyle: ButtonStyle {
                 isEnabled: isEnabled,
                 isInteractive: true
             )
+            .overlay {
+                Capsule()
+                    .strokeBorder(.white.opacity(configuration.isPressed ? 0.64 : 0.18), lineWidth: configuration.isPressed ? 2 : 1)
+                    .scaleEffect(configuration.isPressed ? 1.035 : 1)
+                    .opacity(isEnabled ? 1 : 0.35)
+            }
+            .brightness(configuration.isPressed ? 0.1 : 0)
+            .shadow(
+                color: .white.opacity(configuration.isPressed ? 0.24 : 0),
+                radius: configuration.isPressed ? 18 : 0,
+                x: 0,
+                y: 0
+            )
+            .scaleEffect(configuration.isPressed ? pressedScale : 1)
             .animation(IllumeTheme.spring, value: configuration.isPressed)
             .animation(IllumeTheme.spring, value: isEnabled)
     }
