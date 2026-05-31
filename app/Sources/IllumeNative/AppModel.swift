@@ -16,6 +16,7 @@ private let narrationChunkMinimumCharacters = 80
 private let narrationChunkMaximumCharacters = 220
 private let narrationChunkMaximumParagraphs = 1
 private let narrationChunkPreferredSentenceMinimumCharacters = 60
+private let narrationVoicePreviewMaximumWords = 18
 
 @MainActor
 final class IllumeAppModel: NSObject, ObservableObject {
@@ -54,6 +55,11 @@ final class IllumeAppModel: NSObject, ObservableObject {
     private var audioStatusObserver: NSKeyValueObservation?
     private var audioTimeObserver: Any?
     private var narrationAudioURL: URL?
+    private var voicePreviewPlayer: AVPlayer?
+    private var voicePreviewAudioURL: URL?
+    private var voicePreviewEndObserver: NSObjectProtocol?
+    private var voicePreviewFailedObserver: NSObjectProtocol?
+    private var voicePreviewTask: Task<Void, Never>?
     private var nowPlayingArtworkTask: Task<Void, Never>?
     private var nowPlayingArtworkSource: String?
     private var nowPlayingArtworkImage: UIImage?
@@ -579,6 +585,24 @@ final class IllumeAppModel: NSObject, ObservableObject {
         clearPrefetchedNarration()
     }
 
+    func previewNarrationVoice(_ voice: KokoroNarrationVoice, in book: ReaderBook, from paragraphIndex: Int) {
+        voicePreviewTask?.cancel()
+        stopVoicePreview()
+        if narration.isPlaying {
+            pauseNarration()
+        }
+
+        let rate = Self.kokoroSpeechRate(from: readerSettings.narrationRate)
+        voicePreviewTask = Task {
+            await playNarrationVoicePreview(
+                voice: voice,
+                book: book,
+                paragraphIndex: paragraphIndex,
+                rate: rate
+            )
+        }
+    }
+
     private func pauseNarration() {
         guard audioPlayer != nil else {
             stopSpeaking()
@@ -672,6 +696,9 @@ final class IllumeAppModel: NSObject, ObservableObject {
     func stopSpeaking() {
         narrationTask?.cancel()
         narrationTask = nil
+        voicePreviewTask?.cancel()
+        voicePreviewTask = nil
+        stopVoicePreview()
         clearPrefetchedNarration()
         stopPlayback(keepNarrationState: false)
         narrationParagraphIndex = nil
@@ -742,6 +769,90 @@ final class IllumeAppModel: NSObject, ObservableObject {
         installNarrationTimeObserver(for: player)
         updateNowPlayingPlaybackState(isPlaying: true)
         player.playImmediately(atRate: currentNarrationPlaybackRate)
+    }
+
+    private func playNarrationVoicePreview(
+        voice: KokoroNarrationVoice,
+        book: ReaderBook,
+        paragraphIndex: Int,
+        rate: Double
+    ) async {
+        guard let chunk = Self.narrationVoicePreviewChunk(in: book, from: paragraphIndex),
+              let modelDirectory = Self.kokoroModelDirectoryURL else { return }
+
+        do {
+            let renderedAudio = try await renderNarrationAudio(
+                for: chunk,
+                modelDirectory: modelDirectory,
+                speakerID: voice.speakerID,
+                rate: rate
+            )
+            guard !Task.isCancelled,
+                  KokoroNarrationVoice.availableVoice(for: readerSettings.narrationVoice) == voice else {
+                try? FileManager.default.removeItem(at: renderedAudio.url)
+                return
+            }
+            try playVoicePreviewAudio(at: renderedAudio.url)
+        } catch {
+            guard !Task.isCancelled else { return }
+            stopVoicePreview()
+            notice = error.localizedDescription.isEmpty ? "Kokoro TTS could not preview this voice." : error.localizedDescription
+        }
+    }
+
+    private func playVoicePreviewAudio(at url: URL) throws {
+        stopVoicePreview()
+
+        #if os(iOS)
+        try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+        try AVAudioSession.sharedInstance().setActive(true)
+        #endif
+
+        let item = AVPlayerItem(url: url)
+        let player = AVPlayer(playerItem: item)
+        player.volume = 1
+        voicePreviewPlayer = player
+        voicePreviewAudioURL = url
+        voicePreviewEndObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.stopVoicePreview()
+            }
+        }
+        voicePreviewFailedObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] notification in
+            let message = (notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error)?.localizedDescription
+                ?? "Voice preview could not play."
+            Task { @MainActor in
+                guard let self else { return }
+                self.stopVoicePreview()
+                self.notice = message
+            }
+        }
+        player.playImmediately(atRate: 1)
+    }
+
+    private func stopVoicePreview() {
+        if let voicePreviewEndObserver {
+            NotificationCenter.default.removeObserver(voicePreviewEndObserver)
+            self.voicePreviewEndObserver = nil
+        }
+        if let voicePreviewFailedObserver {
+            NotificationCenter.default.removeObserver(voicePreviewFailedObserver)
+            self.voicePreviewFailedObserver = nil
+        }
+        voicePreviewPlayer?.pause()
+        voicePreviewPlayer = nil
+        if let voicePreviewAudioURL {
+            try? FileManager.default.removeItem(at: voicePreviewAudioURL)
+            self.voicePreviewAudioURL = nil
+        }
     }
 
     private var currentNarrationPlaybackRate: Float {
@@ -1358,6 +1469,51 @@ final class IllumeAppModel: NSObject, ObservableObject {
             continuationWordStart: continuationWordStart,
             wordMarkers: wordMarkers
         )
+    }
+
+    nonisolated private static func narrationVoicePreviewChunk(in book: ReaderBook, from paragraphIndex: Int) -> NarrationChunk? {
+        guard !book.paragraphs.isEmpty else { return nil }
+
+        let startIndex = min(max(paragraphIndex, book.paragraphs.startIndex), book.paragraphs.index(before: book.paragraphs.endIndex))
+        for index in book.paragraphs.indices.dropFirst(startIndex) {
+            let paragraph = book.paragraphs[index]
+            let wordRanges = Array(wordRanges(in: paragraph.text).prefix(narrationVoicePreviewMaximumWords))
+            guard let firstRange = wordRanges.first,
+                  let lastRange = wordRanges.last else { continue }
+
+            let previewRange = NSRange(
+                location: firstRange.location,
+                length: NSMaxRange(lastRange) - firstRange.location
+            )
+            let previewText = (paragraph.text as NSString)
+                .substring(with: previewRange)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !previewText.isEmpty else { continue }
+
+            let markers = wordRanges.map { range in
+                let word = (paragraph.text as NSString).substring(with: range)
+                return NarrationWordMarker(
+                    paragraphIndex: index,
+                    range: range,
+                    weight: narrationWordWeight(word),
+                    startSeconds: nil,
+                    endSeconds: nil
+                )
+            }
+
+            return NarrationChunk(
+                startParagraphIndex: index,
+                startWordStart: firstRange.location,
+                text: previewText,
+                firstParagraphID: paragraph.id,
+                endParagraphIndex: index,
+                continuationParagraphIndex: nil,
+                continuationWordStart: nil,
+                wordMarkers: markers
+            )
+        }
+
+        return nil
     }
 
     nonisolated private static func narrationChunk(

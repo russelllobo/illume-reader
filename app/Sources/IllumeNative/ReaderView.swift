@@ -326,7 +326,7 @@ struct ReaderView: View {
                     GeometryReader { geometry in
                         let useCompactControls = isShowingImageMode || controlsCollapsed || geometry.size.width < 430
 
-                        VStack(spacing: useCompactControls ? 7 : 9) {
+                        VStack(spacing: speedPickerExpanded ? (useCompactControls ? 12 : 14) : (useCompactControls ? 7 : 9)) {
                             if !speedPickerExpanded {
                                 ReaderProgressStrip(
                                     currentIndex: currentIndex,
@@ -349,6 +349,7 @@ struct ReaderView: View {
                                     },
                                     selectVoice: { voice in
                                         app.setNarrationVoice(voice.id)
+                                        app.previewNarrationVoice(voice, in: book, from: currentIndex)
                                         revealReaderButtons(autohide: false)
                                     }
                                 )
@@ -376,6 +377,7 @@ struct ReaderView: View {
                                     },
                                     selectVoice: { voice in
                                         app.setNarrationVoice(voice.id)
+                                        app.previewNarrationVoice(voice, in: book, from: currentIndex)
                                         revealReaderButtons(autohide: false)
                                     }
                                 )
@@ -407,6 +409,7 @@ struct ReaderView: View {
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .center)
+                            .offset(y: speedPickerExpanded ? 5 : 0)
                         }
                         .padding(.horizontal, 18)
                         .frame(width: geometry.size.width, alignment: .bottom)
@@ -1980,6 +1983,7 @@ struct ReaderNarrationSpeedPickerPanel: View {
             Capsule()
                 .strokeBorder(onDarkBackground ? .white.opacity(0.18) : IllumeTheme.ink.opacity(0.08), lineWidth: 1)
         }
+        .clipShape(Capsule())
     }
 
     private var speedPresetScroller: some View {
@@ -2023,9 +2027,10 @@ struct ReaderNarrationSpeedPickerPanel: View {
                             .accessibilityValue(ReaderTransportRail.formatRate(preset))
                         }
                     }
-                    .padding(.trailing, 2)
+                    .padding(.horizontal, 2)
                 }
                 .frame(maxWidth: .infinity, minHeight: iconSize, maxHeight: iconSize)
+                .clipped()
                 .onAppear {
                     let selectedPreset = presets.min(by: { abs($0 - rate) < abs($1 - rate) }) ?? 1.0
                     proxy.scrollTo(selectedPreset, anchor: .center)
@@ -2075,9 +2080,10 @@ struct ReaderNarrationSpeedPickerPanel: View {
                             .accessibilityValue(voice.label)
                         }
                     }
-                    .padding(.trailing, 2)
+                    .padding(.horizontal, 2)
                 }
                 .frame(maxWidth: .infinity, minHeight: iconSize, maxHeight: iconSize)
+                .clipped()
                 .onAppear {
                     proxy.scrollTo(KokoroNarrationVoice.availableVoice(for: voiceID).id, anchor: .center)
                 }
@@ -2116,7 +2122,7 @@ struct ReaderNarrationSpeedPickerPanel: View {
     }
 
     private var selectedTextColor: Color {
-        onDarkBackground ? IllumeTheme.ink : .white
+        IllumeTheme.ink
     }
 }
 
