@@ -2297,7 +2297,6 @@ private extension UIApplication {
 }
 
 struct ReaderSettings: Equatable {
-    var theme: ReaderThemeChoice = .paper
     var textScale: Double = 1.05
     var lineHeight: Double = 1.55
     var lineWidth: Double = 42
@@ -2497,24 +2496,4 @@ private enum NarrationPlaybackError: LocalizedError {
     }
 }
 
-enum ReaderThemeChoice: String, CaseIterable {
-    case paper = "Paper"
-    case night = "Night"
-    case warm = "Warm"
-
-    var background: Color {
-        switch self {
-        case .paper: IllumeTheme.paper
-        case .night: Color(red: 0.055, green: 0.06, blue: 0.07)
-        case .warm: Color(red: 1.0, green: 0.972, blue: 0.914)
-        }
-    }
-
-    var foreground: Color {
-        switch self {
-        case .paper, .warm: IllumeTheme.ink
-        case .night: Color(red: 0.92, green: 0.91, blue: 0.86)
-        }
-    }
-}
 #endif

@@ -163,15 +163,13 @@ struct ReaderView: View {
     }
 
     var body: some View {
-        let theme = app.readerSettings.theme
-
         ZStack {
             if let book = app.activeBook,
                imageModeEnabled,
                imageParagraph(in: book) != nil {
                 Color.black.ignoresSafeArea()
             } else {
-                theme.background.ignoresSafeArea()
+                ReaderDefaultStyle.background.ignoresSafeArea()
             }
 
             VStack(spacing: 0) {
@@ -216,10 +214,10 @@ struct ReaderView: View {
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     } else {
-                        ReaderToolbar(bookTitle: book.title, onDarkBackground: theme != .warm) {
+                        ReaderToolbar(bookTitle: book.title, onDarkBackground: false) {
                             closeReader()
                         }
-                        .background(theme.background)
+                        .background(ReaderDefaultStyle.background)
                         .blurLoadIn(radius: 9)
                         .opacity(shouldHideReaderButtons ? 0 : 1)
                         .blur(radius: shouldHideReaderButtons ? 14 : 0)
@@ -461,7 +459,7 @@ struct ReaderView: View {
                 .zIndex(12)
             }
         }
-        .foregroundStyle(theme.foreground)
+        .foregroundStyle(ReaderDefaultStyle.foreground)
         .sheet(item: $activeReaderSheet) { destination in
             readerSheet(for: destination)
         }
@@ -1012,6 +1010,11 @@ struct ReaderToolbar: View {
     }
 }
 
+private enum ReaderDefaultStyle {
+    static let background = Color(red: 1.0, green: 0.972, blue: 0.914)
+    static let foreground = IllumeTheme.paper
+}
+
 struct ReaderProgressStrip: View {
     let currentIndex: Int
     let totalCount: Int
@@ -1307,7 +1310,7 @@ struct ParagraphView: View {
     }
 
     private var themeForeground: Color {
-        app.readerSettings.theme.foreground
+        ReaderDefaultStyle.foreground
     }
 
     private var uiFont: UIFont {
@@ -1326,21 +1329,11 @@ struct ParagraphView: View {
     }
 
     private var speakingHighlightColor: Color {
-        switch app.readerSettings.theme {
-        case .night:
-            return Color.white.opacity(0.12)
-        default:
-            return Color(red: 0.918, green: 0.961, blue: 1.0)
-        }
+        Color(red: 0.918, green: 0.961, blue: 1.0)
     }
 
     private var wordHighlightColor: Color {
-        switch app.readerSettings.theme {
-        case .night:
-            return Color(red: 1.0, green: 0.82, blue: 0.28).opacity(0.58)
-        default:
-            return Color(red: 1.0, green: 0.78, blue: 0.18).opacity(0.62)
-        }
+        Color(red: 1.0, green: 0.78, blue: 0.18).opacity(0.62)
     }
 }
 
