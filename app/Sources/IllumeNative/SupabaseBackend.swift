@@ -70,12 +70,6 @@ struct AppleSubscriptionSyncResponse: Codable {
     let expiresAt: Date?
 }
 
-struct EdgeTTSRequest: Codable {
-    let rate: Double
-    let text: String
-    let voice: String
-}
-
 final class SupabaseBackend: @unchecked Sendable {
     private let config: SupabaseConfig
     private let session: URLSession
@@ -240,10 +234,6 @@ final class SupabaseBackend: @unchecked Sendable {
         try await invoke(function: "generate-reader-image", accessToken: accessToken, body: payload)
     }
 
-    func synthesizeSpeech(_ payload: EdgeTTSRequest, accessToken: String) async throws -> Data {
-        try await rawFunction(function: "edge-tts", accessToken: accessToken, body: payload)
-    }
-
     func deleteBook(bookId: UUID, accessToken: String) async throws {
         let _: EmptyResponse = try await invoke(
             function: "delete-reader-book",
@@ -312,26 +302,6 @@ final class SupabaseBackend: @unchecked Sendable {
         request.httpMethod = method
         let (data, response) = try await session.data(for: request)
         try validate(response: response, data: data)
-        return data
-    }
-
-    private func rawFunction<Body: Encodable>(function: String, accessToken: String, body: Body) async throws -> Data {
-        var request = baseRequest(path: "/functions/v1/\(function)", accessToken: accessToken)
-        request.httpMethod = "POST"
-        request.httpBody = try Self.edgeFunctionEncoder().encode(AnyEncodable(body))
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
-
-        let (data, response) = try await session.data(for: request)
-        try validate(response: response, data: data)
-        if let http = response as? HTTPURLResponse,
-           let contentType = http.value(forHTTPHeaderField: "Content-Type"),
-           !contentType.localizedCaseInsensitiveContains("audio/mpeg") {
-            if let edge = try? IllumeJSON.decoder().decode(EdgeFunctionError.self, from: data) {
-                throw edge
-            }
-            throw URLError(.cannotDecodeContentData)
-        }
         return data
     }
 

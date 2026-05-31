@@ -9,6 +9,7 @@ struct IllumeNativeApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(app)
+                .preferredColorScheme(.dark)
                 .task {
                     await app.bootstrap()
                 }

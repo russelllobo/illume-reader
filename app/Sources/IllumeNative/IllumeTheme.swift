@@ -3,18 +3,25 @@ import CoreText
 import SwiftUI
 
 enum IllumeTheme {
-    static let ink = Color(red: 0.08, green: 0.075, blue: 0.065)
-    static let paper = Color(red: 0.985, green: 0.975, blue: 0.945)
-    static let mist = Color(red: 0.95, green: 0.91, blue: 0.82)
-    static let accent = Color(red: 0.62, green: 0.20, blue: 0.09)
+    static let ink = Color(red: 0.93, green: 0.90, blue: 0.84)
+    static let paper = Color(red: 0.055, green: 0.052, blue: 0.047)
+    static let mist = Color(red: 0.14, green: 0.13, blue: 0.115)
+    static let accent = Color(red: 0.98, green: 0.48, blue: 0.34)
     static let coral = Color(red: 1.0, green: 0.38, blue: 0.28)
     static let plum = Color(red: 0.34, green: 0.22, blue: 0.46)
-    static let spring = Animation.spring(response: 0.34, dampingFraction: 0.78)
+    static let spring = Animation.spring(response: 0.24, dampingFraction: 0.74)
+    static let buttonPress = Animation.spring(response: 0.16, dampingFraction: 0.7)
+    static let buttonRelease = Animation.interpolatingSpring(stiffness: 520, damping: 20)
     static let blurLoadIn = Animation.timingCurve(0.16, 1, 0.3, 1, duration: 0.18)
+    static let minimumTouchTarget: CGFloat = 48
+
+    static func liquidGlassTint(_ color: Color, prominent: Bool = false) -> Color {
+        color.opacity(prominent ? 0.62 : 0.42)
+    }
 }
 
 enum IllumeTypography {
-    static func logo(_ size: CGFloat, weight: Font.Weight = .bold) -> Font {
+    static func logo(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         _ = registeredFonts
         return .custom("Averia Serif Libre", size: size).weight(weight)
     }
@@ -29,14 +36,14 @@ enum IllumeTypography {
         return .custom("Outfit", size: size).weight(weight)
     }
 
+    static func librarySerif(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
+        .system(size: size, weight: weight, design: .serif)
+    }
+
     private static let registeredFonts: Void = {
         [
             "AveriaSerifLibre-Regular",
-            "AveriaSerifLibre-Bold",
-            "CrimsonText-Regular",
-            "CrimsonText-SemiBold",
-            "CrimsonText-Italic",
-            "Outfit-Regular"
+            "AveriaSerifLibre-Bold"
         ].forEach { fileName in
             guard let url = Bundle.module.url(forResource: fileName, withExtension: "ttf") else {
                 return
@@ -50,7 +57,7 @@ struct PillButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     var tint: Color = IllumeTheme.ink
-    var foreground: Color = .white
+    var foreground: Color = IllumeTheme.paper
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -63,9 +70,9 @@ struct PillButtonStyle: ButtonStyle {
                 tint: tint,
                 isPressed: configuration.isPressed,
                 isEnabled: isEnabled,
-                isInteractive: true
+                isInteractive: true,
+                pressedScale: 0.955
             )
-            .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .animation(IllumeTheme.spring, value: configuration.isPressed)
             .animation(IllumeTheme.spring, value: isEnabled)
     }
@@ -80,7 +87,7 @@ struct SoftIconButton: View {
         Button(action: action) {
             icon
         }
-        .buttonStyle(LiquidIconButtonStyle(tint: tint))
+        .illumeNativeGlassButton(tint: tint, borderShape: .circle, controlSize: .small, fallback: LiquidIconButtonStyle(tint: tint))
     }
 
     private var icon: some View {
@@ -88,6 +95,21 @@ struct SoftIconButton: View {
             .font(.system(size: 16, weight: .bold))
             .foregroundStyle(IllumeTheme.ink)
             .frame(width: 44, height: 44)
+    }
+}
+
+struct IllumeGlassEffectGroup<Content: View>: View {
+    var spacing: CGFloat?
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: spacing) {
+                content()
+            }
+        } else {
+            content()
+        }
     }
 }
 
@@ -132,6 +154,7 @@ struct LiquidLiftButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            .contentShape(Rectangle())
             .opacity(isEnabled ? 1 : 0.5)
             .scaleEffect(configuration.isPressed ? 0.965 : 1)
             .animation(IllumeTheme.spring, value: configuration.isPressed)
@@ -151,7 +174,8 @@ struct MiniGlassButtonStyle: ButtonStyle {
                 tint: IllumeTheme.paper,
                 isPressed: configuration.isPressed,
                 isEnabled: isEnabled,
-                isInteractive: true
+                isInteractive: true,
+                pressedScale: 0.94
             )
             .animation(IllumeTheme.spring, value: configuration.isPressed)
     }
@@ -162,18 +186,50 @@ private struct IllumeLiquidGlassCapsuleModifier: ViewModifier {
     let isPressed: Bool
     let isEnabled: Bool
     let isInteractive: Bool
+    let pressedScale: CGFloat
+    @State private var releaseBounce = false
+
+    private var currentScale: CGFloat {
+        if isPressed {
+            return pressedScale
+        }
+        return releaseBounce ? 1.045 : 1
+    }
 
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
             content
-                .glassEffect(.regular.tint(tint).interactive(isInteractive && isEnabled), in: Capsule())
+                .frame(minHeight: IllumeTheme.minimumTouchTarget)
+                .glassEffect(.regular.tint(IllumeTheme.liquidGlassTint(tint)).interactive(isInteractive && isEnabled), in: Capsule())
+                .contentShape(Capsule())
                 .opacity(isEnabled ? 1 : 0.5)
-                .scaleEffect(isPressed ? 0.965 : 1)
+                .scaleEffect(currentScale)
+                .brightness(isPressed ? 0.06 : 0)
+                .animation(isPressed ? IllumeTheme.buttonPress : IllumeTheme.buttonRelease, value: currentScale)
+                .onChange(of: isPressed) { _, newValue in
+                    triggerReleaseBounce(when: newValue)
+                }
         } else {
             content
+                .frame(minHeight: IllumeTheme.minimumTouchTarget)
                 .background(.ultraThinMaterial, in: Capsule())
+                .contentShape(Capsule())
                 .opacity(isEnabled ? 1 : 0.5)
-                .scaleEffect(isPressed ? 0.965 : 1)
+                .scaleEffect(currentScale)
+                .brightness(isPressed ? 0.06 : 0)
+                .animation(isPressed ? IllumeTheme.buttonPress : IllumeTheme.buttonRelease, value: currentScale)
+                .onChange(of: isPressed) { _, newValue in
+                    triggerReleaseBounce(when: newValue)
+                }
+        }
+    }
+
+    private func triggerReleaseBounce(when isPressed: Bool) {
+        guard !isPressed, isEnabled else { return }
+        releaseBounce = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(90))
+            releaseBounce = false
         }
     }
 }
@@ -183,18 +239,50 @@ private struct IllumeLiquidGlassCircleModifier: ViewModifier {
     let isPressed: Bool
     let isEnabled: Bool
     let isInteractive: Bool
+    let pressedScale: CGFloat
+    @State private var releaseBounce = false
+
+    private var currentScale: CGFloat {
+        if isPressed {
+            return pressedScale
+        }
+        return releaseBounce ? 1.075 : 1
+    }
 
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
             content
-                .glassEffect(.regular.tint(tint).interactive(isInteractive && isEnabled), in: Circle())
+                .frame(minWidth: IllumeTheme.minimumTouchTarget, minHeight: IllumeTheme.minimumTouchTarget)
+                .glassEffect(.regular.tint(IllumeTheme.liquidGlassTint(tint)).interactive(isInteractive && isEnabled), in: Circle())
+                .contentShape(Circle())
                 .opacity(isEnabled ? 1 : 0.5)
-                .scaleEffect(isPressed ? 0.92 : 1)
+                .scaleEffect(currentScale)
+                .brightness(isPressed ? 0.08 : 0)
+                .animation(isPressed ? IllumeTheme.buttonPress : IllumeTheme.buttonRelease, value: currentScale)
+                .onChange(of: isPressed) { _, newValue in
+                    triggerReleaseBounce(when: newValue)
+                }
         } else {
             content
+                .frame(minWidth: IllumeTheme.minimumTouchTarget, minHeight: IllumeTheme.minimumTouchTarget)
                 .background(.ultraThinMaterial, in: Circle())
+                .contentShape(Circle())
                 .opacity(isEnabled ? 1 : 0.5)
-                .scaleEffect(isPressed ? 0.92 : 1)
+                .scaleEffect(currentScale)
+                .brightness(isPressed ? 0.08 : 0)
+                .animation(isPressed ? IllumeTheme.buttonPress : IllumeTheme.buttonRelease, value: currentScale)
+                .onChange(of: isPressed) { _, newValue in
+                    triggerReleaseBounce(when: newValue)
+                }
+        }
+    }
+
+    private func triggerReleaseBounce(when isPressed: Bool) {
+        guard !isPressed, isEnabled else { return }
+        releaseBounce = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(90))
+            releaseBounce = false
         }
     }
 }
@@ -205,20 +293,52 @@ private struct IllumeLiquidGlassRoundedModifier: ViewModifier {
     let isPressed: Bool
     let isEnabled: Bool
     let isInteractive: Bool
+    let pressedScale: CGFloat
+    @State private var releaseBounce = false
+
+    private var currentScale: CGFloat {
+        if isPressed {
+            return pressedScale
+        }
+        return releaseBounce ? 1.025 : 1
+    }
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 
         if #available(iOS 26.0, *) {
             content
-                .glassEffect(.regular.tint(tint).interactive(isInteractive && isEnabled), in: shape)
+                .frame(minHeight: IllumeTheme.minimumTouchTarget)
+                .glassEffect(.regular.tint(IllumeTheme.liquidGlassTint(tint)).interactive(isInteractive && isEnabled), in: shape)
+                .contentShape(shape)
                 .opacity(isEnabled ? 1 : 0.5)
-                .scaleEffect(isPressed ? 0.985 : 1)
+                .scaleEffect(currentScale)
+                .brightness(isPressed ? 0.05 : 0)
+                .animation(isPressed ? IllumeTheme.buttonPress : IllumeTheme.buttonRelease, value: currentScale)
+                .onChange(of: isPressed) { _, newValue in
+                    triggerReleaseBounce(when: newValue)
+                }
         } else {
             content
+                .frame(minHeight: IllumeTheme.minimumTouchTarget)
                 .background(.ultraThinMaterial, in: shape)
+                .contentShape(shape)
                 .opacity(isEnabled ? 1 : 0.5)
-                .scaleEffect(isPressed ? 0.985 : 1)
+                .scaleEffect(currentScale)
+                .brightness(isPressed ? 0.05 : 0)
+                .animation(isPressed ? IllumeTheme.buttonPress : IllumeTheme.buttonRelease, value: currentScale)
+                .onChange(of: isPressed) { _, newValue in
+                    triggerReleaseBounce(when: newValue)
+                }
+        }
+    }
+
+    private func triggerReleaseBounce(when isPressed: Bool) {
+        guard !isPressed, isEnabled else { return }
+        releaseBounce = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(90))
+            releaseBounce = false
         }
     }
 }
@@ -242,6 +362,33 @@ struct BlurLoadInModifier: ViewModifier {
 }
 
 extension View {
+    @ViewBuilder
+    func illumeNativeGlassButton<S: ButtonStyle>(
+        tint: Color = IllumeTheme.paper,
+        borderShape: ButtonBorderShape = .capsule,
+        controlSize: ControlSize = .regular,
+        isProminent: Bool = false,
+        fallback: S
+    ) -> some View {
+        if #available(iOS 26.0, *) {
+            if isProminent {
+                self
+                    .buttonStyle(.glassProminent)
+                    .buttonBorderShape(borderShape)
+                    .controlSize(controlSize)
+                    .tint(tint)
+            } else {
+                self
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(borderShape)
+                    .controlSize(controlSize)
+                    .tint(tint)
+            }
+        } else {
+            self.buttonStyle(fallback)
+        }
+    }
+
     func blurLoadIn(delay: Double = 0, radius: CGFloat = 9) -> some View {
         modifier(BlurLoadInModifier(delay: delay, blurRadius: radius))
     }
@@ -250,14 +397,16 @@ extension View {
         tint: Color = IllumeTheme.paper,
         isPressed: Bool = false,
         isEnabled: Bool = true,
-        isInteractive: Bool = false
+        isInteractive: Bool = false,
+        pressedScale: CGFloat = 0.965
     ) -> some View {
         modifier(
             IllumeLiquidGlassCapsuleModifier(
                 tint: tint,
                 isPressed: isPressed,
                 isEnabled: isEnabled,
-                isInteractive: isInteractive
+                isInteractive: isInteractive,
+                pressedScale: pressedScale
             )
         )
     }
@@ -266,14 +415,16 @@ extension View {
         tint: Color = IllumeTheme.paper,
         isPressed: Bool = false,
         isEnabled: Bool = true,
-        isInteractive: Bool = false
+        isInteractive: Bool = false,
+        pressedScale: CGFloat = 0.9
     ) -> some View {
         modifier(
             IllumeLiquidGlassCircleModifier(
                 tint: tint,
                 isPressed: isPressed,
                 isEnabled: isEnabled,
-                isInteractive: isInteractive
+                isInteractive: isInteractive,
+                pressedScale: pressedScale
             )
         )
     }
@@ -283,7 +434,8 @@ extension View {
         tint: Color = IllumeTheme.paper,
         isPressed: Bool = false,
         isEnabled: Bool = true,
-        isInteractive: Bool = false
+        isInteractive: Bool = false,
+        pressedScale: CGFloat = 0.975
     ) -> some View {
         modifier(
             IllumeLiquidGlassRoundedModifier(
@@ -291,7 +443,8 @@ extension View {
                 tint: tint,
                 isPressed: isPressed,
                 isEnabled: isEnabled,
-                isInteractive: isInteractive
+                isInteractive: isInteractive,
+                pressedScale: pressedScale
             )
         )
     }

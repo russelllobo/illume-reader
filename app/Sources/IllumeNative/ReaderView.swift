@@ -4,13 +4,33 @@ import SwiftUI
 import UIKit
 
 private let readerImageChunkWords = 750
+private let readerOverlayMinimumCharacters = 260
+private let readerOverlayCompactMaximumCharacters = 520
+private let readerOverlayExpandedMaximumCharacters = 900
+private let readerTypographyPanelLift: CGFloat = 190
 private let readerScrollSpaceName = "readerScroll"
+private let readerButtonsAutohideDelay: Duration = .seconds(3)
+private let readerQuickMenuOpenAnimation = Animation.spring(response: 0.18, dampingFraction: 0.66, blendDuration: 0.03)
+private let readerQuickMenuCloseAnimation = Animation.easeOut(duration: 0.12)
 
 private struct ReaderScrollOffsetPreferenceKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+private extension AnyTransition {
+    static var readerQuickMenuBubble: AnyTransition {
+        .asymmetric(
+            insertion: .scale(scale: 0.82, anchor: .bottomTrailing)
+                .combined(with: .offset(x: 12, y: 18))
+                .combined(with: .opacity),
+            removal: .scale(scale: 0.96, anchor: .bottomTrailing)
+                .combined(with: .offset(x: 4, y: 8))
+                .combined(with: .opacity)
+        )
     }
 }
 
@@ -99,11 +119,19 @@ private struct ReaderImageChunkCache {
     }
 }
 
+private enum ReaderSheetDestination: String, Identifiable {
+    case contents
+    case imageStyles
+    case fontSettings
+
+    var id: String { rawValue }
+}
+
 struct ReaderView: View {
     @EnvironmentObject private var app: IllumeAppModel
     @Environment(\.dismiss) private var dismiss
-    @State private var settingsOpen = false
-    @State private var tableOfContentsOpen = false
+    @State private var activeReaderSheet: ReaderSheetDestination?
+    @State private var quickMenuOpen = false
     @State private var pendingParagraphID: String?
     @State private var scrollRequest = 0
     @State private var readerContentVisible = true
@@ -113,9 +141,26 @@ struct ReaderView: View {
     @State private var scheduledImageChunkIndex: Int?
     @State private var imageChunkCache = ReaderImageChunkCache.empty
     @State private var controlsCollapsed = false
-    @State private var imageChromeHidden = false
+    @State private var readerButtonsHidden = false
+    @State private var readerButtonsAutohideTask: Task<Void, Never>?
+    @State private var restoredBookID: UUID?
+    @State private var initialPositionReady = false
+    @State private var readerLiftedForBottomPanel = false
+    @State private var speedPickerExpanded = false
 
     private let imageChromeToggleBottomExclusion: CGFloat = 128
+
+    private var textColumnWidth: CGFloat {
+        min(CGFloat(app.readerSettings.lineWidth) * 11, 560)
+    }
+
+    private var shouldHideReaderButtons: Bool {
+        readerButtonsHidden
+    }
+
+    private var isNarrationActive: Bool {
+        app.narration.isPlaying || app.narration.isPreparing
+    }
 
     var body: some View {
         let theme = app.readerSettings.theme
@@ -135,15 +180,16 @@ struct ReaderView: View {
                     let isShowingImageMode = imageModeEnabled && currentImageParagraph != nil
 
                     if isShowingImageMode {
-                        let imageOverlayText = imageOverlayText(in: book, expandsBeyondCurrentParagraph: imageChromeHidden)
+                        let imageOverlay = imageOverlayNarrationText(in: book)
 
                         ZStack(alignment: .top) {
                             ReaderImageTopPanel(
                                 urlString: app.readerImageResponse?.imageUrl,
                                 phase: app.readerImagePhase,
-                                overlayText: imageOverlayText,
+                                overlayText: imageOverlay.text,
+                                activeOverlayRange: imageOverlay.activeRange,
                                 fillsReadingView: true,
-                                isChromeHidden: imageChromeHidden
+                                isChromeHidden: shouldHideReaderButtons
                             )
                             .contentShape(Rectangle())
                             .gesture(
@@ -153,92 +199,119 @@ struct ReaderView: View {
                                             return
                                         }
 
-                                        withAnimation(.easeOut(duration: 0.16)) {
-                                            imageChromeHidden.toggle()
-                                        }
+                                        toggleReaderButtons()
                                     }
                             )
 
-                            ReaderToolbar {
-                                app.closeReader()
-                                dismiss()
+                            ReaderToolbar(bookTitle: book.title, onDarkBackground: true) {
+                                closeReader()
                             }
                             .padding(.top, 8)
-                            .opacity(imageChromeHidden ? 0 : 1)
-                            .blur(radius: imageChromeHidden ? 14 : 0)
-                            .scaleEffect(imageChromeHidden ? 0.96 : 1)
-                            .allowsHitTesting(!imageChromeHidden)
-                            .animation(.easeOut(duration: 0.16), value: imageChromeHidden)
+                            .blurLoadIn(radius: 9)
+                            .opacity(shouldHideReaderButtons ? 0 : 1)
+                            .blur(radius: shouldHideReaderButtons ? 14 : 0)
+                            .scaleEffect(shouldHideReaderButtons ? 0.96 : 1)
+                            .allowsHitTesting(!shouldHideReaderButtons)
+                            .animation(.easeOut(duration: 0.16), value: shouldHideReaderButtons)
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     } else {
-                        ReaderToolbar {
-                            app.closeReader()
-                            dismiss()
+                        ReaderToolbar(bookTitle: book.title, onDarkBackground: theme != .warm) {
+                            closeReader()
                         }
                         .background(theme.background)
+                        .blurLoadIn(radius: 9)
+                        .opacity(shouldHideReaderButtons ? 0 : 1)
+                        .blur(radius: shouldHideReaderButtons ? 14 : 0)
+                        .frame(height: shouldHideReaderButtons ? 0 : nil)
+                        .clipped()
+                        .allowsHitTesting(!shouldHideReaderButtons)
+                        .animation(.easeOut(duration: 0.16), value: shouldHideReaderButtons)
 
-                        ScrollViewReader { proxy in
-                            ScrollView {
-                                LazyVStack(alignment: .leading, spacing: 18) {
-                                    GeometryReader { geometry in
-                                        Color.clear.preference(
-                                            key: ReaderScrollOffsetPreferenceKey.self,
-                                            value: geometry.frame(in: .named(readerScrollSpaceName)).minY
-                                        )
-                                    }
-                                    .frame(height: 0)
-
-                                    ForEach(Array(book.paragraphs.enumerated()), id: \.element.id) { index, paragraph in
-                                        ParagraphView(paragraph: paragraph, index: index) {
-                                            currentIndex = index
-                                            app.saveProgress(index: index, page: paragraph.pageNumber ?? 1)
+                        GeometryReader { viewport in
+                            ScrollViewReader { proxy in
+                                ScrollView {
+                                    LazyVStack(alignment: .leading, spacing: 18) {
+                                        GeometryReader { geometry in
+                                            Color.clear.preference(
+                                                key: ReaderScrollOffsetPreferenceKey.self,
+                                                value: geometry.frame(in: .named(readerScrollSpaceName)).minY
+                                            )
                                         }
-                                            .id(paragraph.id)
-                                            .onAppear {
-                                                currentIndex = index
-                                                app.saveProgress(index: index, page: paragraph.pageNumber ?? 1)
+                                        .frame(height: 0)
+
+                                        ForEach(Array(book.paragraphs.enumerated()), id: \.element.id) { index, paragraph in
+                                            ParagraphView(paragraph: paragraph, index: index) {
+                                                updateVisibleParagraph(index, paragraph: paragraph)
                                             }
+                                                .id(paragraph.id)
+                                                .onAppear {
+                                                    updateVisibleParagraph(index, paragraph: paragraph)
+                                                }
+                                        }
+                                    }
+                                    .frame(maxWidth: textColumnWidth)
+                                    .padding(.horizontal, 18)
+                                    .padding(.top, 12)
+                                    .padding(.bottom, controlsCollapsed ? 122 : 158)
+                                    .frame(maxWidth: .infinity)
+                                }
+                                .coordinateSpace(name: readerScrollSpaceName)
+                                .scrollIndicators(.hidden)
+                                .opacity(readerContentVisible ? 1 : 0)
+                                .blur(radius: readerContentVisible ? 0 : 10)
+                                .scaleEffect(readerLiftedForBottomPanel ? 0.935 : 1, anchor: .top)
+                                .offset(y: readerLiftedForBottomPanel ? -readerTypographyPanelLift : 0)
+                                .padding(.bottom, readerLiftedForBottomPanel ? readerTypographyPanelLift : 0)
+                                .animation(IllumeTheme.spring, value: readerLiftedForBottomPanel)
+                                .animation(IllumeTheme.blurLoadIn, value: readerContentVisible)
+                                .simultaneousGesture(
+                                    SpatialTapGesture()
+                                        .onEnded { value in
+                                            handleReaderTap(
+                                                value.location,
+                                                viewportWidth: viewport.size.width,
+                                                book: book,
+                                                proxy: proxy
+                                            )
+                                        }
+                                )
+                                .simultaneousGesture(
+                                    DragGesture(minimumDistance: 8)
+                                        .onChanged { _ in
+                                            revealReaderButtons()
+                                        }
+                                )
+                                .onPreferenceChange(ReaderScrollOffsetPreferenceKey.self) { offset in
+                                    let shouldCollapse = offset < -18
+                                    guard controlsCollapsed != shouldCollapse else { return }
+                                    withAnimation(IllumeTheme.spring) {
+                                        controlsCollapsed = shouldCollapse
                                     }
                                 }
-                                .frame(maxWidth: min(CGFloat(app.readerSettings.lineWidth) * 11, 560))
-                                .padding(.horizontal, 18)
-                                .padding(.top, 12)
-                                .padding(.bottom, controlsCollapsed ? 122 : 158)
-                                .frame(maxWidth: .infinity)
-                            }
-                            .coordinateSpace(name: readerScrollSpaceName)
-                            .scrollIndicators(.hidden)
-                            .opacity(readerContentVisible ? 1 : 0)
-                            .onPreferenceChange(ReaderScrollOffsetPreferenceKey.self) { offset in
-                                let shouldCollapse = offset < -18
-                                guard controlsCollapsed != shouldCollapse else { return }
-                                withAnimation(IllumeTheme.spring) {
-                                    controlsCollapsed = shouldCollapse
+                                .onAppear {
+                                    restoreInitialPosition(in: book, proxy: proxy)
                                 }
-                            }
-                            .onAppear {
-                                if let row = app.activeBookRow,
-                                   book.paragraphs.indices.contains(row.currentIndex) {
-                                    proxy.scrollTo(book.paragraphs[row.currentIndex].id, anchor: .top)
+                                .onChange(of: scrollRequest) {
+                                    guard let paragraphID = pendingParagraphID else { return }
+                                    var transaction = Transaction()
+                                    transaction.disablesAnimations = true
+                                    withTransaction(transaction) {
+                                        proxy.scrollTo(paragraphID, anchor: .top)
+                                    }
+                                    pendingParagraphID = nil
                                 }
-                            }
-                            .onChange(of: scrollRequest) {
-                                guard let paragraphID = pendingParagraphID else { return }
-                                var transaction = Transaction()
-                                transaction.disablesAnimations = true
-                                withTransaction(transaction) {
-                                    proxy.scrollTo(paragraphID, anchor: .top)
+                                .onChange(of: app.activeBookRow?.id) {
+                                    restoreInitialPosition(in: book, proxy: proxy)
                                 }
-                                pendingParagraphID = nil
-                            }
-                            .onChange(of: app.narration.paragraphID) {
-                                guard let paragraphID = app.narration.paragraphID,
-                                      let index = book.paragraphs.firstIndex(where: { $0.id == paragraphID }) else { return }
-                                currentIndex = index
-                                app.saveProgress(index: index, page: book.paragraphs[index].pageNumber ?? 1)
-                                withAnimation(IllumeTheme.spring) {
-                                    proxy.scrollTo(paragraphID, anchor: .center)
+                                .onChange(of: app.narration.paragraphID) {
+                                    guard let paragraphID = app.narration.paragraphID,
+                                          let index = book.paragraphs.firstIndex(where: { $0.id == paragraphID }) else { return }
+                                    currentIndex = index
+                                    app.saveProgress(index: index, page: book.paragraphs[index].pageNumber ?? 1)
+                                    withAnimation(IllumeTheme.spring) {
+                                        proxy.scrollTo(paragraphID, anchor: .center)
+                                    }
                                 }
                             }
                         }
@@ -248,57 +321,99 @@ struct ReaderView: View {
 
             if let book = app.activeBook {
                 let isShowingImageMode = imageModeEnabled && imageParagraph(in: book) != nil
-                let hideBottomControls = isShowingImageMode && imageChromeHidden
+                let hideBottomControls = shouldHideReaderButtons
 
                 VStack {
                     Spacer()
                     GeometryReader { geometry in
                         let useCompactControls = isShowingImageMode || controlsCollapsed || geometry.size.width < 430
 
-                        VStack(spacing: useCompactControls ? 8 : 10) {
-                            ReaderProgressStrip(currentIndex: currentIndex, totalCount: book.paragraphs.count)
-                                .padding(.horizontal, useCompactControls ? 2 : 6)
-
-                            HStack(spacing: useCompactControls ? 10 : 12) {
-                                ReaderTableOfContentsButton(
-                                    hasTableOfContents: !tableOfContentsEntries(for: book).isEmpty,
-                                    isCollapsed: useCompactControls,
-                                    onDarkBackground: isShowingImageMode
-                                ) {
-                                    tableOfContentsOpen = true
-                                }
-
-                                Spacer(minLength: 0)
-
-                                ReaderTransportRail(
-                                    book: book,
+                        VStack(spacing: useCompactControls ? 7 : 9) {
+                            if !speedPickerExpanded {
+                                ReaderProgressStrip(
                                     currentIndex: currentIndex,
-                                    isPlaying: app.narration.isPlaying,
+                                    totalCount: book.paragraphs.count,
+                                    chapterTitle: currentChapterTitle(in: book)
+                                )
+                                    .padding(.horizontal, useCompactControls ? 2 : 6)
+                                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                            }
+
+                            if speedPickerExpanded {
+                                ReaderNarrationSpeedPickerPanel(
+                                    rate: app.readerSettings.narrationRate,
+                                    voiceID: app.readerSettings.narrationVoice,
                                     isCollapsed: useCompactControls,
                                     onDarkBackground: isShowingImageMode,
-                                    playPause: {
-                                        app.toggleNarration(for: book, from: currentIndex)
+                                    selectRate: { rate in
+                                        app.setNarrationRate(rate)
+                                        revealReaderButtons(autohide: false)
                                     },
-                                    moveToAndNarrate: { index in
-                                        moveToAndNarrate(index, in: book)
+                                    selectVoice: { voice in
+                                        app.setNarrationVoice(voice.id)
+                                        revealReaderButtons(autohide: false)
+                                    }
+                                )
+                                .frame(width: min(geometry.size.width - 28, useCompactControls ? 342 : 390))
+                                .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottom)))
+                            }
+
+                            HStack(alignment: .bottom, spacing: useCompactControls ? 8 : 10) {
+                                ReaderNarrationSpeedPickerButton(
+                                    rate: app.readerSettings.narrationRate,
+                                    voiceID: app.readerSettings.narrationVoice,
+                                    isExpanded: speedPickerExpanded,
+                                    isCollapsed: useCompactControls,
+                                    onDarkBackground: isShowingImageMode,
+                                    toggleExpansion: {
+                                        readerButtonsAutohideTask?.cancel()
+                                        withAnimation(IllumeTheme.spring) {
+                                            speedPickerExpanded.toggle()
+                                        }
+                                        revealReaderButtons(autohide: false)
+                                    },
+                                    selectRate: { rate in
+                                        app.setNarrationRate(rate)
+                                        revealReaderButtons(autohide: false)
+                                    },
+                                    selectVoice: { voice in
+                                        app.setNarrationVoice(voice.id)
+                                        revealReaderButtons(autohide: false)
                                     }
                                 )
 
-                                Spacer(minLength: 0)
+                                if !speedPickerExpanded {
+                                    ReaderTransportRail(
+                                        book: book,
+                                        currentIndex: currentIndex,
+                                        isPlaying: app.narration.isPlaying,
+                                        isPreparing: app.narration.isPreparing,
+                                        isCollapsed: useCompactControls,
+                                        onDarkBackground: isShowingImageMode,
+                                        playPause: {
+                                            app.toggleNarration(for: book, from: currentIndex)
+                                        },
+                                        moveToAndNarrate: { index in
+                                            moveToAndNarrate(index, in: book)
+                                        }
+                                    )
+                                    .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottom)))
 
-                                ReaderTypographySettingsButton(
-                                    isCollapsed: useCompactControls,
-                                    onDarkBackground: isShowingImageMode
-                                ) {
-                                    settingsOpen = true
+                                    ReaderTypographySettingsButton(
+                                        isCollapsed: useCompactControls,
+                                        onDarkBackground: isShowingImageMode
+                                    ) {
+                                        toggleQuickMenu()
+                                    }
+                                    .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottom)))
                                 }
                             }
-                            .frame(maxWidth: .infinity)
+                            .frame(maxWidth: .infinity, alignment: .center)
                         }
-                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 18)
+                        .frame(width: geometry.size.width, alignment: .bottom)
                     }
-                    .frame(height: useCompactControlsHeight(isShowingImageMode: isShowingImageMode))
-                    .padding(.horizontal, 12)
+                    .frame(height: readerControlsHeight(isShowingImageMode: isShowingImageMode, isExpanded: speedPickerExpanded))
                     .padding(.bottom, useCompactControlsBottomPadding(isShowingImageMode: isShowingImageMode))
                     .opacity(hideBottomControls ? 0 : 1)
                     .blur(radius: hideBottomControls ? 14 : 0)
@@ -306,55 +421,87 @@ struct ReaderView: View {
                     .allowsHitTesting(!hideBottomControls)
                     .zIndex(8)
                     .animation(.easeOut(duration: 0.16), value: hideBottomControls)
+                    .blurLoadIn(radius: 10)
                 }
+            }
+
+            if let book = app.activeBook, quickMenuOpen {
+                ZStack(alignment: .bottomTrailing) {
+                    Color.black.opacity(0.001)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            closeQuickMenu()
+                        }
+
+                    ReaderQuickMenuOverlay(
+                        progressPercent: readingProgressPercent(in: book),
+                        hasTableOfContents: !tableOfContentsEntries(for: book).isEmpty,
+                        imageModeEnabled: $imageModeEnabled,
+                        imageModeLoading: app.readerImagePhase == .checking || app.readerImagePhase == .generating,
+                        imageModeDisabled: imageParagraph(in: book) == nil,
+                        openContents: {
+                            closeQuickMenu()
+                            activeReaderSheet = .contents
+                        },
+                        openImageStyles: {
+                            closeQuickMenu()
+                            activeReaderSheet = .imageStyles
+                        },
+                        openFontSettings: {
+                            closeQuickMenu()
+                            activeReaderSheet = .fontSettings
+                        },
+                        toggleImageMode: { toggleImageMode(for: book) }
+                    )
+                    .frame(width: min(UIScreen.main.bounds.width - 72, 304))
+                    .padding(.trailing, 17)
+                    .padding(.bottom, 18)
+                    .transition(.readerQuickMenuBubble)
+                }
+                .zIndex(12)
             }
         }
         .foregroundStyle(theme.foreground)
-        .sheet(isPresented: $settingsOpen) {
-            ReaderSettingsSheet(
-                imageModeEnabled: $imageModeEnabled,
-                imageModeLoading: app.readerImagePhase == .checking || app.readerImagePhase == .generating,
-                imageModeDisabled: app.activeBook.map { imageParagraph(in: $0) == nil } ?? true
-            ) {
-                guard let book = app.activeBook else { return }
-                toggleImageMode(for: book)
-            }
-                .presentationDetents([.medium])
-                .presentationCornerRadius(30)
+        .sheet(item: $activeReaderSheet) { destination in
+            readerSheet(for: destination)
         }
-        .sheet(isPresented: $tableOfContentsOpen) {
-            if let book = app.activeBook {
-                TableOfContentsSheet(
-                    entries: tableOfContentsEntries(for: book),
-                    currentIndex: currentIndex
-                ) { entry in
-                    readerContentVisible = false
-                    currentIndex = entry.paragraphIndex
-                    if book.paragraphs.indices.contains(entry.paragraphIndex) {
-                        app.saveProgress(
-                            index: entry.paragraphIndex,
-                            page: book.paragraphs[entry.paragraphIndex].pageNumber ?? 1
-                        )
-                    }
-                    pendingParagraphID = entry.paragraphID
-                    scrollRequest += 1
-                    tableOfContentsOpen = false
-                    Task { @MainActor in
-                        await Task.yield()
-                        withAnimation(IllumeTheme.blurLoadIn) {
-                            readerContentVisible = true
-                        }
-                    }
-                }
-                .presentationDetents([.medium, .large])
-                .presentationCornerRadius(30)
+        .onChange(of: activeReaderSheet) {
+            withAnimation(IllumeTheme.spring) {
+                readerLiftedForBottomPanel = activeReaderSheet != nil
+            }
+            if activeReaderSheet != nil {
+                closeQuickMenu()
+                revealReaderButtons(autohide: false)
+            } else {
+                scheduleReaderButtonsAutohide()
             }
         }
         .onChange(of: currentIndex) {
+            if !isNarrationActive {
+                revealReaderButtons()
+            }
             guard imageModeEnabled, let book = app.activeBook else { return }
             scheduleImageGeneration(for: book)
         }
+        .onChange(of: app.narration.isPreparing) {
+            if app.narration.isPreparing {
+                readerButtonsAutohideTask?.cancel()
+            } else {
+                scheduleReaderButtonsAutohide()
+            }
+        }
+        .onChange(of: app.narration.paragraphID) {
+            guard let book = app.activeBook,
+                  let paragraphID = app.narration.paragraphID,
+                  let index = book.paragraphs.firstIndex(where: { $0.id == paragraphID }) else { return }
+            currentIndex = index
+            app.saveProgress(index: index, page: book.paragraphs[index].pageNumber ?? 1)
+        }
         .onChange(of: app.activeBookRow?.id) {
+            revealReaderButtons()
+            if let book = app.activeBook {
+                restoreInitialIndex(in: book)
+            }
             guard imageModeEnabled, let book = app.activeBook else { return }
             scheduledImageChunkIndex = nil
             scheduleImageGeneration(for: book, delay: .zero)
@@ -365,19 +512,24 @@ struct ReaderView: View {
             scheduleImageGeneration(for: book, delay: .zero)
         }
         .onAppear {
-            guard imageModeEnabled, let book = app.activeBook else { return }
+            guard let book = app.activeBook else { return }
+            restoreInitialIndex(in: book)
+            revealReaderButtons()
+            guard imageModeEnabled else { return }
             scheduleImageGeneration(for: book, delay: .zero)
         }
         .onDisappear {
             imageModeTask?.cancel()
             imageModeTask = nil
+            readerButtonsAutohideTask?.cancel()
+            readerButtonsAutohideTask = nil
         }
     }
 
     private func toggleImageMode(for book: ReaderBook) {
         imageModeEnabled.toggle()
         if !imageModeEnabled {
-            imageChromeHidden = false
+            revealReaderButtons()
             app.readerImageResponse = nil
             app.readerImagePhase = .idle
             app.readerImageStyle = nil
@@ -392,6 +544,163 @@ struct ReaderView: View {
         }
     }
 
+    private func toggleReaderButtons() {
+        readerButtonsAutohideTask?.cancel()
+        if readerButtonsHidden {
+            revealReaderButtons()
+        } else {
+            hideReaderButtons()
+        }
+    }
+
+    private func revealReaderButtons(autohide: Bool = true) {
+        readerButtonsAutohideTask?.cancel()
+        if readerButtonsHidden {
+            withAnimation(.easeOut(duration: 0.16)) {
+                readerButtonsHidden = false
+            }
+        }
+        if autohide {
+            scheduleReaderButtonsAutohide()
+        }
+    }
+
+    private func scheduleReaderButtonsAutohide() {
+        readerButtonsAutohideTask?.cancel()
+        guard !app.narration.isPreparing, !quickMenuOpen, !speedPickerExpanded else { return }
+        readerButtonsAutohideTask = Task { @MainActor in
+            try? await Task.sleep(for: readerButtonsAutohideDelay)
+            guard !Task.isCancelled else { return }
+            hideReaderButtons()
+        }
+    }
+
+    private func hideReaderButtons() {
+        guard activeReaderSheet == nil, !app.narration.isPreparing, !quickMenuOpen else { return }
+        withAnimation(IllumeTheme.spring) {
+            speedPickerExpanded = false
+        }
+        withAnimation(.easeOut(duration: 0.16)) {
+            readerButtonsHidden = true
+        }
+    }
+
+    private func toggleQuickMenu() {
+        readerButtonsAutohideTask?.cancel()
+        revealReaderButtons(autohide: false)
+        withAnimation(quickMenuOpen ? readerQuickMenuCloseAnimation : readerQuickMenuOpenAnimation) {
+            speedPickerExpanded = false
+            quickMenuOpen.toggle()
+            readerLiftedForBottomPanel = activeReaderSheet != nil
+        }
+    }
+
+    private func closeQuickMenu() {
+        guard quickMenuOpen else { return }
+        withAnimation(readerQuickMenuCloseAnimation) {
+            quickMenuOpen = false
+            readerLiftedForBottomPanel = activeReaderSheet != nil
+        }
+    }
+
+    @ViewBuilder
+    private func readerSheet(for destination: ReaderSheetDestination) -> some View {
+        if let book = app.activeBook {
+            switch destination {
+            case .contents:
+                TableOfContentsSheet(
+                    book: book,
+                    entries: tableOfContentsEntries(for: book),
+                    currentIndex: currentIndex,
+                    progressPercent: readingProgressPercent(in: book)
+                ) { entry in
+                    selectTableOfContentsEntry(entry, in: book)
+                }
+                .presentationDetents([.medium, .large])
+                .presentationCornerRadius(42)
+            case .imageStyles:
+                ReaderImageStyleSheet()
+                    .presentationDetents([.height(360), .medium])
+                    .presentationCornerRadius(42)
+            case .fontSettings:
+                ReaderFontSettingsSheet()
+                    .presentationDetents([.medium])
+                    .presentationCornerRadius(42)
+            }
+        } else {
+            EmptyView()
+        }
+    }
+
+    private func selectTableOfContentsEntry(_ entry: TableOfContentsEntry, in book: ReaderBook) {
+        readerContentVisible = false
+        currentIndex = entry.paragraphIndex
+        if book.paragraphs.indices.contains(entry.paragraphIndex) {
+            app.saveProgress(
+                index: entry.paragraphIndex,
+                page: book.paragraphs[entry.paragraphIndex].pageNumber ?? 1
+            )
+        }
+        pendingParagraphID = entry.paragraphID
+        scrollRequest += 1
+        activeReaderSheet = nil
+        Task { @MainActor in
+            await Task.yield()
+            withAnimation(IllumeTheme.blurLoadIn) {
+                readerContentVisible = true
+            }
+        }
+    }
+
+    private func handleReaderTap(
+        _ location: CGPoint,
+        viewportWidth: CGFloat,
+        book: ReaderBook,
+        proxy: ScrollViewProxy
+    ) {
+        let textWidth = min(textColumnWidth + 36, viewportWidth)
+        let horizontalMargin = max((viewportWidth - textWidth) / 2, 0)
+
+        if location.x < horizontalMargin {
+            blurNavigate(to: currentIndex - 1, in: book, proxy: proxy)
+        } else if location.x > viewportWidth - horizontalMargin {
+            blurNavigate(to: currentIndex + 1, in: book, proxy: proxy)
+        } else {
+            toggleReaderButtons()
+        }
+    }
+
+    private func blurNavigate(to index: Int, in book: ReaderBook, proxy: ScrollViewProxy) {
+        guard book.paragraphs.indices.contains(index), index != currentIndex else {
+            revealReaderButtons()
+            return
+        }
+
+        revealReaderButtons()
+        withAnimation(.easeOut(duration: 0.1)) {
+            readerContentVisible = false
+        }
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(95))
+            guard book.paragraphs.indices.contains(index) else { return }
+            let paragraph = book.paragraphs[index]
+            currentIndex = index
+            app.saveProgress(index: index, page: paragraph.pageNumber ?? 1)
+            proxy.scrollTo(paragraph.id, anchor: .top)
+            withAnimation(IllumeTheme.blurLoadIn) {
+                readerContentVisible = true
+            }
+        }
+    }
+
+    private func closeReader() {
+        withAnimation(IllumeTheme.spring) {
+            app.closeReader()
+        }
+        dismiss()
+    }
+
     private func moveToAndNarrate(_ index: Int, in book: ReaderBook) {
         guard book.paragraphs.indices.contains(index) else { return }
         currentIndex = index
@@ -402,12 +711,62 @@ struct ReaderView: View {
         app.speak(book: book, paragraphIndex: index)
     }
 
+    private func restoreInitialIndex(in book: ReaderBook) {
+        guard let row = app.activeBookRow else { return }
+        let safeIndex = safeSavedIndex(for: row, in: book)
+        guard restoredBookID != row.id || currentIndex != safeIndex else { return }
+        restoredBookID = row.id
+        initialPositionReady = false
+        currentIndex = safeIndex
+    }
+
+    private func restoreInitialPosition(in book: ReaderBook, proxy: ScrollViewProxy) {
+        guard let row = app.activeBookRow else { return }
+        let safeIndex = safeSavedIndex(for: row, in: book)
+        restoredBookID = row.id
+        initialPositionReady = false
+        currentIndex = safeIndex
+        if book.paragraphs.indices.contains(safeIndex) {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                proxy.scrollTo(book.paragraphs[safeIndex].id, anchor: .top)
+            }
+        }
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard app.activeBookRow?.id == row.id else { return }
+            initialPositionReady = true
+        }
+    }
+
+    private func safeSavedIndex(for row: BookRow, in book: ReaderBook) -> Int {
+        guard !book.paragraphs.isEmpty else { return 0 }
+        return min(max(row.currentIndex, 0), book.paragraphs.count - 1)
+    }
+
+    private func updateVisibleParagraph(_ index: Int, paragraph: ReaderParagraph) {
+        guard initialPositionReady || restoredBookID == nil else { return }
+        guard currentIndex != index else { return }
+        currentIndex = index
+        app.saveProgress(index: index, page: paragraph.pageNumber ?? 1)
+    }
+
     private func useCompactControlsHeight(isShowingImageMode: Bool) -> CGFloat {
         (isShowingImageMode || controlsCollapsed) ? 92 : 112
     }
 
+    private func readerControlsHeight(isShowingImageMode: Bool, isExpanded: Bool) -> CGFloat {
+        guard isExpanded else {
+            return useCompactControlsHeight(isShowingImageMode: isShowingImageMode)
+        }
+
+        return (isShowingImageMode || controlsCollapsed) ? 176 : 204
+    }
+
     private func useCompactControlsBottomPadding(isShowingImageMode: Bool) -> CGFloat {
-        (isShowingImageMode || controlsCollapsed) ? 10 : 18
+        isShowingImageMode ? 20 : (controlsCollapsed ? 10 : 18)
     }
 
     private func scheduleImageGeneration(for book: ReaderBook, delay: Duration = .milliseconds(520)) {
@@ -445,10 +804,9 @@ struct ReaderView: View {
         return previous.map { book.paragraphs[$0] }
     }
 
-    private func imageOverlayText(in book: ReaderBook, expandsBeyondCurrentParagraph: Bool) -> String? {
+    private func imageOverlayText(in book: ReaderBook) -> String? {
         guard let primaryParagraph = imageParagraph(in: book) else { return nil }
         let trimmedPrimary = primaryParagraph.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard expandsBeyondCurrentParagraph else { return trimmedPrimary }
         guard let primaryIndex = book.paragraphs.firstIndex(where: { $0.id == primaryParagraph.id }) else {
             return trimmedPrimary
         }
@@ -460,12 +818,87 @@ struct ReaderView: View {
             guard !trimmed.isEmpty else { continue }
             pieces.append(trimmed)
             characterCount += trimmed.count
-            if pieces.count >= 4 || characterCount >= 900 {
+            if characterCount >= readerOverlayMinimumCharacters || characterCount >= readerOverlayExpandedMaximumCharacters {
                 break
             }
         }
 
+        if characterCount < readerOverlayMinimumCharacters {
+            for paragraph in book.paragraphs[..<primaryIndex].reversed() where paragraph.kind != .heading {
+                let trimmed = paragraph.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { continue }
+                pieces.insert(trimmed, at: 0)
+                characterCount += trimmed.count
+                if characterCount >= readerOverlayMinimumCharacters || characterCount >= readerOverlayExpandedMaximumCharacters {
+                    break
+                }
+            }
+        }
+
         return pieces.joined(separator: "\n\n")
+    }
+
+    private func imageOverlayNarrationText(in book: ReaderBook) -> (text: String?, activeRange: NSRange?) {
+        guard let paragraphID = app.narration.paragraphID,
+              let paragraph = book.paragraphs.first(where: { $0.id == paragraphID }),
+              let wordRange = app.narration.wordRange else {
+            return (imageOverlayText(in: book), nil)
+        }
+
+        return narrationOverlayExcerpt(text: paragraph.text, activeRange: wordRange)
+    }
+
+    private func narrationOverlayExcerpt(text: String, activeRange: NSRange) -> (text: String, activeRange: NSRange) {
+        let nsText = text as NSString
+        guard activeRange.location >= 0,
+              NSMaxRange(activeRange) <= nsText.length else {
+            return (text, activeRange)
+        }
+
+        let chunkLength = readerOverlayCompactMaximumCharacters
+        let rawStart = (activeRange.location / chunkLength) * chunkLength
+        let rawEnd = min(nsText.length, rawStart + chunkLength)
+        let start = adjustedOverlayStart(in: nsText, from: rawStart)
+        let end = adjustedOverlayEnd(in: nsText, from: rawEnd)
+        let hasPrefix = start > 0
+        let hasSuffix = end < nsText.length
+        let prefix = hasPrefix ? "... " : ""
+        let suffix = hasSuffix ? " ..." : ""
+        let excerpt = nsText.substring(with: NSRange(location: start, length: end - start))
+        let adjustedRange = NSRange(
+            location: prefix.utf16.count + activeRange.location - start,
+            length: activeRange.length
+        )
+
+        return ("\(prefix)\(excerpt)\(suffix)", adjustedRange)
+    }
+
+    private func adjustedOverlayStart(in text: NSString, from offset: Int) -> Int {
+        guard offset > 0 else { return 0 }
+        var cursor = offset
+        while cursor > 0 {
+            let scalar = UnicodeScalar(text.character(at: cursor - 1))
+            if let scalar, CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                return cursor
+            }
+            cursor -= 1
+            if offset - cursor > 32 { return offset }
+        }
+        return 0
+    }
+
+    private func adjustedOverlayEnd(in text: NSString, from offset: Int) -> Int {
+        guard offset < text.length else { return text.length }
+        var cursor = offset
+        while cursor < text.length {
+            let scalar = UnicodeScalar(text.character(at: cursor))
+            if let scalar, CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                return cursor
+            }
+            cursor += 1
+            if cursor - offset > 32 { return offset }
+        }
+        return text.length
     }
 
     private func imageChunk(in book: ReaderBook) -> ReaderImageChunk? {
@@ -500,23 +933,77 @@ struct ReaderView: View {
             )
         }
     }
+
+    private func readingProgressPercent(in book: ReaderBook) -> Int {
+        if book.paragraphs.indices.contains(currentIndex),
+           let currentPage = book.paragraphs[currentIndex].pageNumber,
+           let pageCount = book.pageCount,
+           pageCount > 0 {
+            return min(100, max(0, Int((Double(currentPage) / Double(pageCount) * 100).rounded())))
+        }
+
+        guard book.paragraphs.count > 1 else { return book.paragraphs.isEmpty ? 0 : 100 }
+        return min(100, max(0, Int((Double(currentIndex + 1) / Double(book.paragraphs.count) * 100).rounded())))
+    }
+
+    private func currentChapterTitle(in book: ReaderBook) -> String {
+        guard book.paragraphs.indices.contains(currentIndex) else {
+            return book.title
+        }
+
+        let paragraph = book.paragraphs[currentIndex]
+        let paragraphTitle = paragraph.chapterTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !paragraphTitle.isEmpty {
+            return paragraphTitle
+        }
+
+        if book.chapters.indices.contains(paragraph.chapterIndex) {
+            let chapterTitle = book.chapters[paragraph.chapterIndex].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !chapterTitle.isEmpty {
+                return chapterTitle
+            }
+        }
+
+        return book.title
+    }
 }
 
 struct ReaderToolbar: View {
+    let bookTitle: String
+    var onDarkBackground = true
     let close: () -> Void
 
+    private var foreground: Color {
+        onDarkBackground ? .white : IllumeTheme.paper
+    }
+
+    private var buttonTint: Color {
+        onDarkBackground ? IllumeTheme.ink : IllumeTheme.paper
+    }
+
     var body: some View {
-        HStack {
-            Button(action: close) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 17, weight: .black))
-                    .foregroundStyle(IllumeTheme.ink)
-                    .frame(width: 48, height: 48)
+        ZStack {
+            Text(bookTitle)
+                .font(.system(size: 15, weight: .bold, design: .rounded))
+                .foregroundStyle(foreground.opacity(onDarkBackground ? 0.88 : 0.78))
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .padding(.horizontal, 64)
+                .frame(maxWidth: .infinity, alignment: .center)
+
+            HStack {
+                Spacer()
+
+                Button(action: close) {
+                    Image(systemName: "books.vertical.fill")
+                        .font(.system(size: 14, weight: .black))
+                        .foregroundStyle(foreground)
+                        .frame(width: 40, height: 40)
+                }
+                .illumeNativeGlassButton(tint: buttonTint, borderShape: .circle, controlSize: .small, isProminent: true, fallback: ReaderGlassCircleButtonStyle(tint: buttonTint, pressedScale: 0.86))
+                .contentShape(Circle())
+                .accessibilityLabel("Back to library")
             }
-            .buttonStyle(ReaderGlassCircleButtonStyle(tint: .white.opacity(0.12), pressedScale: 0.86))
-            .contentShape(Circle())
-            .accessibilityLabel("Back to library")
-            Spacer()
         }
         .padding(.horizontal, 18)
         .padding(.top, 8)
@@ -528,6 +1015,7 @@ struct ReaderToolbar: View {
 struct ReaderProgressStrip: View {
     let currentIndex: Int
     let totalCount: Int
+    let chapterTitle: String
 
     private var safeTotal: Int {
         max(totalCount, 1)
@@ -542,8 +1030,14 @@ struct ReaderProgressStrip: View {
         return CGFloat(currentPosition - 1) / CGFloat(totalCount - 1)
     }
 
-    private var remainingCount: Int {
-        max(safeTotal - currentPosition, 0)
+    private var progressPercent: Int {
+        guard totalCount > 0 else { return 0 }
+        return min(100, max(0, Int((Double(currentPosition) / Double(safeTotal) * 100).rounded())))
+    }
+
+    private var displayChapterTitle: String {
+        let trimmedTitle = chapterTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedTitle.isEmpty ? "Chapter" : trimmedTitle
     }
 
     var body: some View {
@@ -562,15 +1056,13 @@ struct ReaderProgressStrip: View {
             .frame(height: 7)
             .clipShape(Capsule())
 
-            HStack {
-                Text("\(currentPosition)")
-                Spacer()
-                Text("\(remainingCount) left")
-                Spacer()
-                Text("\(safeTotal)")
-            }
+            Text("\(displayChapterTitle)  \(progressPercent)%")
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .monospacedDigit()
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.horizontal, 18)
             .font(.system(size: 13, weight: .bold, design: .rounded))
-            .monospacedDigit()
             .foregroundStyle(.white.opacity(0.74))
         }
         .padding(.horizontal, 14)
@@ -593,8 +1085,12 @@ struct TableOfContentsEntry: Identifiable, Equatable {
 }
 
 struct TableOfContentsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let book: ReaderBook
     let entries: [TableOfContentsEntry]
     let currentIndex: Int
+    let progressPercent: Int
     let select: (TableOfContentsEntry) -> Void
 
     private var currentEntryID: Int? {
@@ -602,37 +1098,125 @@ struct TableOfContentsSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Contents")
-                            .font(IllumeTypography.heading(34, weight: .bold))
-                            .foregroundStyle(IllumeTheme.ink)
-                        Text("\(entries.count) \(entries.count == 1 ? "chapter" : "chapters")")
-                            .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 4)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                TableOfContentsHeader(book: book, progressPercent: progressPercent)
 
-                    LazyVStack(spacing: 10) {
-                        ForEach(entries) { entry in
-                            Button {
-                                select(entry)
-                            } label: {
-                                TableOfContentsRow(entry: entry, isCurrent: entry.id == currentEntryID)
-                            }
-                            .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                            .buttonStyle(LiquidCardButtonStyle(cornerRadius: 20, tint: entry.id == currentEntryID ? IllumeTheme.mist : IllumeTheme.paper))
+                Divider()
+                    .overlay(TableOfContentsStyle.divider)
+                    .padding(.horizontal, 28)
+                    .padding(.bottom, 9)
+
+                LazyVStack(spacing: 0) {
+                    ForEach(entries) { entry in
+                        Button {
+                            select(entry)
+                        } label: {
+                            TableOfContentsRow(entry: entry, isCurrent: entry.id == currentEntryID)
                         }
+                        .buttonStyle(.plain)
                     }
                 }
-                .padding(22)
+                .padding(.bottom, 28)
             }
-            .scrollIndicators(.hidden)
-            .background(IllumeTheme.paper)
         }
-        .background(IllumeTheme.paper)
+        .scrollIndicators(.hidden)
+        .scrollContentBackground(.hidden)
+        .background(TableOfContentsStyle.background)
+        .overlay(alignment: .topTrailing) {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 27, weight: .medium))
+                    .foregroundStyle(TableOfContentsStyle.closeIcon)
+                    .frame(width: 58, height: 58)
+                    .background(.white.opacity(0.82), in: Circle())
+                    .shadow(color: .black.opacity(0.08), radius: 18, y: 10)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 38)
+            .padding(.trailing, 38)
+            .accessibilityLabel("Close table of contents")
+        }
+        .presentationCornerRadius(42)
+        .presentationBackground(.clear)
+    }
+}
+
+private enum TableOfContentsStyle {
+    static let background = Color(red: 0.075, green: 0.073, blue: 0.068)
+    static let ink = Color.white.opacity(0.94)
+    static let secondaryText = Color.white.opacity(0.46)
+    static let divider = Color.white.opacity(0.12)
+    static let closeIcon = Color.white.opacity(0.62)
+}
+
+struct TableOfContentsHeader: View {
+    let book: ReaderBook
+    let progressPercent: Int
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 17) {
+            cover
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text(book.title)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(TableOfContentsStyle.ink)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.trailing, 86)
+
+                pageProgress
+            }
+        }
+        .padding(.leading, 33)
+        .padding(.trailing, 28)
+        .padding(.top, 44)
+        .padding(.bottom, 29)
+    }
+
+    @ViewBuilder
+    private var cover: some View {
+        ZStack(alignment: .bottomLeading) {
+            if let coverUrl = book.coverUrl, !coverUrl.isEmpty {
+                CoverArtwork(urlString: coverUrl)
+            } else {
+                fallbackCover
+            }
+        }
+        .frame(width: 55, height: 80)
+        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        .shadow(color: .black.opacity(0.16), radius: 7, x: 0, y: 3)
+    }
+
+    private var fallbackCover: some View {
+        LinearGradient(
+            colors: [IllumeTheme.ink, IllumeTheme.accent, Color.black],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+        .overlay(alignment: .bottomLeading) {
+            Text(book.title.prefix(1))
+                .font(.system(size: 32, weight: .black, design: .rounded))
+                .foregroundStyle(.white.opacity(0.88))
+                .padding(7)
+        }
+    }
+
+    private var pageProgress: some View {
+        HStack(spacing: 6) {
+            Text("Progress")
+                .foregroundStyle(TableOfContentsStyle.secondaryText)
+
+            Text("\(progressPercent)%")
+                .foregroundStyle(TableOfContentsStyle.ink)
+        }
+        .font(.system(size: 21, weight: .regular))
+        .monospacedDigit()
+        .lineLimit(1)
     }
 }
 
@@ -641,44 +1225,47 @@ struct TableOfContentsRow: View {
     let isCurrent: Bool
 
     var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(entry.title)
-                    .font(.system(.body, design: .rounded, weight: .bold))
-                    .foregroundStyle(IllumeTheme.ink)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-
-                if entry.pageNumber != nil || isCurrent {
-                    HStack(spacing: 8) {
-                        if let pageNumber = entry.pageNumber {
-                            Label("Page \(pageNumber)", systemImage: "doc.text")
-                        }
-
-                        if isCurrent {
-                            Text("Current")
-                                .font(.system(.caption2, design: .rounded, weight: .black))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(IllumeTheme.coral, in: Capsule())
-                        }
-                    }
-                    .font(.system(.caption, design: .rounded, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                }
-            }
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(entry.title)
+                .font(.system(size: isSection ? 17 : 18, weight: rowWeight))
+                .foregroundStyle(TableOfContentsStyle.ink)
+                .lineLimit(3)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
 
             Spacer()
 
-            Image(systemName: "chevron.right")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(.secondary)
+            if let pageNumber = entry.pageNumber {
+                Text("\(pageNumber)")
+                    .font(.system(size: 18, weight: .regular))
+                    .foregroundStyle(TableOfContentsStyle.secondaryText)
+                    .monospacedDigit()
+                    .padding(.top, 1)
+            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 14)
-        .frame(maxWidth: .infinity)
-        .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .padding(.leading, isSection ? 28 : 47)
+        .padding(.trailing, 38)
+        .padding(.vertical, isSection ? 15 : 16)
+        .background(isCurrent ? Color.white.opacity(0.055) : Color.clear)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(TableOfContentsStyle.divider)
+                .frame(height: 0.7)
+                .padding(.leading, isSection ? 28 : 47)
+                .padding(.trailing, 28)
+        }
+    }
+
+    private var isSection: Bool {
+        let trimmed = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let firstWord = trimmed.split(separator: " ").first else { return false }
+        return firstWord.trimmingCharacters(in: CharacterSet(charactersIn: ".")).allSatisfy { character in
+            "IVXLCDM".contains(character)
+        }
+    }
+
+    private var rowWeight: Font.Weight {
+        isCurrent || isSection ? .bold : .regular
     }
 }
 
@@ -690,13 +1277,16 @@ struct ParagraphView: View {
 
     var body: some View {
         let isSpeaking = app.narration.paragraphID == paragraph.id
+        let activeParagraphIndex = app.activeBook?.paragraphs.firstIndex { $0.id == app.narration.paragraphID }
+        let isFutureParagraph = activeParagraphIndex.map { index > $0 } ?? false
 
         ReaderAttributedText(
             text: paragraph.text,
             font: uiFont,
-            textColor: UIColor(themeForeground),
+            textColor: UIColor(themeForeground.opacity(isFutureParagraph ? 0.22 : 1)),
             lineSpacing: 6 * min(app.readerSettings.lineHeight, 1.65),
-            activeRange: isSpeaking ? app.narration.wordRange : nil
+            activeRange: isSpeaking ? app.narration.wordRange : nil,
+            activeHighlightColor: UIColor(wordHighlightColor)
         ) {
             selectParagraph()
         } selectWord: { wordStart in
@@ -704,7 +1294,7 @@ struct ParagraphView: View {
             selectParagraph()
             app.speak(book: book, paragraphIndex: index, wordStart: wordStart)
         }
-        .padding(.horizontal, isSpeaking ? 10 : 0)
+        .padding(.horizontal, 10)
         .padding(.vertical, paragraph.kind == .heading ? 22 : 2)
         .background {
             if isSpeaking {
@@ -725,13 +1315,13 @@ struct ParagraphView: View {
         let size = 18 * scale
         switch paragraph.kind {
         case .heading:
-            return .systemFont(ofSize: 25 * scale, weight: .black)
+            return UIFont.systemSerifFont(ofSize: 25 * scale, weight: .black)
         case .quote:
-            let font = UIFont.systemFont(ofSize: size, weight: .medium)
+            let font = UIFont.systemSerifFont(ofSize: size, weight: .medium)
             let descriptor = font.fontDescriptor.withSymbolicTraits(.traitItalic) ?? font.fontDescriptor
             return UIFont(descriptor: descriptor, size: size)
         default:
-            return .systemFont(ofSize: size, weight: .regular)
+            return UIFont.systemSerifFont(ofSize: size, weight: .regular)
         }
     }
 
@@ -743,6 +1333,15 @@ struct ParagraphView: View {
             return Color(red: 0.918, green: 0.961, blue: 1.0)
         }
     }
+
+    private var wordHighlightColor: Color {
+        switch app.readerSettings.theme {
+        case .night:
+            return Color(red: 1.0, green: 0.82, blue: 0.28).opacity(0.58)
+        default:
+            return Color(red: 1.0, green: 0.78, blue: 0.18).opacity(0.62)
+        }
+    }
 }
 
 struct ReaderAttributedText: UIViewRepresentable {
@@ -751,6 +1350,8 @@ struct ReaderAttributedText: UIViewRepresentable {
     let textColor: UIColor
     let lineSpacing: CGFloat
     let activeRange: NSRange?
+    let activeHighlightColor: UIColor
+    var futureTextOpacity: CGFloat = 0.22
     let selectParagraph: () -> Void
     let selectWord: (Int) -> Void
 
@@ -792,26 +1393,45 @@ struct ReaderAttributedText: UIViewRepresentable {
             fontSize: font.pointSize,
             textColor: textColor,
             lineSpacing: lineSpacing,
-            activeRange: activeRange
+            activeRange: activeRange,
+            activeHighlightColor: activeHighlightColor,
+            futureTextOpacity: futureTextOpacity
         )
         guard context.coordinator.renderKey != renderKey else { return }
+        let previousActiveRange = context.coordinator.renderKey?.activeRange
         context.coordinator.renderKey = renderKey
-        textView.attributedText = attributedString
+        let applyText = {
+            textView.attributedText = attributedString
+        }
+
+        if previousActiveRange != activeRange, activeRange != nil {
+            UIView.transition(
+                with: textView,
+                duration: 0.18,
+                options: [.transitionCrossDissolve, .allowUserInteraction, .beginFromCurrentState],
+                animations: applyText
+            )
+        } else {
+            applyText()
+        }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
         let width = proposal.width ?? UIScreen.main.bounds.width
-        let fittingSize = CGSize(width: width, height: .greatestFiniteMagnitude)
-        let size = uiView.sizeThatFits(fittingSize)
+        let measuringTextView = UITextView()
+        measuringTextView.isScrollEnabled = false
+        measuringTextView.textContainerInset = .zero
+        measuringTextView.textContainer.lineFragmentPadding = 0
+        measuringTextView.attributedText = baseAttributedString
+        let size = measuringTextView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
         return CGSize(width: width, height: size.height)
     }
 
-    private var attributedString: NSAttributedString {
-        let nsText = text as NSString
+    private var baseAttributedString: NSAttributedString {
         let paragraphStyle = NSMutableParagraphStyle()
         paragraphStyle.lineSpacing = lineSpacing
 
-        let attributed = NSMutableAttributedString(
+        return NSAttributedString(
             string: text,
             attributes: [
                 .font: font,
@@ -819,17 +1439,32 @@ struct ReaderAttributedText: UIViewRepresentable {
                 .paragraphStyle: paragraphStyle
             ]
         )
+    }
+
+    private var attributedString: NSAttributedString {
+        let nsText = text as NSString
+        let attributed = NSMutableAttributedString(attributedString: baseAttributedString)
 
         if let activeRange,
            activeRange.location >= 0,
            NSMaxRange(activeRange) <= nsText.length {
             let shadow = NSShadow()
-            shadow.shadowBlurRadius = 8
-            shadow.shadowColor = UIColor.white.withAlphaComponent(0.42)
+            shadow.shadowBlurRadius = 10
+            shadow.shadowColor = activeHighlightColor.withAlphaComponent(0.65)
             shadow.shadowOffset = .zero
+
+            let futureStart = NSMaxRange(activeRange)
+            if futureStart < nsText.length {
+                attributed.addAttributes(
+                    [
+                        .foregroundColor: textColor.withAlphaComponent(futureTextOpacity)
+                    ],
+                    range: NSRange(location: futureStart, length: nsText.length - futureStart)
+                )
+            }
+
             attributed.addAttributes(
                 [
-                    .backgroundColor: UIColor.white.withAlphaComponent(0.34),
                     .foregroundColor: textColor,
                     .shadow: shadow
                 ],
@@ -904,6 +1539,8 @@ struct ReaderAttributedText: UIViewRepresentable {
         let textColor: UIColor
         let lineSpacing: CGFloat
         let activeRange: NSRange?
+        let activeHighlightColor: UIColor
+        let futureTextOpacity: CGFloat
 
         static func == (lhs: RenderKey, rhs: RenderKey) -> Bool {
             lhs.text == rhs.text
@@ -912,7 +1549,20 @@ struct ReaderAttributedText: UIViewRepresentable {
                 && lhs.textColor.isEqual(rhs.textColor)
                 && lhs.lineSpacing == rhs.lineSpacing
                 && lhs.activeRange == rhs.activeRange
+                && lhs.activeHighlightColor.isEqual(rhs.activeHighlightColor)
+                && lhs.futureTextOpacity == rhs.futureTextOpacity
         }
+    }
+}
+
+private extension UIFont {
+    static func systemSerifFont(ofSize size: CGFloat, weight: UIFont.Weight) -> UIFont {
+        let baseFont = UIFont.systemFont(ofSize: size, weight: weight)
+        guard let descriptor = baseFont.fontDescriptor.withDesign(.serif) else {
+            return baseFont
+        }
+
+        return UIFont(descriptor: descriptor, size: size)
     }
 }
 
@@ -924,85 +1574,109 @@ struct ReaderTransportRail: View {
     let book: ReaderBook
     let currentIndex: Int
     let isPlaying: Bool
+    let isPreparing: Bool
     let isCollapsed: Bool
     var onDarkBackground = false
     let playPause: () -> Void
     let moveToAndNarrate: (Int) -> Void
 
     var body: some View {
-        HStack(spacing: isCollapsed ? 8 : 14) {
-            if !isCollapsed {
-                Button {
-                    voicePopoverOpen.toggle()
-                    speedPopoverOpen = false
-                } label: {
-                    Text(EdgeNarrationVoice.flag(for: app.readerSettings.narrationVoice))
-                        .font(.system(size: 18))
-                        .frame(width: 32, height: 32)
-                }
-                .buttonStyle(ReaderGlassCircleButtonStyle(tint: onDarkBackground ? .white.opacity(0.16) : IllumeTheme.paper))
-                .accessibilityLabel("Narration voice")
-                .popover(isPresented: $voicePopoverOpen, attachmentAnchor: .point(.top), arrowEdge: .bottom) {
-                    NarrationVoicePopover {
-                        voicePopoverOpen = false
+        IllumeGlassEffectGroup(spacing: railSpacing) {
+            HStack(spacing: railSpacing) {
+                if !isCollapsed {
+                    Button {
+                        voicePopoverOpen.toggle()
+                        speedPopoverOpen = false
+                    } label: {
+                        Text(KokoroNarrationVoice.symbol(for: app.readerSettings.narrationVoice))
+                            .font(.system(.subheadline, design: .rounded, weight: .black))
+                            .foregroundStyle(onDarkBackground ? .white : IllumeTheme.ink)
+                            .frame(width: compactButtonSize, height: compactButtonSize)
                     }
-                    .presentationCompactAdaptation(.popover)
-                }
-            }
-
-            ReaderRailIconButton(
-                systemName: "arrow.counterclockwise",
-                isDisabled: currentIndex <= 0,
-                onDarkBackground: onDarkBackground,
-                isCompact: isCollapsed
-            ) {
-                moveToAndNarrate(currentIndex - 1)
-            }
-            .accessibilityLabel("Previous paragraph")
-
-            ReaderNarrationButton(
-                isPlaying: isPlaying,
-                isCompact: isCollapsed,
-                onDarkBackground: onDarkBackground,
-                action: playPause
-            )
-
-            ReaderRailIconButton(
-                systemName: "arrow.clockwise",
-                isDisabled: currentIndex >= book.paragraphs.count - 1,
-                onDarkBackground: onDarkBackground,
-                isCompact: isCollapsed
-            ) {
-                moveToAndNarrate(currentIndex + 1)
-            }
-            .accessibilityLabel("Next paragraph")
-
-            if !isCollapsed {
-                Button {
-                    speedPopoverOpen.toggle()
-                    voicePopoverOpen = false
-                } label: {
-                    Text(Self.formatRate(app.readerSettings.narrationRate))
-                        .font(.system(.caption, design: .rounded, weight: .black))
-                        .foregroundStyle(onDarkBackground ? .white : IllumeTheme.ink)
-                        .frame(width: 40, height: 32)
-                }
-                .buttonStyle(ReaderGlassCapsuleButtonStyle(tint: onDarkBackground ? .white.opacity(0.16) : IllumeTheme.paper))
-                .accessibilityLabel("Narration speed")
-                .popover(isPresented: $speedPopoverOpen, attachmentAnchor: .point(.top), arrowEdge: .bottom) {
-                    NarrationSpeedPopover()
+                    .illumeNativeGlassButton(tint: buttonTint, borderShape: .circle, controlSize: .small, fallback: ReaderGlassCircleButtonStyle(tint: buttonTint))
+                    .accessibilityLabel("Narration voice")
+                    .popover(isPresented: $voicePopoverOpen, attachmentAnchor: .point(.top), arrowEdge: .bottom) {
+                        NarrationVoicePopover {
+                            voicePopoverOpen = false
+                        }
                         .presentationCompactAdaptation(.popover)
+                    }
+                }
+
+                ReaderRailIconButton(
+                    systemName: "arrow.counterclockwise",
+                    isDisabled: currentIndex <= 0,
+                    onDarkBackground: onDarkBackground,
+                    isCompact: isCollapsed
+                ) {
+                    moveToAndNarrate(currentIndex - 1)
+                }
+                .accessibilityLabel("Previous paragraph")
+
+                ReaderNarrationButton(
+                    isPlaying: isPlaying,
+                    isPreparing: isPreparing,
+                    isCompact: isCollapsed,
+                    onDarkBackground: onDarkBackground,
+                    action: playPause
+                )
+
+                ReaderRailIconButton(
+                    systemName: "arrow.clockwise",
+                    isDisabled: currentIndex >= book.paragraphs.count - 1,
+                    onDarkBackground: onDarkBackground,
+                    isCompact: isCollapsed
+                ) {
+                    moveToAndNarrate(currentIndex + 1)
+                }
+                .accessibilityLabel("Next paragraph")
+
+                if !isCollapsed {
+                    Button {
+                        speedPopoverOpen.toggle()
+                        voicePopoverOpen = false
+                    } label: {
+                        Text(Self.formatRate(app.readerSettings.narrationRate))
+                            .font(.system(.caption, design: .rounded, weight: .black))
+                            .foregroundStyle(onDarkBackground ? .white : IllumeTheme.ink)
+                            .frame(width: 40, height: compactButtonSize)
+                    }
+                    .illumeNativeGlassButton(tint: buttonTint, controlSize: .small, fallback: ReaderGlassCapsuleButtonStyle(tint: buttonTint))
+                    .accessibilityLabel("Narration speed")
+                    .popover(isPresented: $speedPopoverOpen, attachmentAnchor: .point(.top), arrowEdge: .bottom) {
+                        NarrationSpeedPopover()
+                            .presentationCompactAdaptation(.popover)
+                    }
                 }
             }
         }
-        .padding(.horizontal, isCollapsed ? 6 : 12)
-        .padding(.vertical, isCollapsed ? 5 : 8)
+        .padding(.horizontal, railInset)
+        .padding(.vertical, railInset)
         .illumeLiquidGlassCapsule(
-            tint: onDarkBackground ? .white.opacity(0.18) : IllumeTheme.paper,
-            isInteractive: true
+            tint: railTint
         )
         .shadow(color: onDarkBackground ? .black.opacity(0.22) : .clear, radius: 20, x: 0, y: 12)
         .animation(IllumeTheme.spring, value: isCollapsed)
+    }
+
+    private var railSpacing: CGFloat {
+        isCollapsed ? 6 : 8
+    }
+
+    private var railInset: CGFloat {
+        isCollapsed ? 5 : 7
+    }
+
+    private var compactButtonSize: CGFloat {
+        onDarkBackground ? 50 : 42
+    }
+
+    private var buttonTint: Color {
+        onDarkBackground ? .white.opacity(0.16) : IllumeTheme.paper
+    }
+
+    private var railTint: Color {
+        onDarkBackground ? .white.opacity(0.18) : IllumeTheme.paper
     }
 
     static func formatRate(_ value: Double) -> String {
@@ -1019,33 +1693,45 @@ struct NarrationVoicePopover: View {
     let dismiss: () -> Void
 
     var body: some View {
-        VStack(spacing: 4) {
-            ForEach(EdgeNarrationVoice.allCases) { option in
-                Button {
-                    app.readerSettings.narrationVoice = option.id
-                    dismiss()
-                } label: {
-                    HStack(spacing: 10) {
-                        Text(option.flag)
-                            .font(.system(size: 18))
-                        Text(option.label)
-                            .font(.system(.subheadline, design: .rounded, weight: .bold))
-                        Spacer()
+        IllumeGlassEffectGroup(spacing: 6) {
+            VStack(spacing: 6) {
+                ForEach(KokoroNarrationVoice.allCases) { option in
+                    let isSelected = app.readerSettings.narrationVoice == option.id
+
+                    Button {
+                        app.setNarrationVoice(option.id)
+                        dismiss()
+                    } label: {
+                        HStack(spacing: 10) {
+                            Text(option.symbol)
+                                .font(.system(.subheadline, design: .rounded, weight: .black))
+                                .frame(width: 22)
+                            Text(option.label)
+                                .font(.system(.subheadline, design: .rounded, weight: .bold))
+                            Spacer()
+                            if isSelected {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 12, weight: .black))
+                            }
+                        }
+                        .foregroundStyle(isSelected ? .white : IllumeTheme.ink.opacity(0.72))
+                        .padding(.horizontal, 10)
+                        .frame(maxWidth: .infinity, minHeight: IllumeTheme.minimumTouchTarget)
+                        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
-                    .foregroundStyle(app.readerSettings.narrationVoice == option.id ? .white : IllumeTheme.ink.opacity(0.72))
-                    .padding(.horizontal, 10)
-                    .frame(height: 40)
-                    .background(
-                        app.readerSettings.narrationVoice == option.id ? IllumeTheme.ink : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .illumeNativeGlassButton(
+                        tint: isSelected ? IllumeTheme.ink : IllumeTheme.paper,
+                        borderShape: .roundedRectangle(radius: 12),
+                        controlSize: .small,
+                        isProminent: isSelected,
+                        fallback: LiquidCardButtonStyle(cornerRadius: 12, tint: isSelected ? IllumeTheme.ink : IllumeTheme.paper)
                     )
                 }
-                .buttonStyle(.plain)
             }
         }
         .padding(8)
         .frame(width: 200)
-        .background(.regularMaterial)
+        .illumeLiquidGlassRounded(cornerRadius: 18, tint: ReaderSheetGlass.panelTint)
     }
 }
 
@@ -1055,31 +1741,42 @@ struct NarrationSpeedPopover: View {
 
     var body: some View {
         VStack(spacing: 14) {
-            Slider(value: $app.readerSettings.narrationRate, in: 0.7...2.0, step: 0.05)
+            Slider(value: narrationRateBinding, in: 0.7...2.0, step: 0.05)
                 .tint(IllumeTheme.ink)
                 .frame(width: 190)
 
             HStack(spacing: 8) {
                 ForEach(presets, id: \.self) { preset in
+                    let isSelected = abs(app.readerSettings.narrationRate - preset) < 0.01
+
                     Button {
-                        app.readerSettings.narrationRate = preset
+                        app.setNarrationRate(preset)
                     } label: {
                         Text(ReaderTransportRail.formatRate(preset))
                             .font(.system(.caption, design: .rounded, weight: .black))
-                            .foregroundStyle(abs(app.readerSettings.narrationRate - preset) < 0.01 ? .white : IllumeTheme.ink.opacity(0.66))
+                            .foregroundStyle(isSelected ? .white : IllumeTheme.ink.opacity(0.66))
                             .padding(.horizontal, 9)
-                            .frame(height: 30)
-                            .background(
-                                abs(app.readerSettings.narrationRate - preset) < 0.01 ? IllumeTheme.ink : Color.clear,
-                                in: Capsule()
-                            )
+                            .frame(minHeight: IllumeTheme.minimumTouchTarget)
+                            .contentShape(Capsule())
                     }
-                    .buttonStyle(.plain)
+                    .illumeNativeGlassButton(
+                        tint: isSelected ? IllumeTheme.ink : IllumeTheme.paper,
+                        controlSize: .small,
+                        isProminent: isSelected,
+                        fallback: ReaderGlassCapsuleButtonStyle(tint: isSelected ? IllumeTheme.ink : IllumeTheme.paper)
+                    )
                 }
             }
         }
         .padding(14)
-        .background(.regularMaterial)
+        .illumeLiquidGlassRounded(cornerRadius: 18, tint: ReaderSheetGlass.panelTint)
+    }
+
+    private var narrationRateBinding: Binding<Double> {
+        Binding(
+            get: { app.readerSettings.narrationRate },
+            set: { app.setNarrationRate($0) }
+        )
     }
 }
 
@@ -1095,7 +1792,8 @@ struct ReaderGlassCircleButtonStyle: ButtonStyle {
                 tint: tint,
                 isPressed: configuration.isPressed,
                 isEnabled: isEnabled,
-                isInteractive: true
+                isInteractive: true,
+                pressedScale: pressedScale
             )
             .overlay {
                 Circle()
@@ -1110,7 +1808,6 @@ struct ReaderGlassCircleButtonStyle: ButtonStyle {
                 x: 0,
                 y: 0
             )
-            .scaleEffect(configuration.isPressed ? pressedScale : 1)
             .animation(IllumeTheme.spring, value: configuration.isPressed)
             .animation(IllumeTheme.spring, value: isEnabled)
     }
@@ -1128,7 +1825,8 @@ struct ReaderGlassCapsuleButtonStyle: ButtonStyle {
                 tint: tint,
                 isPressed: configuration.isPressed,
                 isEnabled: isEnabled,
-                isInteractive: true
+                isInteractive: true,
+                pressedScale: pressedScale
             )
             .overlay {
                 Capsule()
@@ -1143,7 +1841,6 @@ struct ReaderGlassCapsuleButtonStyle: ButtonStyle {
                 x: 0,
                 y: 0
             )
-            .scaleEffect(configuration.isPressed ? pressedScale : 1)
             .animation(IllumeTheme.spring, value: configuration.isPressed)
             .animation(IllumeTheme.spring, value: isEnabled)
     }
@@ -1163,18 +1860,19 @@ struct ReaderRailIconButton: View {
                 .foregroundStyle(onDarkBackground ? .white : IllumeTheme.ink)
                 .frame(width: buttonSize, height: buttonSize)
         }
-        .buttonStyle(ReaderGlassCircleButtonStyle(tint: onDarkBackground ? .white.opacity(0.16) : IllumeTheme.paper))
+        .illumeNativeGlassButton(tint: onDarkBackground ? .white.opacity(0.16) : IllumeTheme.paper, borderShape: .circle, controlSize: .small, fallback: ReaderGlassCircleButtonStyle(tint: onDarkBackground ? .white.opacity(0.16) : IllumeTheme.paper))
         .disabled(isDisabled)
         .opacity(isDisabled ? (onDarkBackground ? 0.42 : 0.35) : 1)
     }
 
     private var buttonSize: CGFloat {
-        onDarkBackground ? (isCompact ? 42 : 46) : 34
+        onDarkBackground ? (isCompact ? 46 : 50) : (isCompact ? 40 : 42)
     }
 }
 
 struct ReaderNarrationButton: View {
     let isPlaying: Bool
+    let isPreparing: Bool
     var isCompact = false
     var onDarkBackground = false
     let action: () -> Void
@@ -1183,14 +1881,23 @@ struct ReaderNarrationButton: View {
         Button(action: action) {
             narrationIcon
         }
-        .buttonStyle(ReaderGlassCircleButtonStyle(tint: narrationTint))
-        .accessibilityLabel(isPlaying ? "Stop narration" : "Play narration")
+        .illumeNativeGlassButton(tint: narrationTint, borderShape: .circle, controlSize: .small, fallback: ReaderGlassCircleButtonStyle(tint: narrationTint))
+        .accessibilityLabel(accessibilityLabel)
     }
 
     private var narrationIcon: some View {
-        Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-            .font(.system(size: onDarkBackground ? 20 : (isCompact ? 17 : 20), weight: .black))
-            .foregroundStyle(onDarkBackground ? .white : IllumeTheme.ink)
+        Group {
+            if isPreparing {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .controlSize(.small)
+                    .tint(onDarkBackground ? .white : IllumeTheme.ink)
+            } else {
+                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: onDarkBackground ? 20 : (isCompact ? 17 : 20), weight: .black))
+                    .foregroundStyle(onDarkBackground ? .white : IllumeTheme.ink)
+            }
+        }
             .frame(width: narrationSize, height: narrationSize)
     }
 
@@ -1204,28 +1911,44 @@ struct ReaderNarrationButton: View {
         }
         return IllumeTheme.paper
     }
+
+    private var accessibilityLabel: String {
+        if isPreparing {
+            return "Preparing narration"
+        }
+        return isPlaying ? "Pause narration" : "Play narration"
+    }
 }
 
-struct ReaderTableOfContentsButton: View {
-    let hasTableOfContents: Bool
+struct ReaderNarrationSpeedPickerButton: View {
+    let rate: Double
+    let voiceID: String
+    let isExpanded: Bool
     var isCollapsed = false
     var onDarkBackground = false
-    let action: () -> Void
+    let toggleExpansion: () -> Void
+    let selectRate: (Double) -> Void
+    let selectVoice: (KokoroNarrationVoice) -> Void
+
+    private let presets = [0.7, 1.0, 1.25, 1.5, 1.75, 2.0]
 
     var body: some View {
-        Button(action: action) {
-            contentsIcon
+        Button(action: toggleExpansion) {
+            speedLabel
         }
-        .buttonStyle(ReaderGlassCircleButtonStyle(tint: buttonTint))
-        .disabled(!hasTableOfContents)
-        .opacity(hasTableOfContents ? 1 : 0.5)
-        .accessibilityLabel("Open table of contents")
+        .illumeNativeGlassButton(tint: buttonTint, borderShape: .circle, controlSize: .small, fallback: ReaderGlassCircleButtonStyle(tint: buttonTint))
+        .accessibilityLabel("Narration speed")
+        .accessibilityValue(ReaderTransportRail.formatRate(rate))
+        .frame(width: iconSize, height: iconSize, alignment: .bottomLeading)
+        .animation(IllumeTheme.spring, value: isExpanded)
     }
 
-    private var contentsIcon: some View {
-        Image(systemName: "list.bullet")
-            .font(.system(size: onDarkBackground ? 20 : (isCollapsed ? 17 : 20), weight: .black))
+    private var speedLabel: some View {
+        Text(ReaderTransportRail.formatRate(rate))
+            .font(.system(size: onDarkBackground ? 14 : (isCollapsed ? 12 : 14), weight: .black, design: .rounded))
             .foregroundStyle(onDarkBackground ? .white : IllumeTheme.ink)
+            .minimumScaleFactor(0.72)
+            .lineLimit(1)
             .frame(width: iconSize, height: iconSize)
     }
 
@@ -1238,6 +1961,172 @@ struct ReaderTableOfContentsButton: View {
     }
 }
 
+struct ReaderNarrationSpeedPickerPanel: View {
+    let rate: Double
+    let voiceID: String
+    var isCollapsed = false
+    var onDarkBackground = false
+    let selectRate: (Double) -> Void
+    let selectVoice: (KokoroNarrationVoice) -> Void
+
+    private let presets = [0.7, 1.0, 1.25, 1.5, 1.75, 2.0]
+
+    var body: some View {
+        IllumeGlassEffectGroup(spacing: 9) {
+            VStack(spacing: 9) {
+                speedPresetScroller
+                voicePresetScroller
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .illumeLiquidGlassCapsule(tint: expandedTint)
+        .shadow(color: onDarkBackground ? .black.opacity(0.36) : .black.opacity(0.18), radius: 22, x: 0, y: 12)
+        .overlay {
+            Capsule()
+                .strokeBorder(onDarkBackground ? .white.opacity(0.18) : IllumeTheme.ink.opacity(0.08), lineWidth: 1)
+        }
+    }
+
+    private var speedPresetScroller: some View {
+        HStack(spacing: 8) {
+            pickerLeadLabel(
+                title: ReaderTransportRail.formatRate(rate),
+                accessibilityLabel: "Current narration speed"
+            )
+
+            Divider()
+                .frame(height: iconSize * 0.54)
+                .overlay((onDarkBackground ? Color.white : IllumeTheme.ink).opacity(0.18))
+
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(presets, id: \.self) { preset in
+                            let isSelected = abs(rate - preset) < 0.01
+
+                            Button {
+                                selectRate(preset)
+                                withAnimation(IllumeTheme.spring) {
+                                    proxy.scrollTo(preset, anchor: .center)
+                                }
+                            } label: {
+                                Text(ReaderTransportRail.formatRate(preset))
+                                    .font(.system(size: isCollapsed ? 12 : 13, weight: .black, design: .rounded))
+                                    .foregroundStyle(isSelected ? selectedTextColor : pickerTextColor)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.78)
+                                    .frame(width: isCollapsed ? 46 : 50, height: iconSize - 10)
+                            }
+                            .id(preset)
+                            .illumeNativeGlassButton(
+                                tint: isSelected ? selectedTint : pickerButtonTint,
+                                controlSize: .small,
+                                isProminent: isSelected,
+                                fallback: ReaderGlassCapsuleButtonStyle(tint: isSelected ? selectedTint : pickerButtonTint)
+                            )
+                            .accessibilityLabel("Set narration speed")
+                            .accessibilityValue(ReaderTransportRail.formatRate(preset))
+                        }
+                    }
+                    .padding(.trailing, 2)
+                }
+                .frame(maxWidth: .infinity, minHeight: iconSize, maxHeight: iconSize)
+                .onAppear {
+                    let selectedPreset = presets.min(by: { abs($0 - rate) < abs($1 - rate) }) ?? 1.0
+                    proxy.scrollTo(selectedPreset, anchor: .center)
+                }
+            }
+        }
+    }
+
+    private var voicePresetScroller: some View {
+        HStack(spacing: 8) {
+            pickerLeadLabel(
+                title: KokoroNarrationVoice.symbol(for: voiceID),
+                accessibilityLabel: "Current narration voice"
+            )
+
+            Divider()
+                .frame(height: iconSize * 0.54)
+                .overlay((onDarkBackground ? Color.white : IllumeTheme.ink).opacity(0.18))
+
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(KokoroNarrationVoice.allCases) { voice in
+                            let isSelected = KokoroNarrationVoice.availableVoice(for: voiceID) == voice
+
+                            Button {
+                                selectVoice(voice)
+                                withAnimation(IllumeTheme.spring) {
+                                    proxy.scrollTo(voice.id, anchor: .center)
+                                }
+                            } label: {
+                                Text(voice.symbol)
+                                    .font(.system(size: isCollapsed ? 12 : 13, weight: .black, design: .rounded))
+                                    .foregroundStyle(isSelected ? selectedTextColor : pickerTextColor)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.68)
+                                    .frame(width: isCollapsed ? 58 : 64, height: iconSize - 12)
+                            }
+                            .id(voice.id)
+                            .illumeNativeGlassButton(
+                                tint: isSelected ? selectedTint : pickerButtonTint,
+                                controlSize: .small,
+                                isProminent: isSelected,
+                                fallback: ReaderGlassCapsuleButtonStyle(tint: isSelected ? selectedTint : pickerButtonTint)
+                            )
+                            .accessibilityLabel("Set narration voice")
+                            .accessibilityValue(voice.label)
+                        }
+                    }
+                    .padding(.trailing, 2)
+                }
+                .frame(maxWidth: .infinity, minHeight: iconSize, maxHeight: iconSize)
+                .onAppear {
+                    proxy.scrollTo(KokoroNarrationVoice.availableVoice(for: voiceID).id, anchor: .center)
+                }
+            }
+        }
+    }
+
+    private func pickerLeadLabel(title: String, accessibilityLabel: String) -> some View {
+        Text(title)
+            .font(.system(size: onDarkBackground ? 14 : (isCollapsed ? 12 : 14), weight: .black, design: .rounded))
+            .foregroundStyle(onDarkBackground ? .white : IllumeTheme.ink)
+            .minimumScaleFactor(0.72)
+            .lineLimit(1)
+            .frame(width: iconSize, height: iconSize)
+            .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var iconSize: CGFloat {
+        onDarkBackground ? 50 : (isCollapsed ? 44 : 54)
+    }
+
+    private var expandedTint: Color {
+        onDarkBackground ? .black.opacity(0.42) : IllumeTheme.paper.opacity(0.98)
+    }
+
+    private var pickerButtonTint: Color {
+        onDarkBackground ? .white.opacity(0.14) : .white.opacity(0.58)
+    }
+
+    private var selectedTint: Color {
+        onDarkBackground ? .white.opacity(0.92) : IllumeTheme.ink
+    }
+
+    private var pickerTextColor: Color {
+        onDarkBackground ? .white.opacity(0.78) : IllumeTheme.ink.opacity(0.68)
+    }
+
+    private var selectedTextColor: Color {
+        onDarkBackground ? IllumeTheme.ink : .white
+    }
+}
+
 struct ReaderTypographySettingsButton: View {
     var isCollapsed = false
     var onDarkBackground = false
@@ -1247,7 +2136,7 @@ struct ReaderTypographySettingsButton: View {
         Button(action: action) {
             settingsIcon
         }
-        .buttonStyle(ReaderGlassCircleButtonStyle(tint: buttonTint))
+        .illumeNativeGlassButton(tint: buttonTint, borderShape: .circle, controlSize: .small, fallback: ReaderGlassCircleButtonStyle(tint: buttonTint))
         .accessibilityLabel("Open typography settings")
     }
 
@@ -1267,101 +2156,340 @@ struct ReaderTypographySettingsButton: View {
     }
 }
 
-struct ReaderImageModeButton: View {
-    let isEnabled: Bool
-    let isLoading: Bool
-    let isDisabled: Bool
+struct ReaderQuickMenuOverlay: View {
+    let progressPercent: Int
+    let hasTableOfContents: Bool
+    @Binding var imageModeEnabled: Bool
+    let imageModeLoading: Bool
+    let imageModeDisabled: Bool
+    let openContents: () -> Void
+    let openImageStyles: () -> Void
+    let openFontSettings: () -> Void
+    let toggleImageMode: () -> Void
+
+    var body: some View {
+        VStack(spacing: 14) {
+            VStack(spacing: 10) {
+                ReaderQuickMenuRow(
+                    title: "Contents • \(progressPercent)%",
+                    systemName: "list.bullet",
+                    isDisabled: !hasTableOfContents,
+                    action: openContents
+                )
+
+                ReaderQuickMenuRow(
+                    title: "Image Styles",
+                    systemName: "paintpalette.fill",
+                    action: openImageStyles
+                )
+
+                ReaderQuickMenuRow(
+                    title: "Font Settings",
+                    systemName: "textformat.size",
+                    action: openFontSettings
+                )
+            }
+
+            HStack(spacing: 14) {
+                ReaderQuickMenuIconButton(
+                    systemName: imageModeEnabled ? "photo.fill" : "photo",
+                    isSelected: imageModeEnabled,
+                    isLoading: imageModeLoading && imageModeEnabled,
+                    isDisabled: imageModeDisabled,
+                    accessibilityLabel: "Image mode",
+                    action: toggleImageMode
+                )
+
+                ReaderQuickMenuIconButton(
+                    systemName: "paintpalette",
+                    accessibilityLabel: "Image styles",
+                    action: openImageStyles
+                )
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 16)
+        .background(.clear)
+        .illumeLiquidGlassRounded(cornerRadius: 28, tint: ReaderSheetGlass.menuPanelTint)
+        .shadow(color: .black.opacity(0.16), radius: 28, x: 0, y: 18)
+    }
+}
+
+struct ReaderQuickMenuRow: View {
+    let title: String
+    let systemName: String
+    var isDisabled = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            imageModeLabel
-                .scaleEffect(isEnabled ? 1.02 : 1)
-        }
-        .buttonStyle(ReaderGlassCapsuleButtonStyle(tint: isEnabled ? IllumeTheme.coral : IllumeTheme.paper))
-        .disabled(isDisabled)
-        .opacity(isDisabled ? 0.5 : 1)
-    }
+            HStack(spacing: 16) {
+                Text(title)
+                    .font(.system(size: 22, weight: .regular))
+                    .foregroundStyle(.black.opacity(isDisabled ? 0.34 : 0.88))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.68)
 
-    private var imageModeLabel: some View {
-        HStack(spacing: 10) {
-            if isLoading && isEnabled {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(IllumeTheme.ink)
-            } else {
-                Image(systemName: isEnabled ? "photo.stack.fill" : "photo.stack")
-                    .font(.system(size: 17, weight: .bold))
+                Spacer(minLength: 12)
+
+                Image(systemName: systemName)
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(.black.opacity(isDisabled ? 0.26 : 0.88))
+                    .frame(width: 34)
             }
-
-            Text("Image mode")
-                .font(.system(.subheadline, design: .rounded, weight: .bold))
-
-            Text(isEnabled ? "On" : "Off")
-                .font(.system(.caption, design: .rounded, weight: .black))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .background(isEnabled ? IllumeTheme.coral : IllumeTheme.ink.opacity(0.42), in: Capsule())
+            .padding(.leading, 18)
+            .padding(.trailing, 16)
+            .frame(height: 56)
+            .contentShape(Capsule())
         }
-        .foregroundStyle(IllumeTheme.ink)
-        .padding(.leading, 16)
-        .padding(.trailing, 12)
-        .frame(height: 54)
+        .buttonStyle(ReaderGlassCapsuleButtonStyle(tint: Color.white.opacity(0.7), pressedScale: 0.965))
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.58 : 1)
     }
 }
 
-struct ReaderSettingsSheet: View {
-    @EnvironmentObject private var app: IllumeAppModel
-    @Binding var imageModeEnabled: Bool
-    let imageModeLoading: Bool
-    let imageModeDisabled: Bool
-    let toggleImageMode: () -> Void
+struct ReaderQuickMenuIconButton: View {
+    let systemName: String
+    var isSelected = false
+    var isLoading = false
+    var isDisabled = false
+    let accessibilityLabel: String
+    let action: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        Button(action: action) {
+            Group {
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.regular)
+                        .tint(isSelected ? .white : .black)
+                } else {
+                    Image(systemName: systemName)
+                        .font(.system(size: 23, weight: .semibold))
+                }
+            }
+            .foregroundStyle(isSelected ? .white : .black.opacity(0.9))
+            .frame(width: 58, height: 52)
+        }
+        .buttonStyle(ReaderGlassCapsuleButtonStyle(tint: isSelected ? Color.black.opacity(0.78) : Color.white.opacity(0.72), pressedScale: 0.94))
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.42 : 1)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(isSelected ? "On" : "Off")
+    }
+}
+
+struct ReaderFontSettingsSheet: View {
+    @EnvironmentObject private var app: IllumeAppModel
+
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            ReaderFontSettingsLiquidGlassSheet()
+                .presentationBackground(.clear)
+        } else {
+            ReaderFontSettingsFallbackSheet()
+                .presentationBackground(.clear)
+        }
+    }
+}
+
+@available(iOS 26.0, *)
+private struct ReaderFontSettingsLiquidGlassSheet: View {
+    @EnvironmentObject private var app: IllumeAppModel
+    @Namespace private var glassNamespace
+    @State private var isExpanded = false
+
+    private enum GlassID: String {
+        case panel
+        case sliders
+    }
+
+    var body: some View {
+        GlassEffectContainer(spacing: isExpanded ? 20 : 44) {
+            VStack(alignment: .leading, spacing: isExpanded ? 22 : 8) {
+                Capsule()
+                    .fill(.secondary.opacity(0.25))
+                    .frame(width: 42, height: 5)
+                    .frame(maxWidth: .infinity)
+
+                if isExpanded {
+                    Text("Font Settings")
+                        .font(.system(.largeTitle, design: .rounded, weight: .black))
+                        .transition(
+                            .scale(0.96, anchor: .top)
+                                .combined(with: .blurReplace)
+                        )
+
+                    VStack(spacing: 12) {
+                        SliderRow(label: "Text size", value: $app.readerSettings.textScale, range: 0.82...1.25, valueText: "\(Int(app.readerSettings.textScale * 100))%")
+                        SliderRow(label: "Line height", value: $app.readerSettings.lineHeight, range: 1.0...1.65, valueText: String(format: "%.2fx", app.readerSettings.lineHeight))
+                        SliderRow(label: "Column width", value: $app.readerSettings.lineWidth, range: 32...52, valueText: "\(Int(app.readerSettings.lineWidth))")
+                    }
+                    .glassEffectID(GlassID.sliders, in: glassNamespace)
+                    .transition(
+                        .scale(scale: 0.72, anchor: .top)
+                            .combined(with: .offset(y: -18))
+                            .combined(with: .opacity)
+                    )
+
+                    Spacer()
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.clear)
+            .glassEffect(.regular.tint(ReaderSheetGlass.panelTint), in: RoundedRectangle(cornerRadius: 30, style: .continuous))
+            .glassEffectID(GlassID.panel, in: glassNamespace)
+        }
+        .animation(readerTypographyPanelAnimation, value: isExpanded)
+        .onAppear {
+            isExpanded = false
+            Task { @MainActor in
+                await Task.yield()
+                withAnimation(readerTypographyPanelAnimation) {
+                    isExpanded = true
+                }
+            }
+        }
+    }
+}
+
+private let readerTypographyPanelAnimation = Animation.spring(response: 0.44, dampingFraction: 0.78, blendDuration: 0.08)
+
+private struct ReaderFontSettingsFallbackSheet: View {
+    @EnvironmentObject private var app: IllumeAppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
             Capsule()
                 .fill(.secondary.opacity(0.25))
                 .frame(width: 42, height: 5)
                 .frame(maxWidth: .infinity)
 
-            Text("Reading")
+            Text("Font Settings")
                 .font(.system(.largeTitle, design: .rounded, weight: .black))
 
-            Picker("Theme", selection: $app.readerSettings.theme) {
-                ForEach(ReaderThemeChoice.allCases, id: \.self) { theme in
-                    Text(theme.rawValue).tag(theme)
-                }
+            VStack(spacing: 12) {
+                SliderRow(label: "Text size", value: $app.readerSettings.textScale, range: 0.82...1.25, valueText: "\(Int(app.readerSettings.textScale * 100))%")
+                SliderRow(label: "Line height", value: $app.readerSettings.lineHeight, range: 1.0...1.65, valueText: String(format: "%.2fx", app.readerSettings.lineHeight))
+                SliderRow(label: "Column width", value: $app.readerSettings.lineWidth, range: 32...52, valueText: "\(Int(app.readerSettings.lineWidth))")
             }
-            .pickerStyle(.segmented)
-            .illumeLiquidGlassRounded(cornerRadius: 12, tint: IllumeTheme.paper)
-
-            VStack(spacing: 18) {
-                SliderRow(label: "Text", value: $app.readerSettings.textScale, range: 0.82...1.25)
-                SliderRow(label: "Line", value: $app.readerSettings.lineHeight, range: 1.0...1.65)
-                SliderRow(label: "Voice", value: $app.readerSettings.narrationRate, range: 0.7...2.0)
-            }
-            .padding(16)
-            .illumeLiquidGlassRounded(cornerRadius: 22, tint: IllumeTheme.paper)
-
-            ReaderImageModeButton(
-                isEnabled: imageModeEnabled,
-                isLoading: imageModeLoading,
-                isDisabled: imageModeDisabled,
-                action: toggleImageMode
-            )
-
-            Picker("Image style", selection: $app.readerSettings.imageStyle) {
-                Text("Cartoon").tag(ReaderImageStyle.cartoon)
-                Text("Cute").tag(ReaderImageStyle.cute)
-            }
-            .pickerStyle(.segmented)
-            .illumeLiquidGlassRounded(cornerRadius: 12, tint: IllumeTheme.paper)
 
             Spacer()
         }
         .padding(24)
-        .background(IllumeTheme.paper)
+        .background(.clear)
+        .illumeLiquidGlassRounded(cornerRadius: 30, tint: ReaderSheetGlass.panelTint)
+    }
+}
+
+struct ReaderImageStyleSheet: View {
+    @EnvironmentObject private var app: IllumeAppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Capsule()
+                .fill(.secondary.opacity(0.25))
+                .frame(width: 42, height: 5)
+                .frame(maxWidth: .infinity)
+
+            Text("Image Styles")
+                .font(.system(.largeTitle, design: .rounded, weight: .black))
+
+            VStack(spacing: 12) {
+                ForEach(ReaderImageStyle.allCases, id: \.self) { style in
+                    ReaderImageStyleOption(
+                        style: style,
+                        isSelected: app.readerSettings.imageStyle == style
+                    ) {
+                        app.readerSettings.imageStyle = style
+                    }
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(24)
+        .background(.clear)
+        .illumeLiquidGlassRounded(cornerRadius: 30, tint: ReaderSheetGlass.panelTint)
+        .presentationBackground(.clear)
+    }
+}
+
+struct ReaderImageStyleOption: View {
+    let style: ReaderImageStyle
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 13) {
+                Image(style.previewResourceName, bundle: .module)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 96, height: 82)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(.black.opacity(0.1), lineWidth: 1)
+                    )
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(style.label)
+                        .font(.system(.headline, design: .rounded, weight: .black))
+                    Text(style.summary)
+                        .font(.system(.caption, design: .rounded, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundStyle(IllumeTheme.accent)
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, minHeight: 104, alignment: .leading)
+            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(LiquidCardButtonStyle(cornerRadius: 14, tint: isSelected ? Color.white.opacity(0.28) : ReaderSheetGlass.tint))
+        .accessibilityLabel(style.label)
+        .accessibilityValue(isSelected ? "Selected" : "")
+    }
+}
+
+private enum ReaderSheetGlass {
+    static let panelTint = Color.white.opacity(0.08)
+    static let menuPanelTint = Color.white.opacity(0.38)
+    static let tint = Color.white.opacity(0.16)
+    static let selectedTint = Color.white.opacity(0.28)
+}
+
+private extension ReaderImageStyle {
+    var label: String {
+        switch self {
+        case .cartoon: "Cartoon"
+        case .cute: "Cute"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .cartoon: "Bold Sunday funnies look with bright 1980s color."
+        case .cute: "Kawaii anime feel with pastel modern colors."
+        }
+    }
+
+    var previewResourceName: String {
+        switch self {
+        case .cartoon: "cartoon"
+        case .cute: "cute"
+        }
     }
 }
 
@@ -1369,13 +2497,52 @@ struct SliderRow: View {
     let label: String
     @Binding var value: Double
     let range: ClosedRange<Double>
+    let valueText: String
 
     var body: some View {
+        content
+            .padding(16)
+            .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
+            .sliderRowGlass()
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(label)
-                .font(.system(.subheadline, design: .rounded, weight: .bold))
+            HStack(spacing: 12) {
+                Text(label)
+                    .font(.system(.subheadline, design: .rounded, weight: .bold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text(valueText)
+                    .font(.system(.caption, design: .rounded, weight: .black))
+                    .monospacedDigit()
+                    .foregroundStyle(IllumeTheme.ink.opacity(0.78))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(.white.opacity(0.12), in: Capsule())
+            }
+
             Slider(value: $value, in: range)
                 .tint(IllumeTheme.accent)
+                .controlSize(.large)
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func sliderRowGlass() -> some View {
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+
+        if #available(iOS 26.0, *) {
+            self
+                .glassEffect(.regular.tint(ReaderSheetGlass.tint).interactive(), in: shape)
+        } else {
+            self
+                .background(.ultraThinMaterial, in: shape)
+                .overlay {
+                    shape.strokeBorder(.white.opacity(0.12), lineWidth: 1)
+                }
         }
     }
 }
@@ -1384,6 +2551,7 @@ struct ReaderImageTopPanel: View {
     let urlString: String?
     let phase: ReaderImagePhase
     let overlayText: String?
+    var activeOverlayRange: NSRange?
     var fillsReadingView = false
     var isChromeHidden = false
 
@@ -1401,21 +2569,26 @@ struct ReaderImageTopPanel: View {
     }
 
     private var overlayFontSize: CGFloat {
-        fillsReadingView ? 18 : 21
+        fillsReadingView ? 17 : 21
     }
 
     private var overlayLineLimit: Int {
         if fillsReadingView {
-            return isChromeHidden ? 10 : 7
+            return isChromeHidden ? 10 : 5
         }
         return 6
     }
 
     private var overlayBottomPadding: CGFloat {
         if fillsReadingView {
-            return isChromeHidden ? 34 : 118
+            return isChromeHidden ? 34 : 156
         }
         return 28
+    }
+
+    private var overlayTextBlockHeight: CGFloat? {
+        guard fillsReadingView else { return nil }
+        return CGFloat(overlayLineLimit) * (overlayFontSize + 7)
     }
 
     var body: some View {
@@ -1423,11 +2596,24 @@ struct ReaderImageTopPanel: View {
             Rectangle()
                 .fill(Color(red: 0.015, green: 0.017, blue: 0.022))
 
-            if let urlString, Self.isDataImageURL(urlString) {
+            if phase == .checking {
+                ReaderImageCheckingView(
+                    urlString: urlString,
+                    contentMode: imageContentMode,
+                    addsBottomBlur: fillsReadingView
+                )
+            } else if phase == .generating {
+                ReaderImageGeneratingView(
+                    backdropURLString: urlString,
+                    contentMode: imageContentMode,
+                    addsBottomBlur: fillsReadingView
+                )
+            } else if let urlString, Self.isDataImageURL(urlString) {
                 ReaderImageDataURLView(
                     dataURL: urlString,
                     contentMode: imageContentMode,
-                    addsBottomBlur: fillsReadingView
+                    addsBottomBlur: fillsReadingView,
+                    animatesImageIn: phase == .ready
                 )
             } else if let urlString, let url = URL(string: urlString) {
                 AsyncImage(url: url) { imagePhase in
@@ -1438,22 +2624,17 @@ struct ReaderImageTopPanel: View {
                             contentMode: imageContentMode,
                             addsBottomBlur: fillsReadingView
                         )
+                        .blurLoadIn(radius: 13)
                     case .failure:
                         Image(systemName: "photo")
                             .font(.largeTitle)
                             .foregroundStyle(.white.opacity(0.48))
                     default:
-                        ProgressView()
-                            .controlSize(.large)
-                            .tint(.white)
+                        ReaderImagePendingView()
                     }
                 }
-            } else if phase == .checking || phase == .generating {
-                ReaderImageGeneratingView(isFreshGeneration: phase == .generating)
             } else {
-                Image(systemName: "photo.on.rectangle.angled")
-                    .font(.system(size: 38, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.36))
+                ReaderImagePendingView()
             }
 
             VStack {
@@ -1470,22 +2651,39 @@ struct ReaderImageTopPanel: View {
                 .frame(height: gradientHeight)
             }
 
-            if let overlayText, !overlayText.isEmpty {
+            if phase == .ready, let overlayText, !overlayText.isEmpty {
                 VStack {
                     Spacer()
-                    Text(overlayText)
-                        .font(.system(size: overlayFontSize, weight: .semibold, design: .serif))
-                        .lineSpacing(fillsReadingView ? 3 : 4)
-                        .foregroundStyle(.white)
-                        .shadow(color: .black.opacity(0.55), radius: 10, x: 0, y: 3)
-                        .lineLimit(overlayLineLimit)
-                        .multilineTextAlignment(.leading)
-                        .minimumScaleFactor(0.88)
-                        .frame(maxWidth: fillsReadingView ? 620 : .infinity, alignment: .leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, fillsReadingView ? 18 : 22)
-                        .padding(.bottom, overlayBottomPadding)
-                        .animation(.easeOut(duration: 0.16), value: isChromeHidden)
+                    Group {
+                        if activeOverlayRange != nil {
+                            ReaderAttributedText(
+                                text: overlayText,
+                                font: overlayUIFont,
+                                textColor: .white,
+                                lineSpacing: fillsReadingView ? 3 : 4,
+                                activeRange: activeOverlayRange,
+                                activeHighlightColor: UIColor(Color(red: 1.0, green: 0.78, blue: 0.18).opacity(0.72)),
+                                selectParagraph: {},
+                                selectWord: { _ in }
+                            )
+                            .shadow(color: .black.opacity(0.55), radius: 10, x: 0, y: 3)
+                        } else {
+                            Text(overlayText)
+                                .font(.system(size: overlayFontSize, weight: .semibold, design: .serif))
+                                .lineSpacing(fillsReadingView ? 3 : 4)
+                                .foregroundStyle(.white)
+                                .shadow(color: .black.opacity(0.55), radius: 10, x: 0, y: 3)
+                                .lineLimit(overlayLineLimit)
+                                .multilineTextAlignment(.leading)
+                        }
+                    }
+                    .frame(maxWidth: fillsReadingView ? 620 : .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: overlayTextBlockHeight, alignment: .topLeading)
+                    .clipped()
+                    .padding(.horizontal, fillsReadingView ? 18 : 22)
+                    .padding(.bottom, overlayBottomPadding)
+                    .blurLoadIn(radius: 11)
                 }
             }
         }
@@ -1516,8 +2714,67 @@ struct ReaderImageTopPanel: View {
         RoundedRectangle(cornerRadius: fillsReadingView ? 0 : 24, style: .continuous)
     }
 
+    private var overlayUIFont: UIFont {
+        UIFont.systemSerifFont(ofSize: overlayFontSize, weight: .semibold)
+    }
+
     private static func isDataImageURL(_ value: String) -> Bool {
         value.lowercased().hasPrefix("data:image/")
+    }
+}
+
+struct ReaderImageCheckingView: View {
+    let urlString: String?
+    var contentMode: ContentMode = .fill
+    var addsBottomBlur = false
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.08)
+
+            if let urlString, ReaderImageURL.isDataImageURL(urlString) {
+                ReaderImageDataURLView(
+                    dataURL: urlString,
+                    contentMode: contentMode,
+                    addsBottomBlur: addsBottomBlur
+                )
+                .checkingImageEffect()
+            } else if let urlString, let url = URL(string: urlString) {
+                AsyncImage(url: url) { imagePhase in
+                    switch imagePhase {
+                    case .success(let image):
+                        ReaderDisplayedImage(
+                            image: image,
+                            contentMode: contentMode,
+                            addsBottomBlur: addsBottomBlur
+                        )
+                        .checkingImageEffect()
+                    default:
+                        Color.clear
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct ReaderImagePendingView: View {
+    var body: some View {
+        LinearGradient(
+            colors: [
+                Color(red: 0.045, green: 0.052, blue: 0.064),
+                Color(red: 0.08, green: 0.075, blue: 0.092),
+                Color(red: 0.035, green: 0.055, blue: 0.052)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+        .overlay {
+            Rectangle()
+                .fill(.ultraThinMaterial.opacity(0.72))
+        }
+        .blur(radius: 12)
+        .scaleEffect(1.04)
     }
 }
 
@@ -1525,6 +2782,7 @@ struct ReaderImageDataURLView: View {
     let dataURL: String
     var contentMode: ContentMode = .fill
     var addsBottomBlur = false
+    var animatesImageIn = false
     @State private var image: UIImage?
 
     var body: some View {
@@ -1535,6 +2793,7 @@ struct ReaderImageDataURLView: View {
                     contentMode: contentMode,
                     addsBottomBlur: addsBottomBlur
                 )
+                .blurLoadIn(radius: animatesImageIn ? 13 : 0)
             } else {
                 ProgressView()
                     .controlSize(.large)
@@ -1621,48 +2880,64 @@ struct ReaderImageBottomFeather: View {
 }
 
 struct ReaderImageGeneratingView: View {
-    let isFreshGeneration: Bool
+    var backdropURLString: String?
+    var contentMode: ContentMode = .fill
+    var addsBottomBlur = false
 
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [
-                    Color(red: 0.03, green: 0.04, blue: 0.06),
-                    Color(red: 0.05, green: 0.07, blue: 0.11),
-                    Color(red: 0.04, green: 0.08, blue: 0.06)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            ReaderImagePendingView()
 
-            ReaderImageLight(color: Color(red: 0.55, green: 0.50, blue: 1.0), size: 250)
-                .offset(x: -92, y: -78)
-                .opacity(0.52)
-
-            ReaderImageLight(color: Color(red: 0.15, green: 0.9, blue: 0.78), size: 270)
-                .offset(x: 104, y: 80)
-                .opacity(0.74)
-
-            ReaderImageLight(color: Color(red: 1.0, green: 0.63, blue: 0.42), size: 150)
-                .offset(x: -18, y: 36)
-                .opacity(0.38)
-
-            HStack(spacing: 9) {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(.white)
-                Text(isFreshGeneration ? "Generating" : "Checking")
-                    .font(.system(size: 12, weight: .black, design: .rounded))
-                    .textCase(.uppercase)
+            if let backdropURLString, ReaderImageURL.isDataImageURL(backdropURLString) {
+                ReaderImageDataURLView(dataURL: backdropURLString, contentMode: contentMode, addsBottomBlur: addsBottomBlur)
+                    .generatingBackdropEffect()
+            } else if let backdropURLString, let url = URL(string: backdropURLString) {
+                AsyncImage(url: url) { imagePhase in
+                    if case .success(let image) = imagePhase {
+                        ReaderDisplayedImage(image: image, contentMode: contentMode, addsBottomBlur: addsBottomBlur)
+                            .generatingBackdropEffect()
+                    }
+                }
             }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 14)
-            .frame(height: 34)
-            .background(.black.opacity(0.42), in: Capsule())
-            .overlay(Capsule().stroke(.white.opacity(0.26), lineWidth: 1))
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(16)
         }
+    }
+}
+
+private enum ReaderImageURL {
+    static func isDataImageURL(_ value: String) -> Bool {
+        value.lowercased().hasPrefix("data:image/")
+    }
+}
+
+private struct ReaderCheckingImageEffect: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .opacity(0.46)
+            .blur(radius: 10)
+            .saturation(0.88)
+            .brightness(-0.06)
+            .scaleEffect(1.045)
+    }
+}
+
+private struct ReaderGeneratingBackdropEffect: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .opacity(0.7)
+            .blur(radius: 16)
+            .saturation(1.18)
+            .brightness(-0.34)
+            .scaleEffect(1.075)
+    }
+}
+
+private extension View {
+    func checkingImageEffect() -> some View {
+        modifier(ReaderCheckingImageEffect())
+    }
+
+    func generatingBackdropEffect() -> some View {
+        modifier(ReaderGeneratingBackdropEffect())
     }
 }
 
@@ -1694,7 +2969,7 @@ private extension Button {
     @MainActor
     func miniReaderButton() -> some View {
         self
-            .buttonStyle(MiniGlassButtonStyle())
+            .illumeNativeGlassButton(tint: IllumeTheme.paper, controlSize: .small, fallback: MiniGlassButtonStyle())
     }
 }
 #endif
