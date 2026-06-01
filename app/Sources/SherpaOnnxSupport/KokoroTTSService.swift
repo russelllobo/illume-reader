@@ -17,6 +17,11 @@ public actor KokoroTTSService {
         return try engine.render(text: text, speakerID: speakerID, rate: rate)
     }
 
+    public func stream(text: String, modelDirectory: URL, speakerID: Int32, rate: Double) throws -> KokoroAudioStream {
+        let engine = try engine(for: modelDirectory)
+        return engine.stream(text: text, speakerID: speakerID, rate: rate)
+    }
+
     private func engine(for modelDirectory: URL) throws -> KokoroTTSEngine {
         let key = EngineKey(modelDirectory: modelDirectory.path)
         if engineKey != key {
@@ -39,6 +44,35 @@ public struct KokoroRenderedAudio: Sendable {
     public init(url: URL, duration: TimeInterval) {
         self.url = url
         self.duration = duration
+    }
+}
+
+public struct KokoroAudioChunk: Sendable {
+    public let samples: [Float]
+    public let progress: Float
+
+    public init(samples: [Float], progress: Float) {
+        self.samples = samples
+        self.progress = progress
+    }
+}
+
+public struct KokoroAudioStream: Sendable {
+    public let sampleRate: Int32
+    public let chunks: AsyncThrowingStream<KokoroAudioChunk, Error>
+    public let renderedAudio: Task<KokoroRenderedAudio, Error>
+    public let cancel: @Sendable () -> Void
+
+    public init(
+        sampleRate: Int32,
+        chunks: AsyncThrowingStream<KokoroAudioChunk, Error>,
+        renderedAudio: Task<KokoroRenderedAudio, Error>,
+        cancel: @escaping @Sendable () -> Void
+    ) {
+        self.sampleRate = sampleRate
+        self.chunks = chunks
+        self.renderedAudio = renderedAudio
+        self.cancel = cancel
     }
 }
 
@@ -69,9 +103,10 @@ private struct EngineKey: Equatable {
     let modelDirectory: String
 }
 
-private final class KokoroTTSEngine {
+private final class KokoroTTSEngine: @unchecked Sendable {
     private let cStrings = CStringStore()
     private let tts: OpaquePointer
+    private let generationLock = NSLock()
 
     init(modelDirectory: URL) throws {
         let requiredFiles = [
@@ -123,6 +158,9 @@ private final class KokoroTTSEngine {
     }
 
     func render(text: String, speakerID: Int32, rate: Double) throws -> KokoroRenderedAudio {
+        generationLock.lock()
+        defer { generationLock.unlock() }
+
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("illume-kokoro-tts-\(UUID().uuidString)")
             .appendingPathExtension("wav")
@@ -168,6 +206,180 @@ private final class KokoroTTSEngine {
 
         let duration = Double(audio.pointee.n) / Double(audio.pointee.sample_rate)
         return KokoroRenderedAudio(url: outputURL, duration: duration)
+    }
+
+    func stream(text: String, speakerID: Int32, rate: Double) -> KokoroAudioStream {
+        let sampleRate = SherpaOnnxOfflineTtsSampleRate(tts)
+        let context = KokoroStreamingContext()
+        let chunks = AsyncThrowingStream<KokoroAudioChunk, Error> { continuation in
+            context.setContinuation(continuation)
+            continuation.onTermination = { @Sendable _ in
+                context.cancel()
+            }
+        }
+        let renderedAudio = Task.detached(priority: .userInitiated) { [self] in
+            try generateStreamingAudio(text: text, speakerID: speakerID, rate: rate, context: context)
+        }
+
+        return KokoroAudioStream(
+            sampleRate: sampleRate,
+            chunks: chunks,
+            renderedAudio: renderedAudio,
+            cancel: { context.cancel() }
+        )
+    }
+
+    private func generateStreamingAudio(
+        text: String,
+        speakerID: Int32,
+        rate: Double,
+        context: KokoroStreamingContext
+    ) throws -> KokoroRenderedAudio {
+        generationLock.lock()
+        defer { generationLock.unlock() }
+
+        let safeRate = Float(min(2.0, max(0.7, rate)))
+        let audio = text.withCString { textPointer in
+            var generationConfig = SherpaOnnxGenerationConfig()
+            generationConfig.silence_scale = 0.12
+            generationConfig.speed = safeRate
+            generationConfig.sid = speakerID
+
+            return withUnsafePointer(to: &generationConfig) { configPointer in
+                withExtendedLifetime(context) {
+                    SherpaOnnxOfflineTtsGenerateWithConfig(
+                        tts,
+                        textPointer,
+                        configPointer,
+                        kokoroStreamingProgressCallback,
+                        Unmanaged.passUnretained(context).toOpaque()
+                    )
+                }
+            }
+        }
+
+        guard !context.isCancelled else {
+            throw CancellationError()
+        }
+        guard let audio else {
+            context.finish(throwing: KokoroTTSError.generationFailed)
+            throw KokoroTTSError.generationFailed
+        }
+        defer {
+            SherpaOnnxDestroyOfflineTtsGeneratedAudio(audio)
+        }
+
+        guard audio.pointee.n > 0, audio.pointee.samples != nil else {
+            context.finish(throwing: KokoroTTSError.emptyAudio)
+            throw KokoroTTSError.emptyAudio
+        }
+
+        do {
+            let renderedAudio = try writeRenderedAudio(audio)
+            context.finish()
+            return renderedAudio
+        } catch {
+            context.finish(throwing: error)
+            throw error
+        }
+    }
+
+    private func writeRenderedAudio(_ audio: UnsafePointer<SherpaOnnxGeneratedAudio>) throws -> KokoroRenderedAudio {
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("illume-kokoro-tts-\(UUID().uuidString)")
+            .appendingPathExtension("wav")
+        let ok = SherpaOnnxWriteWave(
+            audio.pointee.samples,
+            audio.pointee.n,
+            audio.pointee.sample_rate,
+            outputURL.path
+        )
+        guard ok == 1 else {
+            throw KokoroTTSError.writeFailed
+        }
+
+        let duration = Double(audio.pointee.n) / Double(audio.pointee.sample_rate)
+        return KokoroRenderedAudio(url: outputURL, duration: duration)
+    }
+}
+
+private let kokoroStreamingProgressCallback: SherpaOnnxGeneratedAudioProgressCallbackWithArg = { samples, n, progress, arg in
+    guard let arg else { return 0 }
+    let context = Unmanaged<KokoroStreamingContext>.fromOpaque(arg).takeUnretainedValue()
+    return context.receive(samples: samples, count: n, progress: progress)
+}
+
+private final class KokoroStreamingContext: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: AsyncThrowingStream<KokoroAudioChunk, Error>.Continuation?
+    private var cancelled = false
+    private var deliveredSampleCount = 0
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func setContinuation(_ continuation: AsyncThrowingStream<KokoroAudioChunk, Error>.Continuation) {
+        lock.lock()
+        self.continuation = continuation
+        let shouldFinish = cancelled
+        lock.unlock()
+
+        if shouldFinish {
+            continuation.finish()
+        }
+    }
+
+    func receive(samples: UnsafePointer<Float>?, count: Int32, progress: Float) -> Int32 {
+        guard !isCancelled else { return 0 }
+        guard let samples, count > 0 else { return 1 }
+
+        let totalSampleCount = Int(count)
+        lock.lock()
+        let start = deliveredSampleCount
+        guard totalSampleCount > start else {
+            lock.unlock()
+            return isCancelled ? 0 : 1
+        }
+        deliveredSampleCount = totalSampleCount
+        let continuation = self.continuation
+        lock.unlock()
+
+        let copiedSamples = Array(
+            UnsafeBufferPointer(
+                start: samples.advanced(by: start),
+                count: totalSampleCount - start
+            )
+        )
+        continuation?.yield(KokoroAudioChunk(samples: copiedSamples, progress: progress))
+        return isCancelled ? 0 : 1
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.finish()
+    }
+
+    func finish() {
+        lock.lock()
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.finish()
+    }
+
+    func finish(throwing error: Error) {
+        lock.lock()
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.finish(throwing: error)
     }
 }
 

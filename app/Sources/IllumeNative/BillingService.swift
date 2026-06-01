@@ -8,6 +8,7 @@ final class BillingService: ObservableObject {
     @Published var products: [Product] = []
     @Published var isPurchasing = false
     @Published var message = ""
+    @Published var hasActiveProEntitlement = false
 
     private let backend: SupabaseBackend
     private let productIds = [BillingAccess.appleProductId]
@@ -42,14 +43,30 @@ final class BillingService: ObservableObject {
 
     func restore(accessToken: String) async throws {
         try await AppStore.sync()
+        var foundEntitlement = false
         for await result in Transaction.currentEntitlements {
             guard case .verified(let transaction) = result,
-                  transaction.productID == BillingAccess.appleProductId else {
+                  isActivePro(transaction) else {
                 continue
             }
+            foundEntitlement = true
             try await sync(transaction: transaction, signedTransactionInfo: result.jwsRepresentation, accessToken: accessToken)
             await transaction.finish()
         }
+        hasActiveProEntitlement = foundEntitlement
+    }
+
+    func refreshCurrentEntitlements(accessToken: String) async {
+        var foundEntitlement = false
+        for await result in Transaction.currentEntitlements {
+            guard case .verified(let transaction) = result,
+                  isActivePro(transaction) else {
+                continue
+            }
+            foundEntitlement = true
+            try? await sync(transaction: transaction, signedTransactionInfo: result.jwsRepresentation, accessToken: accessToken)
+        }
+        hasActiveProEntitlement = foundEntitlement
     }
 
     private func purchase(product: Product, accessToken: String) async throws {
@@ -63,6 +80,7 @@ final class BillingService: ObservableObject {
                 throw StoreKitError.userCancelled
             }
             try await sync(transaction: transaction, signedTransactionInfo: verification.jwsRepresentation, accessToken: accessToken)
+            hasActiveProEntitlement = isActivePro(transaction)
             await transaction.finish()
         case .pending:
             message = "Purchase pending."
@@ -78,14 +96,23 @@ final class BillingService: ObservableObject {
             for await result in Transaction.updates {
                 guard let self,
                       case .verified(let transaction) = result,
-                      transaction.productID == BillingAccess.appleProductId,
+                      await self.isActivePro(transaction),
                       let session = KeychainStore.loadSession() else {
                     continue
                 }
                 try? await self.sync(transaction: transaction, signedTransactionInfo: result.jwsRepresentation, accessToken: session.accessToken)
+                await MainActor.run {
+                    self.hasActiveProEntitlement = true
+                }
                 await transaction.finish()
             }
         }
+    }
+
+    private func isActivePro(_ transaction: Transaction) -> Bool {
+        transaction.productID == BillingAccess.appleProductId
+            && transaction.revocationDate == nil
+            && (transaction.expirationDate ?? .distantFuture) > Date()
     }
 
     private func sync(transaction: Transaction, signedTransactionInfo: String, accessToken: String) async throws {

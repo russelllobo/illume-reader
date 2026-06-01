@@ -194,6 +194,27 @@ import Testing
     #expect(!BillingAccess.hasProAccess(profile: expiredApple, now: now))
 }
 
+@Test func billingStateNormalisesStatusAndStopsExpiredStripeAccess() {
+    let userId = UUID()
+    let now = Date(timeIntervalSince1970: 2_000)
+    let activeMixedCase = BillingProfile(
+        userId: userId,
+        plan: " Pro ",
+        status: " ACTIVE ",
+        currentPeriodEnd: Date(timeIntervalSince1970: 3_000)
+    )
+    let expiredCancelAtPeriodEnd = BillingProfile(
+        userId: userId,
+        plan: "pro",
+        status: "active",
+        currentPeriodEnd: Date(timeIntervalSince1970: 1_000),
+        cancelAtPeriodEnd: true
+    )
+
+    #expect(BillingAccess.hasProAccess(profile: activeMixedCase, now: now))
+    #expect(!BillingAccess.hasProAccess(profile: expiredCancelAtPeriodEnd, now: now))
+}
+
 @Test func storageQuotaUsesProAllowance() {
     #expect(BillingAccess.storageQuotaBytes(isPro: false) == 104_857_600)
     #expect(BillingAccess.storageQuotaBytes(isPro: true) == 5_368_709_120)

@@ -14,9 +14,34 @@ import UniformTypeIdentifiers
 private let readerImageRequestChunkWords = 750
 private let narrationChunkMinimumCharacters = 80
 private let narrationChunkMaximumCharacters = 220
+private let narrationChunkHardMaximumCharacters = 420
 private let narrationChunkMaximumParagraphs = 1
 private let narrationChunkPreferredSentenceMinimumCharacters = 60
-private let narrationVoicePreviewMaximumWords = 18
+private let narrationPrefetchLookahead = 3
+private let narrationAudioCacheLimit = 12
+private let narrationVoicePreviewText = "Alice was beginning to get very tired of sitting by her sister on the bank, and of having nothing to do."
+private let narrationVoicePreviewRate = 1.0
+private let narrationNonTerminalAbbreviations: Set<String> = [
+    "adm", "atty", "capt", "cmdr", "col", "dr", "fr", "gen", "gov", "hon",
+    "jr", "lt", "maj", "messrs", "miss", "mlle", "mme", "mr", "mrs", "ms",
+    "mt", "mx", "no", "prof", "rep", "rev", "sen", "sgt", "sr", "st"
+]
+private let narrationNumberedReferenceAbbreviations: Set<String> = [
+    "ch", "fig", "p", "pp", "vol"
+]
+private let narrationLowercaseContinuationAbbreviations: Set<String> = [
+    "bros", "co", "corp", "dept", "etc", "inc", "ltd", "vs"
+]
+private let narrationMultiPeriodAbbreviations = [
+    "e.g.", "i.e.", "u.k.", "u.s.", "u.s.a."
+]
+private let narrationSpeechMultiPeriodReplacements: [(pattern: String, replacement: String)] = [
+    (#"\be\.g\."#, "for example"),
+    (#"\bi\.e\."#, "that is"),
+    (#"\bU\.S\.A\."#, "USA"),
+    (#"\bU\.K\."#, "UK"),
+    (#"\bU\.S\."#, "US")
+]
 
 @MainActor
 final class IllumeAppModel: NSObject, ObservableObject {
@@ -24,6 +49,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
     @Published var books: [BookRow] = []
     @Published var activeBookRow: BookRow?
     @Published var activeBook: ReaderBook?
+    @Published var isReaderPresented = false
     @Published var openingBook: BookRow?
     @Published var closingBook: BookRow?
     @Published var bookTransitionSourceFrame: CGRect?
@@ -34,6 +60,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
     @Published var isLibraryLoaded = false
     @Published var isLoading = false
     @Published var isImporting = false
+    @Published var importingClassicID: String?
     @Published var authMode: AuthMode = .signIn
     @Published var notice = ""
     @Published var pendingBookImports: [PendingBookImport] = []
@@ -44,29 +71,37 @@ final class IllumeAppModel: NSObject, ObservableObject {
     @Published var readerImageChunkIndex: Int?
     @Published var readerImageStyle: ReaderImageStyle?
     @Published var readerImagePhase: ReaderImagePhase = .idle
+    @Published var proUpgradePrompt: ProUpgradePrompt?
     @Published var narration = NarrationState()
 
     let backend = SupabaseBackend()
     lazy var billing = BillingService(backend: backend)
     private let kokoroTTS = KokoroTTSService()
     private var audioPlayer: AVPlayer?
+    private var streamingAudioPlayer: NarrationStreamingAudioPlayer?
     private var audioEndObserver: NSObjectProtocol?
     private var audioFailedObserver: NSObjectProtocol?
     private var audioStatusObserver: NSKeyValueObservation?
     private var audioTimeObserver: Any?
+    private var audioTimeTimer: Timer?
     private var narrationAudioURL: URL?
     private var voicePreviewPlayer: AVPlayer?
     private var voicePreviewAudioURL: URL?
     private var voicePreviewEndObserver: NSObjectProtocol?
     private var voicePreviewFailedObserver: NSObjectProtocol?
     private var voicePreviewTask: Task<Void, Never>?
+    private var voicePreviewPreparationTasks: [String: Task<KokoroRenderedAudio?, Never>] = [:]
+    private var storedVoicePreviewURLs: [String: URL] = [:]
     private var nowPlayingArtworkTask: Task<Void, Never>?
     private var nowPlayingArtworkSource: String?
     private var nowPlayingArtworkImage: UIImage?
     private var remoteCommandTargets: [Any] = []
     private var hasConfiguredRemoteCommands = false
     private var narrationTask: Task<Void, Never>?
-    private var narrationPrefetchTask: Task<NarrationPreparedAudio?, Never>?
+    private var narrationPrefetchTasks: [NarrationAudioCacheKey: Task<NarrationPreparedAudio?, Never>] = [:]
+    private var narrationAudioCache: [NarrationAudioCacheKey: NarrationPreparedAudio] = [:]
+    private var narrationAudioCacheOrder: [NarrationAudioCacheKey] = []
+    private var narrationCurrentAudioCacheKey: NarrationAudioCacheKey?
     private var kokoroWarmupTask: Task<Void, Never>?
     private var readerImageGenerationTask: Task<Void, Never>?
     private var uploadedBookNoticeTask: Task<Void, Never>?
@@ -117,9 +152,28 @@ final class IllumeAppModel: NSObject, ObservableObject {
         let wordMarkers: [NarrationWordMarker]
     }
 
+    private struct NarrationAudioCacheKey: Hashable, Sendable {
+        let bookID: UUID?
+        let firstParagraphID: String
+        let startParagraphIndex: Int
+        let startWordStart: Int
+        let endParagraphIndex: Int
+        let continuationParagraphIndex: Int?
+        let continuationWordStart: Int?
+        let voiceID: String
+        let rateKey: Int
+        let text: String
+    }
+
     private struct NarrationPreparedAudio: Sendable {
         let chunk: NarrationChunk
         let audio: KokoroRenderedAudio
+        let cacheKey: NarrationAudioCacheKey?
+    }
+
+    private struct PendingReaderImageGeneration: Sendable {
+        let chunk: ReaderImageRequestChunk
+        let style: ReaderImageStyle
     }
 
     var isSignedIn: Bool {
@@ -131,7 +185,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
     }
 
     var isPro: Bool {
-        BillingAccess.hasProAccess(profile: billingProfile)
+        BillingAccess.hasProAccess(profile: billingProfile) || billing.hasActiveProEntitlement
     }
 
     var storageUsed: Int {
@@ -232,6 +286,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
         books = []
         activeBook = nil
         activeBookRow = nil
+        isReaderPresented = false
         openingBook = nil
         closingBook = nil
         bookTransitionSourceFrame = nil
@@ -242,8 +297,10 @@ final class IllumeAppModel: NSObject, ObservableObject {
         readerImageChunkIndex = nil
         readerImageStyle = nil
         readerImagePhase = .idle
+        proUpgradePrompt = nil
         pendingBookImports = []
         uploadedBookNotice = nil
+        importingClassicID = nil
         uploadedBookNoticeTask?.cancel()
         uploadedBookNoticeTask = nil
     }
@@ -262,6 +319,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
         }
         notice = ""
         do {
+            await billing.refreshCurrentEntitlements(accessToken: accessToken)
             async let library = backend.loadLibrary(accessToken: accessToken)
             async let profile = backend.loadBillingProfile(accessToken: accessToken)
             async let usage = backend.loadReaderImageUsage(accessToken: accessToken)
@@ -270,7 +328,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
             let loadedProfile = try? await profile
             let loadedUsage = try? await usage
-            let loadedIsPro = BillingAccess.hasProAccess(profile: loadedProfile)
+            let loadedIsPro = BillingAccess.hasProAccess(profile: loadedProfile) || billing.hasActiveProEntitlement
             let imageRows = try? await backend.countReaderImages(
                 accessToken: accessToken,
                 since: loadedIsPro ? Self.currentMonthStartUTC() : nil
@@ -301,91 +359,182 @@ final class IllumeAppModel: NSObject, ObservableObject {
         await runImporting { [self] in
             let data = try Data(contentsOf: url)
             let type = documentType(for: url)
-            guard storageUsed + data.count <= storageQuotaBytes else {
-                throw NSError(domain: "Illume", code: 413, userInfo: [NSLocalizedDescriptionKey: "This upload would exceed your library storage limit."])
-            }
-
-            updatePendingImport(id: pendingImportID, progress: 12)
-            let parsed = try DocumentParser.parse(data: data, fileName: url.lastPathComponent, type: type)
-            updatePendingImport(
-                id: pendingImportID,
-                author: parsed.book.author,
-                coverUrl: parsed.coverDataURL,
-                progress: 42,
-                statusText: "Uploading",
-                title: parsed.book.title
+            try await importDocumentData(
+                data,
+                fileName: url.lastPathComponent,
+                type: type,
+                pendingImportID: pendingImportID,
+                session: session,
+                parseProgress: 12
             )
-            let bookId = UUID()
-            let storagePath = StoragePath.documentPath(
-                userId: session.user.id,
-                bookId: bookId,
-                originalFileName: url.lastPathComponent,
-                type: type
-            )
-            let mimeType = type == .pdf ? "application/pdf" : "application/epub+zip"
-            updatePendingImport(id: pendingImportID, progress: 68)
-            try await backend.uploadDocument(data: data, storagePath: storagePath, mimeType: mimeType, accessToken: session.accessToken)
-            updatePendingImport(id: pendingImportID, progress: 82, statusText: "Generating visuals")
-            let visualProgressTask = startPendingImportProgressAnimation(id: pendingImportID, from: 82, through: 99)
-            defer {
-                visualProgressTask.cancel()
-            }
-
-            do {
-                var importedBook = parsed.book
-                importedBook.coverUrl = parsed.coverDataURL
-                let start = Self.resolveMeaningfulStart(in: importedBook, requestedIndex: 0, savedIndex: 0, savedPage: 1)
-                let row = BookRow(
-                    id: bookId,
-                    userId: session.user.id,
-                    title: parsed.book.title,
-                    author: parsed.book.author,
-                    coverUrl: parsed.coverDataURL,
-                    documentType: type,
-                    storagePath: storagePath,
-                    fileName: url.lastPathComponent,
-                    fileSize: data.count,
-                    mimeType: mimeType,
-                    pageCount: parsed.book.pageCount,
-                    paragraphCount: parsed.book.paragraphs.count,
-                    chapterCount: parsed.book.chapters.count,
-                    processingStatus: type == .pdf ? .queued : .ready,
-                    currentIndex: start.index,
-                    currentPage: start.page,
-                    lastOpenedAt: Date()
-                )
-                let inserted = try await backend.insertBook(row, accessToken: session.accessToken)
-                updatePendingImport(id: pendingImportID, progress: 90)
-                warmKokoroTTSIfNeeded()
-                if type == .pdf {
-                    try? await backend.queuePdfProcessing(bookId: inserted.id, accessToken: session.accessToken)
-                }
-
-                if let chunk = Self.readerImageChunk(in: importedBook, currentIndex: inserted.currentIndex) {
-                    updatePendingImport(id: pendingImportID, progress: 94, statusText: "Generating visuals")
-                    do {
-                        try await preGenerateReaderImage(for: inserted, book: importedBook, chunk: chunk, accessToken: session.accessToken)
-                    } catch {
-                        print("Could not prepare the first reader image during upload: \(error)")
-                    }
-                }
-
-                books = LibrarySort.byRecentActivity([inserted] + books)
-                updatePendingImport(id: pendingImportID, progress: 100)
-                try? await Task.sleep(for: .milliseconds(180))
-                removePendingImport(id: pendingImportID)
-                showUploadedBookNotice(inserted.title)
-            } catch {
-                try? await backend.deleteBook(bookId: bookId, accessToken: session.accessToken)
-                throw error
-            }
         }
         removePendingImport(id: pendingImportID)
+    }
+
+    @discardableResult
+    func addClassicToLibrary(_ classic: ClassicBook) async -> BookRow? {
+        guard let session, importingClassicID == nil else { return nil }
+        stopSpeaking()
+        notice = ""
+        clearUploadedBookNotice()
+        importingClassicID = classic.id
+        var importedRow: BookRow?
+
+        let pendingImportID = "classic-\(classic.id)-\(Int(Date().timeIntervalSince1970))"
+        addPendingImport(id: pendingImportID, fileName: classic.fileName)
+        updatePendingImport(
+            id: pendingImportID,
+            author: classic.author,
+            progress: 6,
+            statusText: "Downloading",
+            title: classic.title
+        )
+
+        await runImporting { [self] in
+            updatePendingImport(id: pendingImportID, progress: 16)
+            let (data, response) = try await URLSession.shared.data(from: classic.standardEbooksDownloadUrl)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                throw NSError(domain: "Illume", code: 502, userInfo: [NSLocalizedDescriptionKey: "Could not download ebook from Standard Ebooks."])
+            }
+            updatePendingImport(id: pendingImportID, progress: 34)
+            guard Self.dataLooksLikeEpub(data) else {
+                throw NSError(domain: "Illume", code: 415, userInfo: [NSLocalizedDescriptionKey: "The download for \(classic.title) did not return an EPUB. Please try again in a moment."])
+            }
+            importedRow = try await importDocumentData(
+                data,
+                fileName: classic.fileName,
+                type: .epub,
+                pendingImportID: pendingImportID,
+                session: session,
+                parseProgress: 38
+            )
+        }
+        removePendingImport(id: pendingImportID)
+        importingClassicID = nil
+        return importedRow
+    }
+
+    func readClassicNow(_ classic: ClassicBook) async {
+        if let matchingBook = bookMatchingClassic(classic) {
+            await open(matchingBook)
+            return
+        }
+
+        guard let importedRow = await addClassicToLibrary(classic) else { return }
+        await open(importedRow)
+    }
+
+    func bookMatchingClassic(_ classic: ClassicBook) -> BookRow? {
+        let targetTitle = Self.normalizedTitle(classic.title)
+        return books.first { Self.normalizedTitle($0.title) == targetTitle }
+    }
+
+    func hasImportedClassic(_ classic: ClassicBook) -> Bool {
+        books.contains { book in
+            book.documentType == .epub &&
+            book.fileName == classic.fileName &&
+            Self.normalizedTitle(book.title) == Self.normalizedTitle(classic.title)
+        }
+    }
+
+    func availableClassics(from catalog: [ClassicBook] = ClassicCatalog.books) -> [ClassicBook] {
+        catalog.filter { !hasImportedClassic($0) }
+    }
+
+    @discardableResult
+    private func importDocumentData(
+        _ data: Data,
+        fileName: String,
+        type: DocumentType,
+        pendingImportID: String,
+        session: AuthSession,
+        parseProgress: Int
+    ) async throws -> BookRow {
+        guard storageUsed + data.count <= storageQuotaBytes else {
+            throw NSError(domain: "Illume", code: 413, userInfo: [NSLocalizedDescriptionKey: "This upload would exceed your library storage limit."])
+        }
+
+        updatePendingImport(id: pendingImportID, progress: parseProgress)
+        let parsed = try DocumentParser.parse(data: data, fileName: fileName, type: type)
+        updatePendingImport(
+            id: pendingImportID,
+            author: parsed.book.author,
+            coverUrl: parsed.coverDataURL,
+            progress: 42,
+            statusText: "Uploading",
+            title: parsed.book.title
+        )
+        let bookId = UUID()
+        let storagePath = StoragePath.documentPath(
+            userId: session.user.id,
+            bookId: bookId,
+            originalFileName: fileName,
+            type: type
+        )
+        let mimeType = type == .pdf ? "application/pdf" : "application/epub+zip"
+        updatePendingImport(id: pendingImportID, progress: 68)
+        try await backend.uploadDocument(data: data, storagePath: storagePath, mimeType: mimeType, accessToken: session.accessToken)
+        updatePendingImport(id: pendingImportID, progress: 82, statusText: "Generating visuals")
+        let visualProgressTask = startPendingImportProgressAnimation(id: pendingImportID, from: 82, through: 99)
+        defer {
+            visualProgressTask.cancel()
+        }
+
+        do {
+            var importedBook = parsed.book
+            importedBook.coverUrl = parsed.coverDataURL
+            let start = Self.resolveMeaningfulStart(in: importedBook, requestedIndex: 0, savedIndex: 0, savedPage: 1)
+            let row = BookRow(
+                id: bookId,
+                userId: session.user.id,
+                title: parsed.book.title,
+                author: parsed.book.author,
+                coverUrl: parsed.coverDataURL,
+                documentType: type,
+                storagePath: storagePath,
+                fileName: fileName,
+                fileSize: data.count,
+                mimeType: mimeType,
+                pageCount: parsed.book.pageCount,
+                paragraphCount: parsed.book.paragraphs.count,
+                chapterCount: parsed.book.chapters.count,
+                processingStatus: type == .pdf ? .queued : .ready,
+                currentIndex: start.index,
+                currentPage: start.page,
+                lastOpenedAt: Date()
+            )
+            let inserted = try await backend.insertBook(row, accessToken: session.accessToken)
+            updatePendingImport(id: pendingImportID, progress: 90)
+            warmKokoroTTSIfNeeded()
+            if type == .pdf {
+                try? await backend.queuePdfProcessing(bookId: inserted.id, accessToken: session.accessToken)
+            }
+
+            if let chunk = Self.readerImageChunk(in: importedBook, currentIndex: inserted.currentIndex) {
+                updatePendingImport(id: pendingImportID, progress: 94, statusText: "Generating visuals")
+                do {
+                    try await preGenerateReaderImage(for: inserted, book: importedBook, chunk: chunk, accessToken: session.accessToken)
+                } catch {
+                    print("Could not prepare the first reader image during upload: \(error)")
+                }
+            }
+
+            books = LibrarySort.byRecentActivity([inserted] + books)
+            updatePendingImport(id: pendingImportID, progress: 100)
+            try? await Task.sleep(for: .milliseconds(180))
+            removePendingImport(id: pendingImportID)
+            showUploadedBookNotice(inserted.title)
+            return inserted
+        } catch {
+            try? await backend.deleteBook(bookId: bookId, accessToken: session.accessToken)
+            throw error
+        }
     }
 
     func open(_ row: BookRow, sourceFrame: CGRect? = nil) async {
         guard let accessToken = session?.accessToken else { return }
         bookTransitionSourceFrame = sourceFrame
+        stopSpeaking()
         await runOpening(row) { [self] in
             let data = try await backend.downloadDocument(storagePath: row.storagePath, accessToken: accessToken)
             let pages = row.documentType == .pdf ? try await backend.loadBookPages(bookId: row.id, accessToken: accessToken) : []
@@ -418,9 +567,19 @@ final class IllumeAppModel: NSObject, ObservableObject {
             readerImageChunkIndex = nil
             readerImageStyle = nil
             readerImagePhase = .idle
-            await prepareReaderImageForOpening(book: parsed, row: openingRow, accessToken: accessToken)
+            let pendingImageGeneration = await prepareReaderImageForOpening(book: parsed, row: openingRow, accessToken: accessToken)
             activeBookRow = openingRow
             activeBook = parsed
+            isReaderPresented = true
+            if let pendingImageGeneration {
+                startReaderImageGeneration(
+                    book: parsed,
+                    row: openingRow,
+                    chunk: pendingImageGeneration.chunk,
+                    accessToken: accessToken,
+                    style: pendingImageGeneration.style
+                )
+            }
             openingBook = nil
             warmKokoroTTSIfNeeded()
             speak(book: parsed, paragraphIndex: start.index)
@@ -440,12 +599,10 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
     func closeReader() {
         let row = activeBookRow
-        stopSpeaking()
         readerImageGenerationTask?.cancel()
         readerImageGenerationTask = nil
         closingBook = row
-        activeBook = nil
-        activeBookRow = nil
+        isReaderPresented = false
         openingBook = nil
         readerImageResponse = nil
         readerImageChunkIndex = nil
@@ -484,13 +641,17 @@ final class IllumeAppModel: NSObject, ObservableObject {
         isLoading = true
         notice = ""
         withAnimation(IllumeTheme.blurLoadIn) {
-            deletingBookIDs.insert(row.id)
+            _ = deletingBookIDs.insert(row.id)
         }
 
         do {
             try await backend.deleteBook(bookId: row.id, accessToken: accessToken)
             if activeBookRow?.id == row.id {
                 closeReader()
+                stopSpeaking()
+                activeBook = nil
+                activeBookRow = nil
+                isReaderPresented = false
             }
             try? await Task.sleep(for: .milliseconds(220))
             withAnimation(IllumeTheme.blurLoadIn) {
@@ -499,7 +660,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
             }
         } catch {
             withAnimation(IllumeTheme.blurLoadIn) {
-                deletingBookIDs.remove(row.id)
+                _ = deletingBookIDs.remove(row.id)
             }
             notice = error.localizedDescription
         }
@@ -548,7 +709,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
         speak(book: book, paragraphIndex: paragraphIndex)
     }
 
-    func toggleNarration(for book: ReaderBook, from index: Int) {
+    func toggleNarration(for book: ReaderBook, from index: Int, wordStart: Int = 0) {
         if narration.isPreparing {
             stopSpeaking()
             return
@@ -557,15 +718,46 @@ final class IllumeAppModel: NSObject, ObservableObject {
             pauseNarration()
             return
         }
-        if audioPlayer != nil {
+        if audioPlayer != nil || streamingAudioPlayer != nil {
+            guard narrationParagraphIndex == index else {
+                stopSpeaking()
+                speak(book: book, paragraphIndex: index, wordStart: wordStart)
+                return
+            }
             resumeNarration()
             return
         }
         if narrationParagraphIndex != nil {
-            stopSpeaking()
+            if narrationParagraphIndex == index {
+                stopSpeaking()
+            } else {
+                stopSpeaking()
+                speak(book: book, paragraphIndex: index, wordStart: wordStart)
+            }
             return
         }
-        speak(book: book, paragraphIndex: index, wordStart: 0)
+        speak(book: book, paragraphIndex: index, wordStart: wordStart)
+    }
+
+    func narrationControlIndex(in book: ReaderBook) -> Int {
+        if let narrationParagraphIndex,
+           book.paragraphs.indices.contains(narrationParagraphIndex) {
+            return narrationParagraphIndex
+        }
+
+        if let activeBookRow,
+           book.paragraphs.indices.contains(activeBookRow.currentIndex) {
+            return activeBookRow.currentIndex
+        }
+
+        return book.paragraphs.isEmpty ? 0 : min(max(activeBookRow?.currentIndex ?? 0, 0), book.paragraphs.count - 1)
+    }
+
+    func moveNarrationControl(to index: Int, in book: ReaderBook) {
+        guard book.paragraphs.indices.contains(index) else { return }
+        let paragraph = book.paragraphs[index]
+        saveProgress(index: index, page: paragraph.pageNumber ?? 1)
+        speak(book: book, paragraphIndex: index)
     }
 
     func setNarrationRate(_ value: Double) {
@@ -582,7 +774,12 @@ final class IllumeAppModel: NSObject, ObservableObject {
         guard readerSettings.narrationVoice != voice.id else { return }
 
         readerSettings.narrationVoice = voice.id
+        narrationTask?.cancel()
+        narrationTask = nil
         clearPrefetchedNarration()
+        stopPlayback(keepNarrationState: false)
+        clearNarrationAudioCache()
+        resetNarrationTracking()
     }
 
     func previewNarrationVoice(_ voice: KokoroNarrationVoice, in book: ReaderBook, from paragraphIndex: Int) {
@@ -603,30 +800,37 @@ final class IllumeAppModel: NSObject, ObservableObject {
         }
     }
 
-    private func pauseNarration() {
-        guard audioPlayer != nil else {
+    func pauseNarration() {
+        guard audioPlayer != nil || streamingAudioPlayer != nil else {
             stopSpeaking()
             return
         }
         audioPlayer?.pause()
+        streamingAudioPlayer?.pause()
+        updateNarrationHighlight(at: currentNarrationPlaybackSeconds)
         narration.isPlaying = false
         narration.isPreparing = false
         updateNowPlayingPlaybackState(isPlaying: false)
     }
 
     private func resumeNarration() {
-        guard let player = audioPlayer else { return }
+        guard audioPlayer != nil || streamingAudioPlayer != nil else { return }
         #if os(iOS)
         try? AVAudioSession.sharedInstance().setActive(true)
         #endif
         narration.isPlaying = true
         narration.isPreparing = false
         updateNowPlayingPlaybackState(isPlaying: true)
-        player.playImmediately(atRate: currentNarrationPlaybackRate)
+        if let player = audioPlayer {
+            player.playImmediately(atRate: currentNarrationPlaybackRate)
+        } else {
+            streamingAudioPlayer?.resume()
+        }
     }
 
     func speak(book: ReaderBook, paragraphIndex: Int, wordStart: Int = 0) {
         narrationTask?.cancel()
+        stopPlayback(keepNarrationState: false)
         narrationTask = Task {
             await speakKokoro(book: book, paragraphIndex: paragraphIndex, wordStart: wordStart)
         }
@@ -636,8 +840,9 @@ final class IllumeAppModel: NSObject, ObservableObject {
         guard kokoroWarmupTask == nil,
               let modelDirectory = Self.kokoroModelDirectoryURL else { return }
 
-        kokoroWarmupTask = Task(priority: .utility) { [kokoroTTS] in
+        kokoroWarmupTask = Task(priority: .utility) { [weak self, kokoroTTS] in
             try? await kokoroTTS.prepare(modelDirectory: modelDirectory)
+            await self?.prepareStoredNarrationVoicePreviews(modelDirectory: modelDirectory)
         }
     }
 
@@ -658,10 +863,42 @@ final class IllumeAppModel: NSObject, ObservableObject {
         }
 
         do {
-            let renderedAudio = try await renderNarrationAudio(
+            let key = narrationAudioCacheKey(
                 for: chunk,
+                bookID: activeBookRow?.id,
+                voiceID: narrationVoiceSnapshot.id,
+                rate: narrationRateSnapshot
+            )
+            if let prepared = await preparedNarrationAudioIfAvailable(for: key) {
+                guard (narration.isPlaying || narration.isPreparing),
+                      narrationParagraphIndex == chunk.startParagraphIndex,
+                      narrationChunkEndParagraphIndex == chunk.endParagraphIndex,
+                      narrationContinuationParagraphIndex == chunk.continuationParagraphIndex,
+                      narrationContinuationWordStart == chunk.continuationWordStart,
+                      !Task.isCancelled else {
+                    discardPreparedNarration(prepared)
+                    return
+                }
+                guard FileManager.default.fileExists(atPath: prepared.audio.url.path) else {
+                    throw NarrationPlaybackError.emptyAudio
+                }
+                applyNarrationState(for: prepared.chunk, in: book, isPlaying: false, isPreparing: true)
+                try playNarrationAudio(at: prepared.audio.url, cacheKey: prepared.cacheKey)
+                prefetchNarrationChunks(
+                    in: book,
+                    after: prepared.chunk,
+                    modelDirectory: modelDirectory,
+                    voice: narrationVoiceSnapshot,
+                    rate: narrationRateSnapshot
+                )
+                return
+            }
+
+            let prepared = try await preparedNarrationAudio(
+                for: chunk,
+                bookID: activeBookRow?.id,
                 modelDirectory: modelDirectory,
-                speakerID: narrationVoiceSnapshot.speakerID,
+                voice: narrationVoiceSnapshot,
                 rate: narrationRateSnapshot
             )
             guard (narration.isPlaying || narration.isPreparing),
@@ -670,22 +907,10 @@ final class IllumeAppModel: NSObject, ObservableObject {
                   narrationContinuationParagraphIndex == chunk.continuationParagraphIndex,
                   narrationContinuationWordStart == chunk.continuationWordStart,
                   !Task.isCancelled else {
-                try? FileManager.default.removeItem(at: renderedAudio.url)
+                discardPreparedNarration(prepared)
                 return
             }
-            guard FileManager.default.fileExists(atPath: renderedAudio.url.path) else {
-                throw NarrationPlaybackError.emptyAudio
-            }
-            let alignedChunk = Self.narrationChunk(chunk, alignedToAudioDuration: renderedAudio.duration)
-            applyNarrationState(for: alignedChunk, in: book)
-            try playNarrationAudio(at: renderedAudio.url)
-            prefetchNextNarrationChunk(
-                in: book,
-                after: alignedChunk,
-                modelDirectory: modelDirectory,
-                speakerID: narrationVoiceSnapshot.speakerID,
-                rate: narrationRateSnapshot
-            )
+            playPreparedNarration(prepared, in: book)
         } catch {
             guard !Task.isCancelled else { return }
             stopSpeaking()
@@ -701,6 +926,10 @@ final class IllumeAppModel: NSObject, ObservableObject {
         stopVoicePreview()
         clearPrefetchedNarration()
         stopPlayback(keepNarrationState: false)
+        resetNarrationTracking()
+    }
+
+    private func resetNarrationTracking() {
         narrationParagraphIndex = nil
         narrationChunkEndParagraphIndex = nil
         narrationContinuationParagraphIndex = nil
@@ -711,7 +940,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
         narration = NarrationState()
     }
 
-    private func playNarrationAudio(at url: URL) throws {
+    private func playNarrationAudio(at url: URL, cacheKey: NarrationAudioCacheKey?) throws {
         #if os(iOS)
         try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
         try AVAudioSession.sharedInstance().setActive(true)
@@ -722,14 +951,17 @@ final class IllumeAppModel: NSObject, ObservableObject {
         player.volume = 1
         audioPlayer = player
         narrationAudioURL = url
+        narrationCurrentAudioCacheKey = cacheKey
         configureRemoteNarrationCommandsIfNeeded()
-        updateNowPlayingInfo(duration: item.asset.duration.seconds)
-        audioStatusObserver = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+        updateNowPlayingInfo(duration: nil)
+        audioStatusObserver = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
             Task { @MainActor in
                 guard let self else { return }
+                guard self.audioPlayer === player else { return }
                 switch item.status {
                 case .readyToPlay:
                     self.updateNowPlayingInfo(duration: item.duration.seconds)
+                    self.startPreparedNarrationPlayback(player)
                     self.installNarrationTimeObserver(for: player)
                 case .failed:
                     let message = item.error?.localizedDescription ?? "Narration audio could not load."
@@ -763,12 +995,55 @@ final class IllumeAppModel: NSObject, ObservableObject {
             }
         }
 
+        narration.isPlaying = false
+        narration.isPreparing = true
+        updateNowPlayingPlaybackState(isPlaying: false)
+    }
+
+    private func playStreamingNarrationAudio(sampleRate: Int32, cacheKey: NarrationAudioCacheKey?) throws {
+        #if os(iOS)
+        try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+        try AVAudioSession.sharedInstance().setActive(true)
+        #endif
+
+        let player = try NarrationStreamingAudioPlayer(
+            sampleRate: Double(sampleRate),
+            rate: currentNarrationPlaybackRate
+        ) { [weak self] in
+            Task { @MainActor in
+                self?.finishCurrentNarrationItem()
+            }
+        }
+        streamingAudioPlayer = player
+        narrationCurrentAudioCacheKey = cacheKey
+        configureRemoteNarrationCommandsIfNeeded()
+        updateNowPlayingInfo(duration: nil)
+        narration.isPlaying = false
+        narration.isPreparing = true
+        updateNowPlayingPlaybackState(isPlaying: false)
+    }
+
+    private func startPreparedNarrationPlayback(_ player: AVPlayer) {
+        guard audioPlayer === player,
+              !narration.isPlaying else { return }
+
         narration.isPlaying = true
         narration.isPreparing = false
         updateNarrationHighlight(at: 0)
-        installNarrationTimeObserver(for: player)
         updateNowPlayingPlaybackState(isPlaying: true)
         player.playImmediately(atRate: currentNarrationPlaybackRate)
+    }
+
+    private func startStreamingNarrationPlayback(_ player: NarrationStreamingAudioPlayer) {
+        guard streamingAudioPlayer === player,
+              !narration.isPlaying else { return }
+
+        narration.isPlaying = true
+        narration.isPreparing = false
+        updateNarrationHighlight(at: 0)
+        installStreamingNarrationTimeObserver()
+        updateNowPlayingPlaybackState(isPlaying: true)
+        player.resume()
     }
 
     private func playNarrationVoicePreview(
@@ -777,19 +1052,19 @@ final class IllumeAppModel: NSObject, ObservableObject {
         paragraphIndex: Int,
         rate: Double
     ) async {
-        guard let chunk = Self.narrationVoicePreviewChunk(in: book, from: paragraphIndex),
-              let modelDirectory = Self.kokoroModelDirectoryURL else { return }
+        _ = book
+        _ = paragraphIndex
+        _ = rate
+        guard let modelDirectory = Self.kokoroModelDirectoryURL else { return }
 
         do {
-            let renderedAudio = try await renderNarrationAudio(
-                for: chunk,
+            let renderedAudio = try await storedNarrationVoicePreviewAudio(
+                for: voice,
                 modelDirectory: modelDirectory,
-                speakerID: voice.speakerID,
-                rate: rate
+                createIfMissing: true
             )
             guard !Task.isCancelled,
                   KokoroNarrationVoice.availableVoice(for: readerSettings.narrationVoice) == voice else {
-                try? FileManager.default.removeItem(at: renderedAudio.url)
                 return
             }
             try playVoicePreviewAudio(at: renderedAudio.url)
@@ -850,9 +1125,119 @@ final class IllumeAppModel: NSObject, ObservableObject {
         voicePreviewPlayer?.pause()
         voicePreviewPlayer = nil
         if let voicePreviewAudioURL {
-            try? FileManager.default.removeItem(at: voicePreviewAudioURL)
+            if !isStoredVoicePreviewURL(voicePreviewAudioURL) {
+                try? FileManager.default.removeItem(at: voicePreviewAudioURL)
+            }
             self.voicePreviewAudioURL = nil
         }
+    }
+
+    private func prepareStoredNarrationVoicePreviews(modelDirectory: URL) async {
+        for voice in KokoroNarrationVoice.allCases {
+            guard !Task.isCancelled else { return }
+            _ = try? await storedNarrationVoicePreviewAudio(
+                for: voice,
+                modelDirectory: modelDirectory,
+                createIfMissing: true
+            )
+        }
+    }
+
+    private func storedNarrationVoicePreviewAudio(
+        for voice: KokoroNarrationVoice,
+        modelDirectory: URL,
+        createIfMissing: Bool
+    ) async throws -> KokoroRenderedAudio {
+        let url = try Self.storedNarrationVoicePreviewURL(for: voice)
+        if FileManager.default.fileExists(atPath: url.path) {
+            do {
+                storedVoicePreviewURLs[voice.id] = url
+                return KokoroRenderedAudio(url: url, duration: try Self.audioDuration(at: url))
+            } catch {
+                storedVoicePreviewURLs[voice.id] = nil
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+
+        if let task = voicePreviewPreparationTasks[voice.id],
+           let renderedAudio = await task.value {
+            return renderedAudio
+        }
+
+        guard createIfMissing else {
+            throw NarrationPlaybackError.emptyAudio
+        }
+
+        let task = Task<KokoroRenderedAudio?, Never>(priority: .utility) { [kokoroTTS] in
+            do {
+                let renderedAudio = try await withThrowingTaskGroup(of: KokoroRenderedAudio.self) { group in
+                    group.addTask {
+                        try await kokoroTTS.render(
+                            text: Self.narrationTextForSpeech(narrationVoicePreviewText),
+                            modelDirectory: modelDirectory,
+                            speakerID: voice.speakerID,
+                            rate: narrationVoicePreviewRate
+                        )
+                    }
+                    group.addTask {
+                        try await Task.sleep(for: .seconds(60))
+                        throw NarrationPlaybackError.kokoroTimedOut
+                    }
+                    guard let renderedAudio = try await group.next() else {
+                        throw NarrationPlaybackError.emptyAudio
+                    }
+                    group.cancelAll()
+                    return renderedAudio
+                }
+                try Self.storeNarrationVoicePreview(renderedAudio, at: url)
+                return KokoroRenderedAudio(url: url, duration: renderedAudio.duration)
+            } catch {
+                return nil
+            }
+        }
+        voicePreviewPreparationTasks[voice.id] = task
+
+        guard let renderedAudio = await task.value else {
+            voicePreviewPreparationTasks[voice.id] = nil
+            throw NarrationPlaybackError.emptyAudio
+        }
+        voicePreviewPreparationTasks[voice.id] = nil
+        storedVoicePreviewURLs[voice.id] = renderedAudio.url
+        return renderedAudio
+    }
+
+    nonisolated private static func storedNarrationVoicePreviewURL(for voice: KokoroNarrationVoice) throws -> URL {
+        let directory = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        .appendingPathComponent("Illume", isDirectory: true)
+        .appendingPathComponent("VoicePreviews", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("\(voice.id)-alice-bank-v1").appendingPathExtension("wav")
+    }
+
+    nonisolated private static func storeNarrationVoicePreview(_ renderedAudio: KokoroRenderedAudio, at destinationURL: URL) throws {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+        try fileManager.moveItem(at: renderedAudio.url, to: destinationURL)
+    }
+
+    nonisolated private static func audioDuration(at url: URL) throws -> TimeInterval {
+        let file = try AVAudioFile(forReading: url)
+        guard file.fileFormat.sampleRate > 0 else {
+            throw NarrationPlaybackError.emptyAudio
+        }
+        return Double(file.length) / file.fileFormat.sampleRate
+    }
+
+    private func isStoredVoicePreviewURL(_ url: URL) -> Bool {
+        storedVoicePreviewURLs.values.contains(url)
     }
 
     private var currentNarrationPlaybackRate: Float {
@@ -863,8 +1248,9 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
     private func applyCurrentNarrationPlaybackRate() {
         guard narration.isPlaying,
-              let audioPlayer else { return }
-        audioPlayer.rate = currentNarrationPlaybackRate
+              audioPlayer != nil || streamingAudioPlayer != nil else { return }
+        audioPlayer?.rate = currentNarrationPlaybackRate
+        streamingAudioPlayer?.rate = currentNarrationPlaybackRate
         updateNowPlayingPlaybackState(isPlaying: true)
     }
 
@@ -874,10 +1260,11 @@ final class IllumeAppModel: NSObject, ObservableObject {
         speakerID: Int32,
         rate: Double
     ) async throws -> KokoroRenderedAudio {
-        try await withThrowingTaskGroup(of: KokoroRenderedAudio.self) { group in
+        let speechText = Self.narrationTextForSpeech(chunk.text)
+        return try await withThrowingTaskGroup(of: KokoroRenderedAudio.self) { group in
             group.addTask { [kokoroTTS] in
                 try await kokoroTTS.render(
-                    text: chunk.text,
+                    text: speechText,
                     modelDirectory: modelDirectory,
                     speakerID: speakerID,
                     rate: rate
@@ -895,59 +1282,315 @@ final class IllumeAppModel: NSObject, ObservableObject {
         }
     }
 
-    private func prefetchNextNarrationChunk(
+    private func streamAndPlayNarration(
+        for chunk: NarrationChunk,
+        cacheKey: NarrationAudioCacheKey,
+        book: ReaderBook,
+        modelDirectory: URL,
+        voice: KokoroNarrationVoice,
+        rate: Double
+    ) async throws {
+        let speechText = Self.narrationTextForSpeech(chunk.text)
+        let stream = try await kokoroTTS.stream(
+            text: speechText,
+            modelDirectory: modelDirectory,
+            speakerID: voice.speakerID,
+            rate: rate
+        )
+
+        guard (narration.isPlaying || narration.isPreparing),
+              narrationParagraphIndex == chunk.startParagraphIndex,
+              narrationChunkEndParagraphIndex == chunk.endParagraphIndex,
+              narrationContinuationParagraphIndex == chunk.continuationParagraphIndex,
+              narrationContinuationWordStart == chunk.continuationWordStart,
+              !Task.isCancelled else {
+            stream.cancel()
+            stream.renderedAudio.cancel()
+            return
+        }
+
+        applyNarrationState(for: chunk, in: book, isPlaying: false, isPreparing: true)
+        try playStreamingNarrationAudio(sampleRate: stream.sampleRate, cacheKey: cacheKey)
+        prefetchNarrationChunks(
+            in: book,
+            after: chunk,
+            modelDirectory: modelDirectory,
+            voice: voice,
+            rate: rate
+        )
+
+        do {
+            for try await audioChunk in stream.chunks {
+                guard !Task.isCancelled,
+                      narrationParagraphIndex == chunk.startParagraphIndex,
+                      narrationChunkEndParagraphIndex == chunk.endParagraphIndex,
+                      narrationContinuationParagraphIndex == chunk.continuationParagraphIndex,
+                      narrationContinuationWordStart == chunk.continuationWordStart else {
+                    stream.cancel()
+                    stream.renderedAudio.cancel()
+                    throw CancellationError()
+                }
+                try streamingAudioPlayer?.schedule(samples: audioChunk.samples)
+                if !audioChunk.samples.isEmpty,
+                   let player = streamingAudioPlayer {
+                    startStreamingNarrationPlayback(player)
+                }
+            }
+
+            let renderedAudio = try await stream.renderedAudio.value
+            let alignedChunk = Self.narrationChunk(chunk, alignedToAudioDuration: renderedAudio.duration)
+            let prepared = NarrationPreparedAudio(chunk: alignedChunk, audio: renderedAudio, cacheKey: cacheKey)
+            storePreparedNarration(prepared, for: cacheKey)
+            if narrationParagraphIndex == chunk.startParagraphIndex,
+               narrationChunkEndParagraphIndex == chunk.endParagraphIndex,
+               narrationContinuationParagraphIndex == chunk.continuationParagraphIndex,
+               narrationContinuationWordStart == chunk.continuationWordStart {
+                applyNarrationState(
+                    for: alignedChunk,
+                    in: book,
+                    isPlaying: narration.isPlaying,
+                    isPreparing: narration.isPreparing
+                )
+                updateNowPlayingInfo(duration: renderedAudio.duration)
+                streamingAudioPlayer?.markStreamFinished()
+            } else {
+                discardPreparedNarration(prepared)
+            }
+        } catch {
+            stream.cancel()
+            stream.renderedAudio.cancel()
+            streamingAudioPlayer?.stop()
+            throw error
+        }
+    }
+
+    private func preparedNarrationAudio(
+        for chunk: NarrationChunk,
+        bookID: UUID?,
+        modelDirectory: URL,
+        voice: KokoroNarrationVoice,
+        rate: Double
+    ) async throws -> NarrationPreparedAudio {
+        let key = narrationAudioCacheKey(for: chunk, bookID: bookID, voiceID: voice.id, rate: rate)
+        if let cached = cachedPreparedNarration(for: key) {
+            return cached
+        }
+
+        if let task = narrationPrefetchTasks.removeValue(forKey: key),
+           let prefetched = await task.value,
+           FileManager.default.fileExists(atPath: prefetched.audio.url.path) {
+            storePreparedNarration(prefetched, for: key)
+            return prefetched
+        }
+
+        let renderedAudio = try await renderNarrationAudio(
+            for: chunk,
+            modelDirectory: modelDirectory,
+            speakerID: voice.speakerID,
+            rate: rate
+        )
+        let alignedChunk = Self.narrationChunk(chunk, alignedToAudioDuration: renderedAudio.duration)
+        let prepared = NarrationPreparedAudio(chunk: alignedChunk, audio: renderedAudio, cacheKey: key)
+        storePreparedNarration(prepared, for: key)
+        return prepared
+    }
+
+    private func preparedNarrationAudioIfAvailable(for key: NarrationAudioCacheKey) async -> NarrationPreparedAudio? {
+        if let cached = cachedPreparedNarration(for: key) {
+            return cached
+        }
+
+        guard let task = narrationPrefetchTasks.removeValue(forKey: key),
+              let prefetched = await task.value,
+              FileManager.default.fileExists(atPath: prefetched.audio.url.path) else {
+            return nil
+        }
+        storePreparedNarration(prefetched, for: key)
+        return prefetched
+    }
+
+    private func prefetchNarrationChunks(
         in book: ReaderBook,
         after chunk: NarrationChunk,
         modelDirectory: URL,
-        speakerID: Int32,
+        voice: KokoroNarrationVoice,
         rate: Double
     ) {
-        clearPrefetchedNarration()
-        guard let start = Self.nextNarrationStart(in: book, after: chunk),
-              let nextChunk = Self.narrationChunk(in: book, from: start.paragraphIndex, wordStart: start.wordStart) else { return }
-
-        narrationPrefetchTask = Task(priority: .userInitiated) { [kokoroTTS] in
-            do {
-                let renderedAudio = try await withThrowingTaskGroup(of: KokoroRenderedAudio.self) { group in
-                    group.addTask {
-                        try await kokoroTTS.render(
-                            text: nextChunk.text,
-                            modelDirectory: modelDirectory,
-                            speakerID: speakerID,
-                            rate: rate
-                        )
-                    }
-                    group.addTask {
-                        try await Task.sleep(for: .seconds(60))
-                        throw NarrationPlaybackError.kokoroTimedOut
-                    }
-                    guard let renderedAudio = try await group.next() else {
-                        throw NarrationPlaybackError.emptyAudio
-                    }
-                    group.cancelAll()
-                    return renderedAudio
+        let desired = narrationPrefetchCandidates(
+            in: book,
+            after: chunk,
+            bookID: activeBookRow?.id,
+            voiceID: voice.id,
+            rate: rate
+        )
+        let desiredKeys = Set(desired.map(\.key))
+        let stalePrefetches = narrationPrefetchTasks.filter { key, _ in !desiredKeys.contains(key) }
+        for (key, task) in stalePrefetches {
+            narrationPrefetchTasks[key] = nil
+            task.cancel()
+            Task {
+                if let prepared = await task.value {
+                    try? FileManager.default.removeItem(at: prepared.audio.url)
                 }
-                guard !Task.isCancelled else {
-                    try? FileManager.default.removeItem(at: renderedAudio.url)
+            }
+        }
+
+        for candidate in desired {
+            guard cachedPreparedNarration(for: candidate.key) == nil,
+                  narrationPrefetchTasks[candidate.key] == nil else { continue }
+
+            narrationPrefetchTasks[candidate.key] = Task(priority: .utility) { [kokoroTTS] in
+                do {
+                    let speechText = Self.narrationTextForSpeech(candidate.chunk.text)
+                    let renderedAudio = try await withThrowingTaskGroup(of: KokoroRenderedAudio.self) { group in
+                        group.addTask {
+                            try await kokoroTTS.render(
+                                text: speechText,
+                                modelDirectory: modelDirectory,
+                                speakerID: voice.speakerID,
+                                rate: rate
+                            )
+                        }
+                        group.addTask {
+                            try await Task.sleep(for: .seconds(60))
+                            throw NarrationPlaybackError.kokoroTimedOut
+                        }
+                        guard let renderedAudio = try await group.next() else {
+                            throw NarrationPlaybackError.emptyAudio
+                        }
+                        group.cancelAll()
+                        return renderedAudio
+                    }
+                    guard !Task.isCancelled else {
+                        try? FileManager.default.removeItem(at: renderedAudio.url)
+                        return nil
+                    }
+                    let alignedChunk = Self.narrationChunk(candidate.chunk, alignedToAudioDuration: renderedAudio.duration)
+                    return NarrationPreparedAudio(chunk: alignedChunk, audio: renderedAudio, cacheKey: candidate.key)
+                } catch {
                     return nil
                 }
-                let alignedChunk = Self.narrationChunk(nextChunk, alignedToAudioDuration: renderedAudio.duration)
-                return NarrationPreparedAudio(chunk: alignedChunk, audio: renderedAudio)
-            } catch {
-                return nil
             }
         }
     }
 
     private func clearPrefetchedNarration() {
-        guard let task = narrationPrefetchTask else { return }
-        narrationPrefetchTask = nil
-        task.cancel()
-        Task {
-            if let prepared = await task.value {
-                try? FileManager.default.removeItem(at: prepared.audio.url)
+        let tasks = Array(narrationPrefetchTasks.values)
+        narrationPrefetchTasks.removeAll()
+        for task in tasks {
+            task.cancel()
+            Task {
+                if let prepared = await task.value {
+                    discardPreparedNarration(prepared)
+                }
             }
         }
+    }
+
+    private func narrationAudioCacheKey(
+        for chunk: NarrationChunk,
+        bookID: UUID?,
+        voiceID: String,
+        rate: Double
+    ) -> NarrationAudioCacheKey {
+        NarrationAudioCacheKey(
+            bookID: bookID,
+            firstParagraphID: chunk.firstParagraphID,
+            startParagraphIndex: chunk.startParagraphIndex,
+            startWordStart: chunk.startWordStart,
+            endParagraphIndex: chunk.endParagraphIndex,
+            continuationParagraphIndex: chunk.continuationParagraphIndex,
+            continuationWordStart: chunk.continuationWordStart,
+            voiceID: voiceID,
+            rateKey: Int((rate * 1_000).rounded()),
+            text: chunk.text
+        )
+    }
+
+    private func narrationPrefetchCandidates(
+        in book: ReaderBook,
+        after chunk: NarrationChunk,
+        bookID: UUID?,
+        voiceID: String,
+        rate: Double
+    ) -> [(key: NarrationAudioCacheKey, chunk: NarrationChunk)] {
+        var candidates: [(key: NarrationAudioCacheKey, chunk: NarrationChunk)] = []
+        var cursor = chunk
+
+        for _ in 0..<narrationPrefetchLookahead {
+            guard let start = Self.nextNarrationStart(in: book, after: cursor),
+                  let nextChunk = Self.narrationChunk(in: book, from: start.paragraphIndex, wordStart: start.wordStart) else {
+                break
+            }
+            let key = narrationAudioCacheKey(for: nextChunk, bookID: bookID, voiceID: voiceID, rate: rate)
+            candidates.append((key: key, chunk: nextChunk))
+            cursor = nextChunk
+        }
+
+        return candidates
+    }
+
+    private func cachedPreparedNarration(for key: NarrationAudioCacheKey) -> NarrationPreparedAudio? {
+        guard let prepared = narrationAudioCache[key] else { return nil }
+        guard FileManager.default.fileExists(atPath: prepared.audio.url.path) else {
+            removeCachedNarration(for: key)
+            return nil
+        }
+
+        touchCachedNarration(for: key)
+        return prepared
+    }
+
+    private func storePreparedNarration(_ prepared: NarrationPreparedAudio, for key: NarrationAudioCacheKey) {
+        if let existing = narrationAudioCache[key],
+           existing.audio.url != prepared.audio.url,
+           narrationCurrentAudioCacheKey != key {
+            try? FileManager.default.removeItem(at: existing.audio.url)
+        }
+
+        narrationAudioCache[key] = prepared
+        touchCachedNarration(for: key)
+        trimNarrationAudioCache()
+    }
+
+    private func touchCachedNarration(for key: NarrationAudioCacheKey) {
+        narrationAudioCacheOrder.removeAll { $0 == key }
+        narrationAudioCacheOrder.append(key)
+    }
+
+    private func trimNarrationAudioCache() {
+        while narrationAudioCache.count > narrationAudioCacheLimit,
+              let key = narrationAudioCacheOrder.first(where: { $0 != narrationCurrentAudioCacheKey }) {
+            removeCachedNarration(for: key)
+        }
+    }
+
+    private func removeCachedNarration(for key: NarrationAudioCacheKey) {
+        guard narrationCurrentAudioCacheKey != key else { return }
+        narrationAudioCacheOrder.removeAll { $0 == key }
+        guard let prepared = narrationAudioCache.removeValue(forKey: key) else { return }
+        try? FileManager.default.removeItem(at: prepared.audio.url)
+    }
+
+    private func clearNarrationAudioCache() {
+        let cached = narrationAudioCache
+        narrationAudioCache.removeAll()
+        narrationAudioCacheOrder.removeAll()
+        for prepared in cached.values {
+            try? FileManager.default.removeItem(at: prepared.audio.url)
+        }
+    }
+
+    private func discardPreparedNarration(_ prepared: NarrationPreparedAudio) {
+        if let key = prepared.cacheKey,
+           narrationAudioCache[key]?.audio.url == prepared.audio.url {
+            return
+        }
+        try? FileManager.default.removeItem(at: prepared.audio.url)
+    }
+
+    private func isCachedNarrationAudioURL(_ url: URL) -> Bool {
+        narrationAudioCache.values.contains { $0.audio.url == url }
     }
 
     private func stopPlayback(keepNarrationState: Bool) {
@@ -955,6 +1598,8 @@ final class IllumeAppModel: NSObject, ObservableObject {
             audioPlayer?.removeTimeObserver(audioTimeObserver)
             self.audioTimeObserver = nil
         }
+        audioTimeTimer?.invalidate()
+        audioTimeTimer = nil
         if let audioEndObserver {
             NotificationCenter.default.removeObserver(audioEndObserver)
             self.audioEndObserver = nil
@@ -967,15 +1612,20 @@ final class IllumeAppModel: NSObject, ObservableObject {
         audioStatusObserver = nil
         audioPlayer?.pause()
         audioPlayer = nil
+        streamingAudioPlayer?.stop()
+        streamingAudioPlayer = nil
         if !keepNarrationState {
             clearNowPlayingArtwork()
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             MPNowPlayingInfoCenter.default().playbackState = .stopped
         }
         if let narrationAudioURL {
-            try? FileManager.default.removeItem(at: narrationAudioURL)
+            if !isCachedNarrationAudioURL(narrationAudioURL) {
+                try? FileManager.default.removeItem(at: narrationAudioURL)
+            }
             self.narrationAudioURL = nil
         }
+        narrationCurrentAudioCacheKey = nil
         if !keepNarrationState {
             narration = NarrationState()
         }
@@ -989,6 +1639,8 @@ final class IllumeAppModel: NSObject, ObservableObject {
             audioPlayer?.removeTimeObserver(audioTimeObserver)
             self.audioTimeObserver = nil
         }
+        audioTimeTimer?.invalidate()
+        audioTimeTimer = nil
 
         audioTimeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.025, preferredTimescale: 600),
@@ -998,6 +1650,26 @@ final class IllumeAppModel: NSObject, ObservableObject {
                 guard let self else { return }
                 self.updateNarrationHighlight(at: time.seconds + 0.025)
                 self.updateNowPlayingElapsedTime(time.seconds)
+            }
+        }
+    }
+
+    private func installStreamingNarrationTimeObserver() {
+        guard narration.isPlaying,
+              streamingAudioPlayer != nil,
+              !narrationWordMarkers.isEmpty else { return }
+
+        if let audioTimeObserver {
+            audioPlayer?.removeTimeObserver(audioTimeObserver)
+            self.audioTimeObserver = nil
+        }
+        audioTimeTimer?.invalidate()
+        audioTimeTimer = Timer.scheduledTimer(withTimeInterval: 0.025, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                let seconds = self.currentNarrationPlaybackSeconds
+                self.updateNarrationHighlight(at: seconds + 0.025)
+                self.updateNowPlayingElapsedTime(seconds)
             }
         }
     }
@@ -1055,7 +1727,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
         if let duration, duration.isFinite, duration > 0 {
             info[MPMediaItemPropertyPlaybackDuration] = duration
         }
-        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = audioPlayer?.currentTime().seconds ?? 0
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentNarrationPlaybackSeconds
         info[MPNowPlayingInfoPropertyPlaybackRate] = narration.isPlaying ? currentNarrationPlaybackRate : 0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
 
@@ -1064,7 +1736,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
     private func updateNowPlayingPlaybackState(isPlaying: Bool) {
         guard var info = MPNowPlayingInfoCenter.default().nowPlayingInfo else { return }
-        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = audioPlayer?.currentTime().seconds ?? 0
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentNarrationPlaybackSeconds
         info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? currentNarrationPlaybackRate : 0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
@@ -1076,6 +1748,13 @@ final class IllumeAppModel: NSObject, ObservableObject {
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = seconds
         info[MPNowPlayingInfoPropertyPlaybackRate] = narration.isPlaying ? currentNarrationPlaybackRate : 0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    private var currentNarrationPlaybackSeconds: Double {
+        if let audioPlayer {
+            return audioPlayer.currentTime().seconds
+        }
+        return streamingAudioPlayer?.playbackSeconds ?? 0
     }
 
     private func updateNowPlayingArtwork(from coverUrl: String?, title: String) {
@@ -1208,8 +1887,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
             return
         }
 
-        guard let player = audioPlayer else { return }
-        let currentTime = player.currentTime().seconds + 0.03
+        let currentTime = currentNarrationPlaybackSeconds + 0.03
         guard currentTime.isFinite else { return }
         let estimatedWeight = (currentTime * narrationRateSnapshot) / 0.28
         activateNarrationWord(at: Self.narrationWordIndex(in: narrationWordMarkers, at: estimatedWeight))
@@ -1231,7 +1909,9 @@ final class IllumeAppModel: NSObject, ObservableObject {
         narration = NarrationState(
             isPlaying: true,
             paragraphID: paragraph.id,
-            wordRange: marker.range
+            wordRange: marker.range,
+            sectionParagraphID: narrationCurrentChunk?.firstParagraphID,
+            sectionWordStart: narrationCurrentChunk?.startWordStart
         )
     }
 
@@ -1243,38 +1923,47 @@ final class IllumeAppModel: NSObject, ObservableObject {
             return
         }
 
-        let nextChunk = Self.narrationChunk(in: book, from: nextStart.paragraphIndex, wordStart: nextStart.wordStart)
-        if let nextChunk {
-            applyNarrationState(for: nextChunk, in: book, isPlaying: false, isPreparing: true)
+        guard let nextChunk = Self.narrationChunk(in: book, from: nextStart.paragraphIndex, wordStart: nextStart.wordStart) else {
+            speak(book: book, paragraphIndex: nextStart.paragraphIndex, wordStart: nextStart.wordStart)
+            return
         }
 
-        if let prefetchTask = narrationPrefetchTask {
+        applyNarrationState(for: nextChunk, in: book, isPlaying: false, isPreparing: true)
+        let voice = KokoroNarrationVoice.availableVoice(for: readerSettings.narrationVoice)
+        let key = narrationAudioCacheKey(
+            for: nextChunk,
+            bookID: activeBookRow?.id,
+            voiceID: voice.id,
+            rate: narrationRateSnapshot
+        )
+
+        if let cached = cachedPreparedNarration(for: key) {
+            playPreparedNarration(cached, in: book)
+        } else if let prefetchTask = narrationPrefetchTasks.removeValue(forKey: key) {
             narrationTask = Task {
                 let prepared = await prefetchTask.value
                 guard !Task.isCancelled else {
                     if let prepared {
-                        try? FileManager.default.removeItem(at: prepared.audio.url)
+                        discardPreparedNarration(prepared)
                     }
                     return
                 }
-                narrationPrefetchTask = nil
                 guard let prepared,
                       prepared.chunk.startParagraphIndex == nextStart.paragraphIndex,
                       prepared.chunk.startWordStart == nextStart.wordStart else {
                     if let prepared {
-                        try? FileManager.default.removeItem(at: prepared.audio.url)
+                        discardPreparedNarration(prepared)
                     }
-                    if nextChunk != nil {
-                        await renderAndPlayPreparedNarration(book: book, paragraphIndex: nextStart.paragraphIndex, wordStart: nextStart.wordStart)
-                    } else {
-                        await speakKokoro(book: book, paragraphIndex: nextStart.paragraphIndex, wordStart: nextStart.wordStart)
-                    }
+                    await renderAndPlayPreparedNarration(book: book, paragraphIndex: nextStart.paragraphIndex, wordStart: nextStart.wordStart)
                     return
                 }
+                storePreparedNarration(prepared, for: key)
                 playPreparedNarration(prepared, in: book)
             }
         } else {
-            speak(book: book, paragraphIndex: nextStart.paragraphIndex, wordStart: nextStart.wordStart)
+            narrationTask = Task {
+                await renderAndPlayPreparedNarration(book: book, paragraphIndex: nextStart.paragraphIndex, wordStart: nextStart.wordStart)
+            }
         }
     }
 
@@ -1296,18 +1985,18 @@ final class IllumeAppModel: NSObject, ObservableObject {
         }
 
         do {
-            let renderedAudio = try await renderNarrationAudio(
+            let prepared = try await preparedNarrationAudio(
                 for: chunk,
+                bookID: activeBookRow?.id,
                 modelDirectory: modelDirectory,
-                speakerID: narrationVoiceSnapshot.speakerID,
+                voice: narrationVoiceSnapshot,
                 rate: narrationRateSnapshot
             )
             guard !Task.isCancelled else {
-                try? FileManager.default.removeItem(at: renderedAudio.url)
+                discardPreparedNarration(prepared)
                 return
             }
-            let alignedChunk = Self.narrationChunk(chunk, alignedToAudioDuration: renderedAudio.duration)
-            playPreparedNarration(NarrationPreparedAudio(chunk: alignedChunk, audio: renderedAudio), in: book)
+            playPreparedNarration(prepared, in: book)
         } catch {
             guard !Task.isCancelled else { return }
             stopSpeaking()
@@ -1318,20 +2007,20 @@ final class IllumeAppModel: NSObject, ObservableObject {
     private func playPreparedNarration(_ prepared: NarrationPreparedAudio, in book: ReaderBook) {
         guard (narration.isPlaying || narration.isPreparing),
               FileManager.default.fileExists(atPath: prepared.audio.url.path) else {
-            try? FileManager.default.removeItem(at: prepared.audio.url)
+            discardPreparedNarration(prepared)
             return
         }
 
-        applyNarrationState(for: prepared.chunk, in: book)
+        applyNarrationState(for: prepared.chunk, in: book, isPlaying: false, isPreparing: true)
         do {
-            try playNarrationAudio(at: prepared.audio.url)
+            try playNarrationAudio(at: prepared.audio.url, cacheKey: prepared.cacheKey)
             guard let modelDirectory = Self.kokoroModelDirectoryURL else { return }
             let voice = KokoroNarrationVoice.availableVoice(for: readerSettings.narrationVoice)
-            prefetchNextNarrationChunk(
+            prefetchNarrationChunks(
                 in: book,
                 after: prepared.chunk,
                 modelDirectory: modelDirectory,
-                speakerID: voice.speakerID,
+                voice: voice,
                 rate: narrationRateSnapshot
             )
         } catch {
@@ -1378,14 +2067,18 @@ final class IllumeAppModel: NSObject, ObservableObject {
                 isPlaying: isPlaying,
                 isPreparing: isPreparing,
                 paragraphID: book.paragraphs[firstMarker.paragraphIndex].id,
-                wordRange: firstMarker.range
+                wordRange: firstMarker.range,
+                sectionParagraphID: chunk.firstParagraphID,
+                sectionWordStart: chunk.startWordStart
             )
         } else {
             narration = NarrationState(
                 isPlaying: isPlaying,
                 isPreparing: isPreparing,
                 paragraphID: chunk.firstParagraphID,
-                wordRange: nil
+                wordRange: nil,
+                sectionParagraphID: chunk.firstParagraphID,
+                sectionWordStart: chunk.startWordStart
             )
         }
     }
@@ -1424,7 +2117,12 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
             let paragraphWordRanges = wordRanges(in: text)
             let remainingCharacters = max(1, narrationChunkMaximumCharacters - characterCount)
-            let piece = limitedNarrationText(trimmedText, maxCharacters: remainingCharacters)
+            let remainingHardCharacters = max(remainingCharacters, narrationChunkHardMaximumCharacters - characterCount)
+            let piece = limitedNarrationText(
+                trimmedText,
+                maxCharacters: remainingCharacters,
+                hardMaxCharacters: remainingHardCharacters
+            )
             let includedWordCount = wordRanges(in: piece).count
             guard !piece.isEmpty, includedWordCount > 0 else { continue }
 
@@ -1469,51 +2167,6 @@ final class IllumeAppModel: NSObject, ObservableObject {
             continuationWordStart: continuationWordStart,
             wordMarkers: wordMarkers
         )
-    }
-
-    nonisolated private static func narrationVoicePreviewChunk(in book: ReaderBook, from paragraphIndex: Int) -> NarrationChunk? {
-        guard !book.paragraphs.isEmpty else { return nil }
-
-        let startIndex = min(max(paragraphIndex, book.paragraphs.startIndex), book.paragraphs.index(before: book.paragraphs.endIndex))
-        for index in book.paragraphs.indices.dropFirst(startIndex) {
-            let paragraph = book.paragraphs[index]
-            let wordRanges = Array(wordRanges(in: paragraph.text).prefix(narrationVoicePreviewMaximumWords))
-            guard let firstRange = wordRanges.first,
-                  let lastRange = wordRanges.last else { continue }
-
-            let previewRange = NSRange(
-                location: firstRange.location,
-                length: NSMaxRange(lastRange) - firstRange.location
-            )
-            let previewText = (paragraph.text as NSString)
-                .substring(with: previewRange)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !previewText.isEmpty else { continue }
-
-            let markers = wordRanges.map { range in
-                let word = (paragraph.text as NSString).substring(with: range)
-                return NarrationWordMarker(
-                    paragraphIndex: index,
-                    range: range,
-                    weight: narrationWordWeight(word),
-                    startSeconds: nil,
-                    endSeconds: nil
-                )
-            }
-
-            return NarrationChunk(
-                startParagraphIndex: index,
-                startWordStart: firstRange.location,
-                text: previewText,
-                firstParagraphID: paragraph.id,
-                endParagraphIndex: index,
-                continuationParagraphIndex: nil,
-                continuationWordStart: nil,
-                wordMarkers: markers
-            )
-        }
-
-        return nil
     }
 
     nonisolated private static func narrationChunk(
@@ -1568,14 +2221,30 @@ final class IllumeAppModel: NSObject, ObservableObject {
         return (nextIndex, 0)
     }
 
-    nonisolated private static func limitedNarrationText(_ text: String, maxCharacters: Int) -> String {
+    nonisolated private static func limitedNarrationText(
+        _ text: String,
+        maxCharacters: Int,
+        hardMaxCharacters: Int
+    ) -> String {
         guard text.count > maxCharacters else { return text }
 
         let limitIndex = text.index(text.startIndex, offsetBy: maxCharacters)
-        let prefix = String(text[..<limitIndex])
+        let hardLimit = min(text.count, max(maxCharacters, hardMaxCharacters))
+        let hardLimitIndex = text.index(text.startIndex, offsetBy: hardLimit)
+        let hardPrefix = String(text[..<hardLimitIndex])
 
-        if let sentenceEnd = preferredSentenceEnd(in: prefix) {
-            return String(prefix[..<sentenceEnd]).trimmingCharacters(in: .whitespacesAndNewlines)
+        if let boundaryEnd = narrationBoundaryEnds(in: hardPrefix).first(where: {
+            hardPrefix.distance(from: hardPrefix.startIndex, to: $0) >= maxCharacters
+        }) {
+            return String(hardPrefix[..<boundaryEnd]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        let prefix = String(text[..<limitIndex])
+        let minimum = min(narrationChunkPreferredSentenceMinimumCharacters, prefix.count)
+        if let boundaryEnd = narrationBoundaryEnds(in: prefix).last(where: {
+            prefix.distance(from: prefix.startIndex, to: $0) >= minimum
+        }) {
+            return String(prefix[..<boundaryEnd]).trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
         if let whitespace = prefix.lastIndex(where: \.isWhitespace),
@@ -1586,26 +2255,216 @@ final class IllumeAppModel: NSObject, ObservableObject {
         return prefix.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    nonisolated private static func preferredSentenceEnd(in text: String) -> String.Index? {
-        let minimum = min(narrationChunkPreferredSentenceMinimumCharacters, text.count)
-        var bestEnd: String.Index?
+    nonisolated private static func narrationBoundaryEnds(in text: String) -> [String.Index] {
+        var boundaries: [String.Index] = []
 
         var index = text.startIndex
         while index < text.endIndex {
             let character = text[index]
-            if ".!?".contains(character) {
+            if ".!?;".contains(character) {
                 let next = text.index(after: index)
-                if next == text.endIndex || text[next].isWhitespace {
-                    let distance = text.distance(from: text.startIndex, to: next)
-                    if distance >= minimum {
-                        bestEnd = next
-                    }
+                if (next == text.endIndex || text[next].isWhitespace),
+                   !isNonTerminalSentencePeriod(in: text, at: index) {
+                    boundaries.append(next)
                 }
             }
             index = text.index(after: index)
         }
 
-        return bestEnd
+        return boundaries
+    }
+
+    nonisolated private static func isNonTerminalSentencePeriod(in text: String, at periodIndex: String.Index) -> Bool {
+        guard text[periodIndex] == "." else { return false }
+
+        let throughPeriod = String(text[...periodIndex]).lowercased()
+        if narrationMultiPeriodAbbreviations.contains(where: { throughPeriod.hasSuffix($0) }) {
+            return true
+        }
+
+        var tokenStart = periodIndex
+        while tokenStart > text.startIndex {
+            let previous = text.index(before: tokenStart)
+            guard text[previous].isLetter else { break }
+            tokenStart = previous
+        }
+
+        let token = String(text[tokenStart..<periodIndex]).lowercased()
+        if token.count == 1 {
+            return true
+        }
+
+        if narrationNonTerminalAbbreviations.contains(token) {
+            return true
+        }
+
+        let next = nextNonWhitespaceCharacter(in: text, after: periodIndex)
+        if narrationNumberedReferenceAbbreviations.contains(token) {
+            return next?.isNumber == true
+        }
+        if narrationLowercaseContinuationAbbreviations.contains(token) {
+            return next?.isLowercase == true
+        }
+
+        return false
+    }
+
+    nonisolated private static func nextNonWhitespaceCharacter(in text: String, after index: String.Index) -> Character? {
+        var next = text.index(after: index)
+        while next < text.endIndex {
+            let character = text[next]
+            if !character.isWhitespace {
+                return character
+            }
+            next = text.index(after: next)
+        }
+
+        return nil
+    }
+
+    nonisolated private static func narrationTextForSpeech(_ text: String) -> String {
+        let text = narrationTextRemovingFalseSentencePeriods(text)
+        var result = ""
+        var index = text.startIndex
+
+        while index < text.endIndex {
+            if text[index].isNumber,
+               let end = fourDigitNumberEnd(in: text, from: index),
+               let year = Int(text[index..<end]),
+               let yearText = spokenYear(year),
+               isStandaloneNumber(in: text, start: index, end: end) {
+                result += yearText
+                index = end
+            } else {
+                result.append(text[index])
+                index = text.index(after: index)
+            }
+        }
+
+        return result
+    }
+
+    nonisolated private static func narrationTextRemovingFalseSentencePeriods(_ text: String) -> String {
+        var text = text
+        for replacement in narrationSpeechMultiPeriodReplacements {
+            text = text.replacingOccurrences(
+                of: replacement.pattern,
+                with: replacement.replacement,
+                options: [.regularExpression, .caseInsensitive]
+            )
+        }
+
+        var result = ""
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            if character == ".",
+               isNonTerminalSentencePeriod(in: text, at: index) {
+                index = text.index(after: index)
+                continue
+            }
+
+            result.append(character)
+            index = text.index(after: index)
+        }
+
+        return result
+    }
+
+    nonisolated private static func fourDigitNumberEnd(in text: String, from start: String.Index) -> String.Index? {
+        var index = start
+        var count = 0
+
+        while index < text.endIndex, text[index].isNumber {
+            count += 1
+            guard count <= 4 else { return nil }
+            index = text.index(after: index)
+        }
+
+        return count == 4 ? index : nil
+    }
+
+    nonisolated private static func isStandaloneNumber(in text: String, start: String.Index, end: String.Index) -> Bool {
+        if start > text.startIndex {
+            let previous = text.index(before: start)
+            if text[previous].isLetter || text[previous].isNumber || text[previous] == "." || text[previous] == "," {
+                return false
+            }
+        }
+
+        if end < text.endIndex {
+            let next = text[end]
+            if next.isLetter || next.isNumber || next == "." || next == "," {
+                return false
+            }
+        }
+
+        return true
+    }
+
+    nonisolated private static func spokenYear(_ year: Int) -> String? {
+        guard (1000...2099).contains(year) else { return nil }
+
+        if year == 2000 {
+            return "two thousand"
+        }
+
+        if (2001...2009).contains(year),
+           let yearSuffix = spokenNumberUnder100(year - 2000) {
+            return "two thousand \(yearSuffix)"
+        }
+
+        if (2010...2099).contains(year),
+           let yearSuffix = spokenNumberUnder100(year - 2000) {
+            return "twenty \(yearSuffix)"
+        }
+
+        let leading = year / 100
+        let trailing = year % 100
+        guard let leadingText = spokenNumberUnder100(leading) else { return nil }
+
+        if trailing == 0 {
+            return "\(leadingText) hundred"
+        }
+
+        if trailing < 10 {
+            return "\(leadingText) oh \(spokenNumberUnder100(trailing) ?? "")"
+        }
+
+        guard let trailingText = spokenNumberUnder100(trailing) else { return nil }
+        return "\(leadingText) \(trailingText)"
+    }
+
+    nonisolated private static func spokenNumberUnder100(_ number: Int) -> String? {
+        let smallNumbers = [
+            "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+            "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+            "sixteen", "seventeen", "eighteen", "nineteen"
+        ]
+        let tens = [
+            2: "twenty",
+            3: "thirty",
+            4: "forty",
+            5: "fifty",
+            6: "sixty",
+            7: "seventy",
+            8: "eighty",
+            9: "ninety"
+        ]
+
+        if (0..<smallNumbers.count).contains(number) {
+            return smallNumbers[number]
+        }
+
+        let tensValue = number / 10
+        let onesValue = number % 10
+        guard let tensText = tens[tensValue] else { return nil }
+
+        if onesValue == 0 {
+            return tensText
+        }
+
+        return "\(tensText) \(smallNumbers[onesValue])"
     }
 
     nonisolated private static func narrationWordIndex(in markers: [NarrationWordMarker], at targetWeight: Double) -> Int {
@@ -1730,6 +2589,10 @@ final class IllumeAppModel: NSObject, ObservableObject {
                 readerImagePhase = .ready
                 return
             }
+            if checkResponse.limitReached == true || !canRequestNewReaderImage {
+                handleReaderImageLimitReached(checkResponse)
+                return
+            }
 
             readerImagePhase = .generating
             let generationResponse = try await backend.invokeReaderImage(
@@ -1762,8 +2625,12 @@ final class IllumeAppModel: NSObject, ObservableObject {
         }
     }
 
-    private func prepareReaderImageForOpening(book: ReaderBook, row: BookRow, accessToken: String) async {
-        guard let chunk = Self.readerImageChunk(in: book, currentIndex: row.currentIndex) else { return }
+    private func prepareReaderImageForOpening(
+        book: ReaderBook,
+        row: BookRow,
+        accessToken: String
+    ) async -> PendingReaderImageGeneration? {
+        guard let chunk = Self.readerImageChunk(in: book, currentIndex: row.currentIndex) else { return nil }
         let style = readerSettings.imageStyle
         let request = ReaderImageFunctionRequest(
             author: book.author,
@@ -1778,6 +2645,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
             style: style
         )
 
+        var pendingGeneration: PendingReaderImageGeneration?
         await runReaderImageTask { [self] in
             readerImageChunkIndex = chunk.index
             readerImageStyle = style
@@ -1787,44 +2655,19 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
             if checkResponse.imageUrl != nil {
                 readerImageResponse = checkResponse
-                await preloadReaderImageIfNeeded(checkResponse.imageUrl)
                 readerImagePhase = .ready
+                return
+            }
+            if checkResponse.limitReached == true || !canRequestNewReaderImage {
+                handleReaderImageLimitReached(checkResponse)
                 return
             }
 
             readerImageResponse = nil
             readerImagePhase = .generating
-            let generationResponse = try await backend.invokeReaderImage(
-                ReaderImageFunctionRequest(
-                    author: book.author,
-                    bookId: row.id,
-                    bookTitle: book.title,
-                    checkOnly: nil,
-                    chunkIndex: chunk.index,
-                    startWord: chunk.startWord,
-                    endWord: chunk.endWord,
-                    imageStyle: style,
-                    text: chunk.text,
-                    style: style
-                ),
-                accessToken: accessToken
-            )
-            readerImageResponse = generationResponse
-            readerImageChunkIndex = chunk.index
-            readerImageStyle = style
-            applyReaderImageCount(generationResponse.imageCount, plan: generationResponse.plan)
-            if generationResponse.imageUrl != nil {
-                await preloadReaderImageIfNeeded(generationResponse.imageUrl)
-                readerImagePhase = .ready
-            } else if generationResponse.limitReached == true {
-                readerImagePhase = .error
-            } else {
-                readerImagePhase = .generating
-            }
-            if generationResponse.imageCount == nil {
-                await reload()
-            }
+            pendingGeneration = PendingReaderImageGeneration(chunk: chunk, style: style)
         }
+        return pendingGeneration
     }
 
     private func startReaderImageGeneration(
@@ -1855,6 +2698,10 @@ final class IllumeAppModel: NSObject, ObservableObject {
         style: ReaderImageStyle
     ) async {
         await runReaderImageTask { [self] in
+            guard canRequestNewReaderImage else {
+                showReaderImageLimitPrompt()
+                return
+            }
             let generationResponse = try await backend.invokeReaderImage(
                 ReaderImageFunctionRequest(
                     author: book.author,
@@ -2075,6 +2922,10 @@ final class IllumeAppModel: NSObject, ObservableObject {
         chunk: ReaderImageRequestChunk,
         accessToken: String
     ) async throws {
+        guard canRequestNewReaderImage else {
+            showReaderImageLimitPrompt()
+            return
+        }
         let response = try await backend.invokeReaderImage(
             ReaderImageFunctionRequest(
                 author: book.author,
@@ -2093,7 +2944,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
         applyReaderImageCount(response.imageCount, plan: response.plan)
         if response.imageCount == nil {
             let usage = try? await backend.loadReaderImageUsage(accessToken: accessToken)
-            let loadedIsPro = BillingAccess.hasProAccess(profile: billingProfile)
+            let loadedIsPro = BillingAccess.hasProAccess(profile: billingProfile) || billing.hasActiveProEntitlement
             let imageRows = try? await backend.countReaderImages(
                 accessToken: accessToken,
                 since: loadedIsPro ? Self.currentMonthStartUTC() : nil
@@ -2205,6 +3056,14 @@ final class IllumeAppModel: NSObject, ObservableObject {
         pendingBookImports.removeAll { $0.id == id }
     }
 
+    private func clearUploadedBookNotice() {
+        uploadedBookNoticeTask?.cancel()
+        uploadedBookNoticeTask = nil
+        withAnimation(IllumeTheme.blurLoadIn) {
+            uploadedBookNotice = nil
+        }
+    }
+
     private func startPendingImportProgressAnimation(id: String, from start: Int, through limit: Int) -> Task<Void, Never> {
         Task { @MainActor [weak self] in
             var progress = start
@@ -2238,6 +3097,24 @@ final class IllumeAppModel: NSObject, ObservableObject {
         }
     }
 
+    private static func dataLooksLikeEpub(_ data: Data) -> Bool {
+        data.count >= 4
+            && data[0] == 0x50
+            && data[1] == 0x4B
+            && data[2] == 0x03
+            && data[3] == 0x04
+    }
+
+    private static func normalizedTitle(_ title: String) -> String {
+        let folded = title
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return folded.unicodeScalars
+            .filter { CharacterSet.alphanumerics.contains($0) }
+            .map(String.init)
+            .joined()
+    }
+
     private func runOpening(_ row: BookRow, _ operation: @escaping () async throws -> Void) async {
         openingBook = row
         notice = ""
@@ -2256,7 +3133,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
     private func applyReaderImageCount(_ count: Int?, plan: String?) {
         guard let count else { return }
-        let usageIsPro = plan == "pro" || isPro
+        let usageIsPro = plan?.lowercased() == "pro" || isPro
         var usage = readerImageUsage ?? ReaderImageUsage(userId: session?.user.id)
         if usageIsPro {
             usage.monthlyGeneratedCount = count
@@ -2266,6 +3143,25 @@ final class IllumeAppModel: NSObject, ObservableObject {
         }
         readerImageUsage = usage
         readerImageRowCount = max(readerImageRowCount, count)
+    }
+
+    private var canRequestNewReaderImage: Bool {
+        imageUsageCount < imageLimit
+    }
+
+    private func handleReaderImageLimitReached(_ response: ReaderImageFunctionResponse) {
+        readerImageResponse = response
+        readerImagePhase = .limitReached
+        showReaderImageLimitPrompt()
+    }
+
+    private func showReaderImageLimitPrompt() {
+        readerImagePhase = .limitReached
+        proUpgradePrompt = ProUpgradePrompt(
+            used: imageUsageCount,
+            limit: imageLimit,
+            isPro: isPro
+        )
     }
 
     private static func currentMonthStartUTC(now: Date = Date()) -> Date {
@@ -2453,9 +3349,9 @@ private extension UIApplication {
 }
 
 struct ReaderSettings: Equatable {
-    var textScale: Double = 1.05
-    var lineHeight: Double = 1.55
-    var lineWidth: Double = 42
+    var textScale: Double = 1.0
+    var lineHeight: Double = 1.42
+    var lineWidth: Double = 39
     var narrationRate: Double = 1.0
     var narrationVoice: String = KokoroNarrationVoice.heart.id
     var imageStyle: ReaderImageStyle = .cartoon
@@ -2471,7 +3367,14 @@ struct PendingBookImport: Identifiable, Equatable {
     var statusText: String
 }
 
-enum KokoroNarrationVoice: String, CaseIterable, Identifiable {
+struct ProUpgradePrompt: Identifiable, Equatable {
+    let id = UUID()
+    let used: Int
+    let limit: Int
+    let isPro: Bool
+}
+
+enum KokoroNarrationVoice: String, CaseIterable, Identifiable, Sendable {
     case af = "kokoro-af"
     case alloy = "kokoro-af-alloy"
     case aoede = "kokoro-af-aoede"
@@ -2628,6 +3531,7 @@ enum ReaderImagePhase: Equatable {
     case checking
     case generating
     case ready
+    case limitReached
     case error
 }
 
@@ -2636,6 +3540,8 @@ struct NarrationState: Equatable {
     var isPreparing = false
     var paragraphID: String?
     var wordRange: NSRange?
+    var sectionParagraphID: String?
+    var sectionWordStart: Int?
 }
 
 private enum NarrationPlaybackError: LocalizedError {
@@ -2649,6 +3555,118 @@ private enum NarrationPlaybackError: LocalizedError {
         case .kokoroTimedOut:
             return "Kokoro TTS took too long to start."
         }
+    }
+}
+
+@MainActor
+private final class NarrationStreamingAudioPlayer {
+    private let engine = AVAudioEngine()
+    private let playerNode = AVAudioPlayerNode()
+    private let rateUnit = AVAudioUnitTimePitch()
+    private let format: AVAudioFormat
+    private var queuedBufferCount = 0
+    private var streamFinished = false
+    private var didFinish = false
+    private var shouldPlay = true
+    private var onFinish: (() -> Void)?
+
+    var rate: Float {
+        didSet {
+            rateUnit.rate = rate * 100
+        }
+    }
+
+    var playbackSeconds: Double {
+        guard let nodeTime = playerNode.lastRenderTime,
+              let playerTime = playerNode.playerTime(forNodeTime: nodeTime) else {
+            return 0
+        }
+        return Double(playerTime.sampleTime) / playerTime.sampleRate
+    }
+
+    init(sampleRate: Double, rate: Float, onFinish: @escaping () -> Void) throws {
+        guard let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            channels: 1,
+            interleaved: false
+        ) else {
+            throw NarrationPlaybackError.emptyAudio
+        }
+
+        self.format = format
+        self.rate = rate
+        self.onFinish = onFinish
+
+        engine.attach(playerNode)
+        engine.attach(rateUnit)
+        engine.connect(playerNode, to: rateUnit, format: format)
+        engine.connect(rateUnit, to: engine.mainMixerNode, format: format)
+        rateUnit.rate = rate * 100
+        engine.prepare()
+        try engine.start()
+    }
+
+    func schedule(samples: [Float]) throws {
+        guard !samples.isEmpty,
+              let buffer = AVAudioPCMBuffer(
+                pcmFormat: format,
+                frameCapacity: AVAudioFrameCount(samples.count)
+              ) else {
+            return
+        }
+
+        buffer.frameLength = AVAudioFrameCount(samples.count)
+        guard let channel = buffer.floatChannelData?[0] else {
+            throw NarrationPlaybackError.emptyAudio
+        }
+        samples.withUnsafeBufferPointer { pointer in
+            channel.update(from: pointer.baseAddress!, count: samples.count)
+        }
+
+        queuedBufferCount += 1
+        playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            Task { @MainActor in
+                self?.bufferDidFinish()
+            }
+        }
+    }
+
+    func pause() {
+        shouldPlay = false
+        playerNode.pause()
+    }
+
+    func resume() {
+        shouldPlay = true
+        playerNode.play()
+    }
+
+    func stop() {
+        onFinish = nil
+        didFinish = true
+        shouldPlay = false
+        playerNode.stop()
+        engine.stop()
+    }
+
+    func markStreamFinished() {
+        streamFinished = true
+        finishIfReady()
+    }
+
+    private func bufferDidFinish() {
+        queuedBufferCount = max(0, queuedBufferCount - 1)
+        finishIfReady()
+    }
+
+    private func finishIfReady() {
+        guard streamFinished, queuedBufferCount == 0, !didFinish else { return }
+        didFinish = true
+        playerNode.stop()
+        engine.stop()
+        onFinish?()
+        onFinish = nil
     }
 }
 

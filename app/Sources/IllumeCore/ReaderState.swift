@@ -50,14 +50,16 @@ public enum BillingAccess {
 
     public static func hasProAccess(profile: BillingProfile?, now: Date = Date()) -> Bool {
         guard let profile else { return false }
-        if profile.plan == "pro", ["active", "trialing"].contains(profile.status) {
+        let plan = profile.plan.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let status = profile.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if plan == "pro", ["active", "trialing"].contains(status) {
             if let end = profile.currentPeriodEnd {
-                return end > now || profile.cancelAtPeriodEnd
+                return end > now
             }
             return true
         }
 
-        if profile.appleProductId == appleProductId,
+        if profile.appleProductId?.lowercased() == appleProductId,
            profile.appleRevocationDate == nil,
            let expires = profile.appleExpiresAt {
             return expires > now

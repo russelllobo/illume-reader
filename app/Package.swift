@@ -37,6 +37,7 @@ let package = Package(
             ],
             resources: [
                 .process("Resources/Fonts"),
+                .process("Resources/ClassicCovers"),
                 .process("Resources/ImageStyles"),
                 .process("Resources/PrivacyInfo.xcprivacy"),
                 .copy("Resources/KokoroTTS")

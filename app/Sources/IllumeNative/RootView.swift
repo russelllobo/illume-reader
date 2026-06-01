@@ -17,7 +17,7 @@ struct RootView: View {
                     .transition(.opacity)
             } else if app.isSignedIn {
                 LibraryShell()
-                    .libraryBlurReentry(isReaderTransitionActive: app.activeBook != nil)
+                    .libraryBlurReentry(isReaderTransitionActive: app.isReaderPresented)
                     .blurLoadIn(radius: 7)
                     .transition(.scale(scale: 0.98).combined(with: .opacity))
             } else {
@@ -32,11 +32,10 @@ struct RootView: View {
                     sourceFrame: app.bookTransitionSourceFrame,
                     phase: .closing
                 )
-                    .transition(.opacity)
                     .zIndex(3)
             }
 
-            if app.activeBook != nil {
+            if app.activeBook != nil, app.isReaderPresented {
                 ReaderView()
                     .readerBlurReveal()
                     .transition(.opacity)
@@ -48,10 +47,13 @@ struct RootView: View {
         .animation(IllumeTheme.spring, value: app.canLaunch)
         .animation(IllumeTheme.spring, value: app.openingBook?.id)
         .animation(IllumeTheme.spring, value: app.closingBook?.id)
-        .animation(IllumeTheme.spring, value: app.activeBook != nil)
+        .animation(IllumeTheme.spring, value: app.isReaderPresented)
         .animation(IllumeTheme.blurLoadIn, value: app.activeBookRow?.id)
         .animation(IllumeTheme.blurLoadIn, value: app.isLoading)
         .animation(IllumeTheme.blurLoadIn, value: app.isImporting)
+        .fullScreenCover(item: $app.proUpgradePrompt) { prompt in
+            ProUpgradeSheet(prompt: prompt)
+        }
     }
 }
 
@@ -109,6 +111,12 @@ struct LaunchLoadingView: View {
     }
 }
 
+private enum OnboardingStep {
+    case welcome
+    case productMotion
+    case auth
+}
+
 struct AuthView: View {
     @EnvironmentObject private var app: IllumeAppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -116,8 +124,61 @@ struct AuthView: View {
     @State private var password = ""
     @State private var isEmailSignInExpanded = false
     @State private var hasAppeared = false
+    @State private var onboardingStep: OnboardingStep = .welcome
 
     var body: some View {
+        ZStack {
+            authBackground
+
+            switch onboardingStep {
+            case .welcome:
+                WelcomeOnboardingScreen(
+                    showAuth: showExistingAccount,
+                    continueToDemo: {
+                        withAnimation(.timingCurve(0.16, 1, 0.3, 1, duration: reduceMotion ? 0.01 : 0.38)) {
+                            onboardingStep = .productMotion
+                        }
+                    }
+                )
+                .transition(.asymmetric(
+                    insertion: .opacity,
+                    removal: .opacity.combined(with: .move(edge: .leading))
+                ))
+            case .productMotion:
+                ProductMotionOnboardingScreen(
+                    showAuth: {
+                        withAnimation(.timingCurve(0.16, 1, 0.3, 1, duration: reduceMotion ? 0.01 : 0.36)) {
+                            onboardingStep = .auth
+                            app.authMode = .signUp
+                        }
+                    }
+                )
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .move(edge: .trailing)),
+                    removal: .opacity.combined(with: .move(edge: .leading))
+                ))
+            case .auth:
+                authForm
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(IllumeTheme.spring, value: onboardingStep)
+        .onAppear {
+            withAnimation(reduceMotion ? .easeOut(duration: 0.01) : IllumeTheme.blurLoadIn.delay(0.04)) {
+                hasAppeared = true
+            }
+        }
+    }
+
+    private func showExistingAccount() {
+        withAnimation(.timingCurve(0.16, 1, 0.3, 1, duration: reduceMotion ? 0.01 : 0.36)) {
+            app.authMode = .signIn
+            isEmailSignInExpanded = false
+            onboardingStep = .auth
+        }
+    }
+
+    private var authForm: some View {
         GeometryReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 30) {
@@ -146,12 +207,6 @@ struct AuthView: View {
             }
             .scrollIndicators(.hidden)
             .frame(maxWidth: .infinity, alignment: .center)
-            .background(authBackground)
-        }
-        .onAppear {
-            withAnimation(reduceMotion ? .easeOut(duration: 0.01) : IllumeTheme.blurLoadIn.delay(0.04)) {
-                hasAppeared = true
-            }
         }
     }
 
@@ -281,6 +336,492 @@ struct AuthView: View {
     }
 }
 
+private struct WelcomeOnboardingScreen: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var visibleTitleWordCount = 0
+
+    let showAuth: () -> Void
+    let continueToDemo: () -> Void
+
+    private let titleLines = [["Read", "without"], ["drifting", "away."]]
+    private var titleWordCount: Int {
+        titleLines.reduce(0) { $0 + $1.count }
+    }
+
+    var body: some View {
+        OnboardingPageShell {
+            ZStack(alignment: .topTrailing) {
+                OnboardingLogoShine(sunSize: 170, beamLength: 420)
+                    .frame(width: 300, height: 270)
+                    .offset(x: 96, y: -76)
+                    .onboardingEntrance(delay: 0, reduceMotion: reduceMotion)
+
+                VStack(alignment: .leading, spacing: 26) {
+                    Spacer(minLength: 72)
+
+                    Text("illume")
+                        .font(IllumeTypography.logo(28, weight: .bold))
+                        .foregroundStyle(IllumeTheme.ink.opacity(0.88))
+                        .onboardingEntrance(delay: 0, reduceMotion: reduceMotion)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(titleLines.enumerated()), id: \.offset) { lineIndex, line in
+                            HStack(spacing: 10) {
+                                ForEach(Array(line.enumerated()), id: \.offset) { wordIndex, word in
+                                    let absoluteIndex = titleLines.prefix(lineIndex).reduce(0) { $0 + $1.count } + wordIndex
+                                    Text(word)
+                                        .font(IllumeTypography.logo(58, weight: .bold))
+                                        .foregroundStyle(IllumeTheme.ink)
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.74)
+                                        .opacity(visibleTitleWordCount > absoluteIndex ? 1 : 0)
+                                        .blur(radius: visibleTitleWordCount > absoluteIndex || reduceMotion ? 0 : 8)
+                                        .animation(reduceMotion ? .easeOut(duration: 0.01) : .timingCurve(0.16, 1, 0.3, 1, duration: 0.58), value: visibleTitleWordCount)
+                                }
+                            }
+                            .lineLimit(1)
+                        }
+                    }
+                    .padding(.top, 12)
+
+                    Text("Illume helps you stay with a book using natural narration, live word tracking and beautiful illustrations.")
+                        .font(.system(size: 18, weight: .medium, design: .rounded))
+                        .foregroundStyle(IllumeTheme.ink.opacity(0.72))
+                        .lineSpacing(5)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .onboardingEntrance(delay: 0, reduceMotion: reduceMotion)
+
+                    Spacer(minLength: 34)
+
+                    VStack(spacing: 12) {
+                        OnboardingPrimaryButton(title: "Start my first focused read", systemImage: "arrow.right") {
+                            continueToDemo()
+                        }
+
+                        Button(action: showAuth) {
+                            Text("Already have an account?")
+                                .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                                .foregroundStyle(IllumeTheme.ink.opacity(0.66))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .onboardingEntrance(delay: 0, reduceMotion: reduceMotion)
+                }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 24)
+            }
+        }
+        .task {
+            visibleTitleWordCount = reduceMotion ? titleWordCount : 0
+            guard !reduceMotion else { return }
+            for index in 1...titleWordCount {
+                try? await Task.sleep(for: .milliseconds(index == 1 ? 240 : 280))
+                visibleTitleWordCount = index
+            }
+        }
+    }
+}
+
+private struct ProductMotionOnboardingScreen: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let showAuth: () -> Void
+
+    var body: some View {
+        OnboardingPageShell {
+            VStack(alignment: .leading, spacing: 26) {
+                Spacer(minLength: 34)
+
+                OnboardingLogoShine(sunSize: 142, beamLength: 360, showsSparkles: true)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 318)
+                    .onboardingEntrance(delay: 0.02, reduceMotion: reduceMotion)
+
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Your eyes, ears, and imagination working together.")
+                        .font(IllumeTypography.logo(38, weight: .bold))
+                        .foregroundStyle(IllumeTheme.ink)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text("Follow the words. Hear the story. See difficult passages come to life.")
+                        .font(.system(size: 17, weight: .medium, design: .rounded))
+                        .foregroundStyle(IllumeTheme.ink.opacity(0.72))
+                        .lineSpacing(5)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .onboardingEntrance(delay: 0.1, reduceMotion: reduceMotion)
+
+                Spacer(minLength: 18)
+
+                OnboardingPrimaryButton(title: "Show me how it works", systemImage: "sparkles") {
+                    showAuth()
+                }
+                .onboardingEntrance(delay: 0.18, reduceMotion: reduceMotion)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 24)
+        }
+    }
+}
+
+private struct OnboardingPageShell<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        GeometryReader { proxy in
+            content()
+                .frame(maxWidth: 430, minHeight: proxy.size.height, alignment: .topLeading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                .clipped()
+        }
+    }
+}
+
+private struct OnboardingLogoShine: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var sunSize: CGFloat
+    var beamLength: CGFloat
+    var showsSparkles = false
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: reduceMotion ? 1 : 1 / 30)) { timeline in
+            let elapsed = timeline.date.timeIntervalSinceReferenceDate
+            let shimmer = reduceMotion ? 0.55 : (sin(elapsed * 0.9) + 1) * 0.5
+            let sweep = reduceMotion ? 0 : sin(elapsed * 0.58) * 10
+
+            ZStack(alignment: .topTrailing) {
+                SunBeam(width: sunSize * 0.7, length: beamLength)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 1.0, green: 0.46, blue: 0.1).opacity(0.44 + shimmer * 0.16),
+                                Color(red: 1.0, green: 0.3, blue: 0.02).opacity(0.2 + shimmer * 0.12),
+                                Color.clear
+                            ],
+                            startPoint: .topTrailing,
+                            endPoint: .bottomLeading
+                        )
+                    )
+                    .blur(radius: 18)
+                    .rotationEffect(.degrees(12 + sweep), anchor: .topTrailing)
+                    .offset(x: -sunSize * 0.48, y: sunSize * 0.56)
+                    .blendMode(.screen)
+
+                SunBeam(width: sunSize * 0.42, length: beamLength * 0.84)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 1.0, green: 0.72, blue: 0.28).opacity(0.3 + shimmer * 0.12),
+                                Color(red: 1.0, green: 0.4, blue: 0.08).opacity(0.12),
+                                Color.clear
+                            ],
+                            startPoint: .topTrailing,
+                            endPoint: .bottomLeading
+                        )
+                    )
+                    .blur(radius: 12)
+                    .rotationEffect(.degrees(-2 - sweep * 0.7), anchor: .topTrailing)
+                    .offset(x: -sunSize * 0.56, y: sunSize * 0.5)
+                    .blendMode(.screen)
+
+                Circle()
+                    .fill(IllumeTheme.coral.opacity(0.24 + shimmer * 0.14))
+                    .frame(width: sunSize * 2.15, height: sunSize * 2.15)
+                    .blur(radius: 34)
+                    .offset(x: sunSize * 0.45, y: -sunSize * 0.12)
+                    .blendMode(.screen)
+
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [
+                                Color(red: 1.0, green: 0.72, blue: 0.25),
+                                Color(red: 1.0, green: 0.42, blue: 0.06),
+                                IllumeTheme.coral
+                            ],
+                            center: .topLeading,
+                            startRadius: 4,
+                            endRadius: sunSize * 0.72
+                        )
+                    )
+                    .frame(width: sunSize, height: sunSize)
+                    .shadow(color: IllumeTheme.coral.opacity(0.5 + shimmer * 0.18), radius: 30 + shimmer * 10)
+                    .overlay {
+                        Circle()
+                            .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                            .padding(1)
+                    }
+                    .scaleEffect(reduceMotion ? 1 : 0.985 + shimmer * 0.025)
+
+                if showsSparkles {
+                    ShineSparkles(phase: shimmer)
+                        .frame(width: beamLength * 0.72, height: beamLength * 0.38)
+                        .offset(x: -sunSize * 1.35, y: sunSize * 0.85)
+                }
+            }
+            .accessibilityHidden(true)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+private struct SunBeam: Shape {
+    let width: CGFloat
+    let length: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let source = CGPoint(x: rect.maxX, y: rect.minY)
+        let end = CGPoint(x: rect.maxX - length, y: rect.minY + length * 0.82)
+
+        var path = Path()
+        path.move(to: source)
+        path.addLine(to: CGPoint(x: end.x - width * 0.5, y: end.y))
+        path.addQuadCurve(to: CGPoint(x: end.x + width * 0.5, y: end.y), control: CGPoint(x: end.x, y: end.y + width * 0.35))
+        path.closeSubpath()
+        return path
+    }
+}
+
+private struct ShineSparkles: View {
+    let phase: Double
+
+    var body: some View {
+        ZStack {
+            ForEach(0..<5, id: \.self) { index in
+                Circle()
+                    .fill(Color(red: 1.0, green: 0.78, blue: 0.34).opacity(0.2 + opacity(for: index)))
+                    .frame(width: CGFloat(5 + index * 2), height: CGFloat(5 + index * 2))
+                    .blur(radius: 1.5)
+                    .offset(offset(for: index))
+            }
+        }
+        .blendMode(.screen)
+    }
+
+    private func opacity(for index: Int) -> Double {
+        let wave = sin((phase * .pi * 2) + Double(index) * 0.9)
+        return max(0.05, (wave + 1) * 0.18)
+    }
+
+    private func offset(for index: Int) -> CGSize {
+        let points = [
+            CGSize(width: -86, height: -24),
+            CGSize(width: -34, height: 12),
+            CGSize(width: 24, height: -36),
+            CGSize(width: 82, height: 8),
+            CGSize(width: 126, height: -18)
+        ]
+        return points[index]
+    }
+}
+
+private struct OnboardingPrimaryButton: View {
+    let title: String
+    let systemImage: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Text(title)
+                    .font(.system(.headline, design: .rounded, weight: .bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.74)
+
+                Image(systemName: systemImage)
+                    .font(.system(size: 17, weight: .black))
+            }
+            .padding(.horizontal, 18)
+            .frame(height: 62)
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(AuthActionButtonStyle(
+            tint: Color(red: 1.0, green: 0.61, blue: 0.22),
+            foreground: IllumeTheme.paper
+        ))
+    }
+}
+
+private struct ProductDemoLoop: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private let lines = [
+        ["The", "lamp", "warmed", "the", "page"],
+        ["and", "the", "sentence", "began"],
+        ["to", "open", "toward", "morning."]
+    ]
+
+    private var wordCount: Int {
+        lines.reduce(0) { $0 + $1.count }
+    }
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: reduceMotion ? 1 : 0.12)) { timeline in
+            let elapsed = timeline.date.timeIntervalSinceReferenceDate
+            let activeWord = reduceMotion ? 5 : Int(elapsed * 2.4).positiveModulo(wordCount)
+            let imagePulse = reduceMotion ? 1 : 0.96 + CGFloat((sin(elapsed * 2.0) + 1) * 0.025)
+
+            ZStack(alignment: .topTrailing) {
+                RoundedRectangle(cornerRadius: 34, style: .continuous)
+                    .fill(IllumeTheme.ink.opacity(0.07))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 34, style: .continuous)
+                            .stroke(IllumeTheme.ink.opacity(0.1), lineWidth: 1)
+                    }
+
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 15, weight: .black))
+                            .foregroundStyle(IllumeTheme.accent)
+                        Text("Narrating")
+                            .font(.system(.caption, design: .rounded, weight: .black))
+                            .foregroundStyle(IllumeTheme.ink.opacity(0.62))
+                        Spacer()
+                    }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(Array(lines.enumerated()), id: \.offset) { lineIndex, line in
+                            HStack(spacing: 5) {
+                                ForEach(Array(line.enumerated()), id: \.offset) { wordOffset, word in
+                                    let index = wordIndex(line: lineIndex, word: wordOffset)
+                                    DemoWord(word: word, isActive: index == activeWord)
+                                }
+                            }
+                        }
+                    }
+
+                    HStack(spacing: 9) {
+                        ForEach(0..<wordCount, id: \.self) { index in
+                            Capsule()
+                                .fill(index <= activeWord ? IllumeTheme.accent.opacity(0.95) : IllumeTheme.ink.opacity(0.12))
+                                .frame(width: index % 4 == 0 ? 4 : 3, height: CGFloat(8 + (index % 5) * 6))
+                                .animation(.easeInOut(duration: 0.18), value: activeWord)
+                        }
+                    }
+                    .frame(height: 42, alignment: .bottom)
+
+                    Spacer(minLength: 0)
+                }
+                .padding(24)
+                .padding(.trailing, 80)
+
+                DemoIllustrationCard(scale: imagePulse)
+                    .frame(width: 124, height: 154)
+                    .offset(x: 5, y: 72)
+                    .shadow(color: IllumeTheme.accent.opacity(0.2), radius: 24, y: 14)
+            }
+        }
+        .accessibilityLabel("Demo showing narration, live word highlighting, and an illustration appearing beside the passage.")
+    }
+
+    private func wordIndex(line: Int, word: Int) -> Int {
+        lines.prefix(line).reduce(0) { $0 + $1.count } + word
+    }
+}
+
+private struct DemoWord: View {
+    let word: String
+    let isActive: Bool
+
+    var body: some View {
+        Text(word)
+            .font(.system(size: 17, weight: isActive ? .bold : .medium, design: .serif))
+            .foregroundStyle(isActive ? IllumeTheme.paper : IllumeTheme.ink.opacity(0.78))
+            .padding(.horizontal, isActive ? 6 : 0)
+            .padding(.vertical, isActive ? 4 : 0)
+            .background {
+                if isActive {
+                    Capsule(style: .continuous)
+                        .fill(IllumeTheme.accent)
+                }
+            }
+            .animation(.easeInOut(duration: 0.18), value: isActive)
+    }
+}
+
+private struct DemoIllustrationCard: View {
+    let scale: CGFloat
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 26, style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.99, green: 0.59, blue: 0.31),
+                        Color(red: 0.45, green: 0.24, blue: 0.38),
+                        Color(red: 0.11, green: 0.13, blue: 0.18)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .overlay(alignment: .bottomLeading) {
+                ZStack(alignment: .bottomLeading) {
+                    Circle()
+                        .fill(Color.yellow.opacity(0.64))
+                        .frame(width: 42, height: 42)
+                        .offset(x: 52, y: -82)
+
+                    Path { path in
+                        path.move(to: CGPoint(x: 0, y: 130))
+                        path.addCurve(to: CGPoint(x: 72, y: 62), control1: CGPoint(x: 24, y: 90), control2: CGPoint(x: 42, y: 70))
+                        path.addCurve(to: CGPoint(x: 124, y: 130), control1: CGPoint(x: 96, y: 84), control2: CGPoint(x: 110, y: 102))
+                        path.closeSubpath()
+                    }
+                    .fill(Color.black.opacity(0.28))
+
+                    Path { path in
+                        path.move(to: CGPoint(x: 18, y: 132))
+                        path.addCurve(to: CGPoint(x: 90, y: 76), control1: CGPoint(x: 34, y: 104), control2: CGPoint(x: 58, y: 74))
+                        path.addCurve(to: CGPoint(x: 124, y: 128), control1: CGPoint(x: 104, y: 92), control2: CGPoint(x: 116, y: 112))
+                        path.closeSubpath()
+                    }
+                    .fill(IllumeTheme.ink.opacity(0.22))
+                }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    .stroke(Color.white.opacity(0.24), lineWidth: 1)
+            }
+            .scaleEffect(scale)
+    }
+}
+
+private struct OnboardingEntranceModifier: ViewModifier {
+    let delay: Double
+    let reduceMotion: Bool
+    @State private var isVisible = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(isVisible ? 1 : 0)
+            .blur(radius: isVisible || reduceMotion ? 0 : 10)
+            .offset(y: isVisible || reduceMotion ? 0 : 16)
+            .onAppear {
+                withAnimation(reduceMotion ? .easeOut(duration: 0.01) : .timingCurve(0.16, 1, 0.3, 1, duration: 0.42).delay(delay)) {
+                    isVisible = true
+                }
+            }
+    }
+}
+
+private extension View {
+    func onboardingEntrance(delay: Double, reduceMotion: Bool) -> some View {
+        modifier(OnboardingEntranceModifier(delay: delay, reduceMotion: reduceMotion))
+    }
+}
+
+private extension Int {
+    func positiveModulo(_ divisor: Int) -> Int {
+        guard divisor != 0 else { return 0 }
+        let remainder = self % divisor
+        return remainder >= 0 ? remainder : remainder + divisor
+    }
+}
+
 struct AuthActionButton: View {
     let title: String
     var tint: Color
@@ -333,14 +874,16 @@ struct AuthActionButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         let isPressed = configuration.isPressed && isEnabled
         let shape = Capsule(style: .continuous)
+        let glassTintOpacity = showsBorder ? 0.68 : 0.74
+        let borderOpacity = showsBorder ? 0.34 : (isPressed ? 0.58 : 0.32)
 
         if #available(iOS 26.0, *) {
             configuration.label
                 .foregroundStyle(foreground)
-                .glassEffect(.regular.tint(tint.opacity(showsBorder ? 0.36 : 0.58)).interactive(isEnabled), in: shape)
+                .glassEffect(.regular.tint(tint.opacity(glassTintOpacity)).interactive(isEnabled), in: shape)
                 .overlay {
                     shape.strokeBorder(
-                        showsBorder ? IllumeTheme.ink.opacity(0.18) : Color.white.opacity(isPressed ? 0.52 : 0.22),
+                        showsBorder ? IllumeTheme.ink.opacity(borderOpacity) : Color.white.opacity(borderOpacity),
                         lineWidth: showsBorder ? 1 : 0.9
                     )
                 }
@@ -360,7 +903,7 @@ struct AuthActionButtonStyle: ButtonStyle {
                 )
                 .overlay {
                     shape.strokeBorder(
-                        showsBorder ? IllumeTheme.ink.opacity(0.12) : Color.white.opacity(isPressed ? 0.38 : 0.18),
+                        showsBorder ? IllumeTheme.ink.opacity(0.28) : Color.white.opacity(isPressed ? 0.44 : 0.24),
                         lineWidth: showsBorder ? 1 : 0.8
                     )
                 }
@@ -444,18 +987,7 @@ struct AuthReadingMark: View {
 
 struct AuthPageBackdrop: View {
     var body: some View {
-        ZStack {
-            ForEach(0..<4, id: \.self) { index in
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    .stroke(IllumeTheme.ink.opacity(0.055), lineWidth: 1)
-                    .background(
-                        RoundedRectangle(cornerRadius: 28, style: .continuous)
-                            .fill(Color.white.opacity(0.22))
-                    )
-                    .rotationEffect(.degrees(Double(index) * -5 - 4))
-                    .offset(x: CGFloat(index) * -14, y: CGFloat(index) * 12)
-            }
-        }
+        OnboardingLogoShine(sunSize: 140, beamLength: 360)
     }
 }
 
@@ -486,46 +1018,107 @@ struct LibraryShell: View {
     @State private var bookToRename: BookRow?
     @State private var renameTitle = ""
     @State private var bookToDelete: BookRow?
+    @State private var selectedClassic: ClassicBook?
+
+    private var availableClassics: [ClassicBook] {
+        app.availableClassics()
+    }
+
+    private var expandedPanelClassics: [ClassicBook] {
+        guard let selectedClassic, !availableClassics.contains(selectedClassic) else {
+            return availableClassics
+        }
+        return [selectedClassic] + availableClassics
+    }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 26) {
-                    LibraryHeader(
-                        profileOpen: $profileOpen,
-                        importerOpen: $importerOpen,
-                        renameBook: beginRenaming,
-                        deleteBook: beginDeleting
+            ZStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 26) {
+                        LibraryHeader(
+                            profileOpen: $profileOpen,
+                            importerOpen: $importerOpen,
+                            renameBook: beginRenaming,
+                            deleteBook: beginDeleting
+                        )
+                            .blurLoadIn(delay: 0.01, radius: 7)
+
+                        if let notice = app.visibleNotice {
+                            NoticeBanner(text: notice)
+                        }
+
+                        if app.books.isEmpty && app.pendingBookImports.isEmpty {
+                            EmptyLibrary(importerOpen: $importerOpen)
+                        } else {
+                            ContinueSection(renameBook: beginRenaming, deleteBook: beginDeleting)
+                        }
+
+                        if !availableClassics.isEmpty {
+                            ClassicsSection(
+                                classics: availableClassics,
+                                selectedClassic: $selectedClassic
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 18)
+                    .padding(.bottom, app.activeBook == nil ? 32 : 150)
+                }
+                .scrollIndicators(.hidden)
+                .background(IllumeTheme.paper)
+                .refreshable {
+                    await app.reload()
+                }
+                .overlay(alignment: .top) {
+                    if let title = app.uploadedBookNotice {
+                        UploadReadyToast(title: title)
+                            .padding(.top, 12)
+                            .padding(.horizontal, 18)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                }
+
+                if let selectedClassic {
+                    Color.black.opacity(0.16)
+                        .ignoresSafeArea()
+                        .transition(.opacity)
+                        .onTapGesture {
+                            withAnimation(IllumeTheme.spring) {
+                                self.selectedClassic = nil
+                            }
+                        }
+
+                    ClassicExpandedPanel(
+                        classic: selectedClassic,
+                        classics: expandedPanelClassics,
+                        selectClassic: { classic in
+                            withAnimation(IllumeTheme.spring) {
+                                self.selectedClassic = classic
+                            }
+                        },
+                        close: {
+                            withAnimation(IllumeTheme.spring) {
+                                self.selectedClassic = nil
+                            }
+                        }
                     )
-                        .blurLoadIn(delay: 0.01, radius: 7)
-
-                    if let notice = app.visibleNotice {
-                        NoticeBanner(text: notice)
-                    }
-
-                    if app.books.isEmpty && app.pendingBookImports.isEmpty {
-                        EmptyLibrary(importerOpen: $importerOpen)
-                    } else {
-                        ContinueSection(renameBook: beginRenaming, deleteBook: beginDeleting)
-                    }
+                    .padding(.horizontal, 18)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .center)))
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 18)
-                .padding(.bottom, 32)
-            }
-            .scrollIndicators(.hidden)
-            .background(IllumeTheme.paper)
-            .overlay(alignment: .top) {
-                if let title = app.uploadedBookNotice {
-                    UploadReadyToast(title: title)
-                        .padding(.top, 12)
+
+                if let book = app.activeBook, selectedClassic == nil {
+                    LibraryNarrationControls(book: book)
                         .padding(.horizontal, 18)
-                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .padding(.bottom, 18)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .zIndex(5)
                 }
             }
-            .refreshable {
-                await app.reload()
-            }
+            .animation(IllumeTheme.spring, value: selectedClassic?.id)
+            .animation(IllumeTheme.spring, value: app.activeBookRow?.id)
             .fileImporter(
                 isPresented: $importerOpen,
                 allowedContentTypes: [.illumeEpub, .pdf],
@@ -609,6 +1202,36 @@ struct LibraryShell: View {
     }
 }
 
+struct LibraryNarrationControls: View {
+    @EnvironmentObject private var app: IllumeAppModel
+    let book: ReaderBook
+
+    var body: some View {
+        GeometryReader { geometry in
+            let currentIndex = app.narrationControlIndex(in: book)
+            let isCollapsed = geometry.size.width < 430
+
+            ReaderTransportRail(
+                book: book,
+                currentIndex: currentIndex,
+                isPlaying: app.narration.isPlaying,
+                isPreparing: app.narration.isPreparing,
+                isCollapsed: isCollapsed,
+                onDarkBackground: false,
+                playPause: {
+                    app.toggleNarration(for: book, from: currentIndex)
+                },
+                moveToAndNarrate: { index in
+                    app.moveNarrationControl(to: index, in: book)
+                }
+            )
+            .frame(width: geometry.size.width, height: 84, alignment: .center)
+        }
+        .frame(height: 96)
+        .blurLoadIn(radius: 10)
+    }
+}
+
 struct LibraryHeader: View {
     @EnvironmentObject private var app: IllumeAppModel
     @Binding var profileOpen: Bool
@@ -675,8 +1298,8 @@ struct ContinueSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Library")
-                .font(IllumeTypography.librarySerif(28))
+            Text("library")
+                .font(IllumeTypography.logo(28))
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 16) {
                     ForEach(app.pendingBookImports) { pendingImport in
@@ -709,6 +1332,286 @@ struct ContinueSection: View {
             }
             .scrollIndicators(.hidden)
         }
+    }
+}
+
+struct ClassicsSection: View {
+    let classics: [ClassicBook]
+    @Binding var selectedClassic: ClassicBook?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("classics")
+                .font(IllumeTypography.logo(28))
+
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .top, spacing: 16) {
+                    ForEach(Array(classics.enumerated()), id: \.element.id) { index, classic in
+                        ClassicBookCard(
+                            classic: classic,
+                            isSelected: selectedClassic?.id == classic.id,
+                            isPanelOpen: selectedClassic != nil,
+                            onToggle: {
+                                withAnimation(IllumeTheme.spring) {
+                                    selectedClassic = selectedClassic?.id == classic.id ? nil : classic
+                                }
+                            }
+                        )
+                            .blurLoadIn(delay: min(Double(index) * 0.018, 0.14), radius: 8)
+                    }
+                }
+                .padding(.vertical, 2)
+                .animation(IllumeTheme.spring, value: selectedClassic?.id)
+            }
+            .scrollIndicators(.hidden)
+        }
+    }
+}
+
+struct ClassicBookCard: View {
+    let classic: ClassicBook
+    let isSelected: Bool
+    let isPanelOpen: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button(action: onToggle) {
+                VStack(alignment: .leading, spacing: 10) {
+                    ClassicCover(resourceName: classic.coverResourceName)
+                        .opacity(isSelected && isPanelOpen ? 0.58 : 1)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(IllumeTheme.ink.opacity(isSelected ? 0.32 : 0), lineWidth: 2)
+                        }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(classic.title)
+                            .font(.system(.subheadline, design: .rounded, weight: .bold))
+                            .foregroundStyle(IllumeTheme.ink)
+                            .lineLimit(2)
+                        Text(classic.author)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .frame(width: 118, height: 58, alignment: .topLeading)
+                }
+                .frame(width: 118, height: 238, alignment: .topLeading)
+            }
+            .buttonStyle(LiquidLiftButtonStyle())
+        }
+        .frame(width: 118, height: 238, alignment: .topLeading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(classic.title), \(classic.author)")
+    }
+}
+
+struct ClassicExpandedPanel: View {
+    @EnvironmentObject private var app: IllumeAppModel
+    let classic: ClassicBook
+    let classics: [ClassicBook]
+    let selectClassic: (ClassicBook) -> Void
+    let close: () -> Void
+
+    private var matchingBook: BookRow? {
+        app.bookMatchingClassic(classic)
+    }
+
+    private var isImporting: Bool {
+        app.importingClassicID == classic.id
+    }
+
+    private var isDisabled: Bool {
+        isImporting || (matchingBook == nil && app.importingClassicID != nil)
+    }
+
+    var body: some View {
+        VStack(spacing: 18) {
+            HStack {
+                Spacer()
+                Button(action: close) {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.black))
+                        .foregroundStyle(IllumeTheme.ink)
+                        .frame(width: 34, height: 34)
+                        .background(IllumeTheme.paper.opacity(0.7), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close \(classic.title) details")
+            }
+
+            ClassicCoverPicker(
+                classics: classics,
+                selectedClassic: classic,
+                selectClassic: selectClassic
+            )
+
+            VStack(spacing: 7) {
+                Text(classic.title)
+                    .font(IllumeTypography.librarySerif(28, weight: .bold))
+                    .foregroundStyle(IllumeTheme.ink)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.center)
+                    .minimumScaleFactor(0.82)
+                Text(classic.author)
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            VStack(alignment: .leading, spacing: 14) {
+                Text("About Book")
+                    .font(.system(.headline, design: .rounded, weight: .bold))
+
+                Text(classic.summary)
+                    .font(.callout)
+                    .foregroundStyle(IllumeTheme.ink.opacity(0.72))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .lineSpacing(2)
+
+                actionButton
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(IllumeTheme.paper.opacity(0.9), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .strokeBorder(IllumeTheme.ink.opacity(0.08), lineWidth: 1)
+            )
+        }
+        .padding(18)
+        .frame(maxWidth: 380)
+        .background(IllumeTheme.paper.opacity(0.94), in: RoundedRectangle(cornerRadius: 30, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                .strokeBorder(.white.opacity(0.62), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.14), radius: 30, y: 16)
+    }
+
+    private var actionButton: some View {
+        Button {
+            close()
+            Task { await app.readClassicNow(classic) }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "book.pages")
+                    .font(.subheadline.weight(.black))
+                Text("Read Now")
+                    .font(.subheadline.weight(.black))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(ClassicReadNowButtonStyle())
+        .disabled(isDisabled)
+        .accessibilityLabel("Read \(classic.title) now")
+    }
+}
+
+struct ClassicReadNowButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(Color.black.opacity(isEnabled ? 0.9 : 0.48))
+            .background(
+                IllumeTheme.ink.opacity(isEnabled ? (configuration.isPressed ? 1 : 0.86) : 0.44),
+                in: Capsule()
+            )
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(IllumeTheme.spring, value: configuration.isPressed)
+            .animation(IllumeTheme.spring, value: isEnabled)
+    }
+}
+
+struct ClassicCoverPicker: View {
+    let classics: [ClassicBook]
+    let selectedClassic: ClassicBook
+    let selectClassic: (ClassicBook) -> Void
+    @State private var centeredClassicID: String?
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            LazyHStack(alignment: .center, spacing: 12) {
+                ForEach(classics) { classic in
+                    Button {
+                        withAnimation(IllumeTheme.spring) {
+                            selectClassic(classic)
+                        }
+                    } label: {
+                        ClassicCover(
+                            resourceName: classic.coverResourceName,
+                            isExpanded: classic.id == selectedClassic.id
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: classic.id == selectedClassic.id ? 18 : 14, style: .continuous)
+                                .strokeBorder(IllumeTheme.ink.opacity(classic.id == selectedClassic.id ? 0.28 : 0), lineWidth: 2)
+                        }
+                        .scaleEffect(classic.id == selectedClassic.id ? 1 : 0.82)
+                        .opacity(classic.id == selectedClassic.id ? 1 : 0.78)
+                        .zIndex(classic.id == selectedClassic.id ? 1 : 0)
+                    }
+                    .frame(width: 150, height: 216)
+                    .buttonStyle(LiquidLiftButtonStyle())
+                    .id(classic.id)
+                    .accessibilityLabel("\(classic.title), \(classic.author)")
+                }
+            }
+            .padding(.horizontal, 42)
+            .padding(.vertical, 12)
+            .scrollTargetLayout()
+        }
+        .frame(height: 236)
+        .scrollClipDisabled()
+        .scrollIndicators(.hidden)
+        .scrollTargetBehavior(.viewAligned)
+        .scrollPosition(id: $centeredClassicID, anchor: .center)
+        .onAppear {
+            centeredClassicID = selectedClassic.id
+        }
+        .onChange(of: selectedClassic.id) { _, id in
+            guard centeredClassicID != id else { return }
+            withAnimation(IllumeTheme.spring) {
+                centeredClassicID = id
+            }
+        }
+        .onChange(of: centeredClassicID) { _, id in
+            guard let id,
+                  id != selectedClassic.id,
+                  let classic = classics.first(where: { $0.id == id }) else { return }
+            selectClassic(classic)
+        }
+    }
+}
+
+struct ClassicCover: View {
+    let resourceName: String
+    var isExpanded = false
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [IllumeTheme.ink, IllumeTheme.coral],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+
+            if let image = UIImage(named: "\(resourceName).jpg", in: .module, compatibleWith: nil) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            }
+        }
+        .frame(width: isExpanded ? 150 : 118, height: isExpanded ? 216 : 170)
+        .clipShape(RoundedRectangle(cornerRadius: isExpanded ? 18 : 14, style: .continuous))
+        .shadow(color: .black.opacity(isExpanded ? 0.2 : 0.14), radius: isExpanded ? 18 : 12, y: isExpanded ? 12 : 8)
     }
 }
 
@@ -1081,6 +1984,258 @@ struct ProfileSheet: View {
     }
 }
 
+struct ProUpgradeSheet: View {
+    @EnvironmentObject private var app: IllumeAppModel
+    @Environment(\.dismiss) private var dismiss
+    let prompt: ProUpgradePrompt
+
+    var body: some View {
+        ZStack {
+            // Atmospheric, deep glowing background matching the paper tone
+            IllumeTheme.paper.ignoresSafeArea()
+            
+            // Subtle premium glow gradient
+            RadialGradient(
+                colors: [
+                    IllumeTheme.plum.opacity(0.24),
+                    IllumeTheme.coral.opacity(0.12),
+                    .clear
+                ],
+                center: .topLeading,
+                startRadius: 0,
+                endRadius: 500
+            )
+            .ignoresSafeArea()
+            
+            VStack(spacing: 0) {
+                // Top header bar with dismiss button
+                HStack {
+                    Spacer()
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 26, weight: .bold))
+                            .foregroundStyle(IllumeTheme.ink.opacity(0.48))
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(LiquidIconButtonStyle())
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .center, spacing: 28) {
+                        
+                        // Icon & Title Section
+                        VStack(spacing: 16) {
+                            // Large glowing Pro badge with gradient and shadow
+                            ZStack {
+                                Circle()
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [IllumeTheme.coral, IllumeTheme.plum],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                                    .frame(width: 80, height: 80)
+                                    .shadow(color: IllumeTheme.coral.opacity(0.48), radius: 24, y: 8)
+                                
+                                Image(systemName: "sparkles")
+                                    .font(.system(size: 38, weight: .semibold))
+                                    .foregroundStyle(IllumeTheme.paper)
+                            }
+                            .padding(.top, 10)
+                            
+                            VStack(spacing: 8) {
+                                Text(prompt.isPro ? "Monthly Limit Reached" : "Unlock Infinite Visuals")
+                                    .font(IllumeTypography.heading(32, weight: .bold))
+                                    .foregroundStyle(IllumeTheme.ink)
+                                    .multilineTextAlignment(.center)
+                                    .lineLimit(2)
+                                
+                                Text(prompt.isPro ? "You have used this month's Pro image allowance." : "Step into a fully illustrated reading experience.")
+                                    .font(IllumeTypography.sans(15, weight: .medium))
+                                    .foregroundStyle(IllumeTheme.ink.opacity(0.68))
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 16)
+                            }
+                        }
+                        
+                        // Premium status progress meter
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Label {
+                                    Text("Image Limit Status")
+                                        .font(IllumeTypography.sans(14, weight: .bold))
+                                        .foregroundStyle(IllumeTheme.ink)
+                                } icon: {
+                                    Image(systemName: "photo.stack")
+                                        .font(.system(size: 14, weight: .bold))
+                                        .foregroundStyle(IllumeTheme.accent)
+                                }
+                                
+                                Spacer()
+                                
+                                Text("\(prompt.used) / \(prompt.limit) \(prompt.isPro ? "/ mo" : "total")")
+                                    .font(.system(.footnote, design: .rounded, weight: .bold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(IllumeTheme.ink.opacity(0.88))
+                            }
+                            
+                            GeometryReader { proxy in
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(IllumeTheme.ink.opacity(0.08))
+                                    .overlay(alignment: .leading) {
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .fill(
+                                                LinearGradient(
+                                                    colors: [IllumeTheme.coral, IllumeTheme.accent],
+                                                    startPoint: .leading,
+                                                    endPoint: .trailing
+                                                )
+                                            )
+                                            .frame(width: proxy.size.width * min(1, Double(prompt.used) / Double(prompt.limit)))
+                                            .shadow(color: IllumeTheme.coral.opacity(0.36), radius: 6, x: 0, y: 0)
+                                    }
+                            }
+                            .frame(height: 12)
+                        }
+                        .padding(20)
+                        .background(
+                            RoundedRectangle(cornerRadius: 20)
+                                .fill(IllumeTheme.mist.opacity(0.48))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 20)
+                                        .strokeBorder(IllumeTheme.ink.opacity(0.06), lineWidth: 1)
+                                )
+                        )
+                        .padding(.horizontal, 20)
+                        
+                        // Premium Features list card
+                        VStack(alignment: .leading, spacing: 18) {
+                            Text("WHAT'S INCLUDED IN PRO")
+                                .font(IllumeTypography.sans(11, weight: .bold))
+                                .tracking(1.2)
+                                .foregroundStyle(IllumeTheme.ink.opacity(0.48))
+                                .padding(.bottom, 4)
+                            
+                            FeatureRow(icon: "photo.circle.fill", title: "Unlimited AI Art", description: "Generate beautiful rich illustrations matching the text as you read.")
+                            FeatureRow(icon: "waveform.circle.fill", title: "Ultra-Realistic Narration", description: "High-quality, expressive voices that bring characters to life.")
+                            FeatureRow(icon: "icloud.circle.fill", title: "Seamless Cloud Sync", description: "Access your entire library of EPUBs and PDFs on all your devices.")
+                        }
+                        .padding(20)
+                        .background(
+                            RoundedRectangle(cornerRadius: 22)
+                                .fill(IllumeTheme.mist.opacity(0.32))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 22)
+                                        .strokeBorder(IllumeTheme.ink.opacity(0.04), lineWidth: 1)
+                                )
+                        )
+                        .padding(.horizontal, 20)
+                        
+                        Spacer(minLength: 24)
+                        
+                        // Action Buttons Section
+                        VStack(spacing: 14) {
+                            if prompt.isPro {
+                                Button {
+                                    Task {
+                                        await app.restorePro()
+                                        dismiss()
+                                    }
+                                } label: {
+                                    Text("Restore purchases")
+                                        .font(IllumeTypography.sans(16, weight: .bold))
+                                        .foregroundStyle(IllumeTheme.paper)
+                                        .frame(height: 54)
+                                        .frame(maxWidth: .infinity)
+                                        .background(IllumeTheme.ink, in: Capsule())
+                                }
+                                .buttonStyle(LiquidLiftButtonStyle())
+                            } else {
+                                Button {
+                                    Task {
+                                        await app.purchasePro()
+                                        if app.isPro {
+                                            dismiss()
+                                        }
+                                    }
+                                } label: {
+                                    Text("Upgrade to Pro")
+                                        .font(IllumeTypography.sans(17, weight: .bold))
+                                        .foregroundStyle(IllumeTheme.paper)
+                                        .frame(height: 56)
+                                        .frame(maxWidth: .infinity)
+                                        .background(
+                                            LinearGradient(
+                                                colors: [IllumeTheme.coral, IllumeTheme.accent],
+                                                startPoint: .topLeading,
+                                                endPoint: .bottomTrailing
+                                            ),
+                                            in: Capsule()
+                                        )
+                                        .shadow(color: IllumeTheme.coral.opacity(0.32), radius: 14, y: 6)
+                                }
+                                .buttonStyle(LiquidLiftButtonStyle())
+                                
+                                Button {
+                                    dismiss()
+                                } label: {
+                                    Text("Maybe later")
+                                        .font(IllumeTypography.sans(15, weight: .semibold))
+                                        .foregroundStyle(IllumeTheme.ink.opacity(0.68))
+                                        .frame(height: 48)
+                                        .frame(maxWidth: .infinity)
+                                        .background(
+                                            Capsule()
+                                                .fill(Color.clear)
+                                                .strokeBorder(IllumeTheme.ink.opacity(0.12), lineWidth: 1)
+                                        )
+                                }
+                                .buttonStyle(LiquidLiftButtonStyle())
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 36)
+                    }
+                }
+            }
+        }
+        .onAppear {
+            app.pauseNarration()
+        }
+    }
+}
+
+struct FeatureRow: View {
+    let icon: String
+    let title: String
+    let description: String
+    
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(IllumeTheme.accent)
+                .frame(width: 32)
+            
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(IllumeTypography.sans(14, weight: .bold))
+                    .foregroundStyle(IllumeTheme.ink)
+                Text(description)
+                    .font(IllumeTypography.sans(12, weight: .medium))
+                    .foregroundStyle(IllumeTheme.ink.opacity(0.62))
+                    .lineLimit(2)
+            }
+        }
+    }
+}
+
 struct AccountBrandLockup: View {
     let isPro: Bool
 
@@ -1196,6 +2351,7 @@ struct BookScreenTransitionPanel: View {
                     .shadow(color: .black.opacity(isExpanded ? 0 : 0.18), radius: isExpanded ? 0 : 14, y: isExpanded ? 0 : 8)
                     .frame(width: panelFrame.width, height: panelFrame.height)
                     .position(x: panelFrame.midX, y: panelFrame.midY)
+                    .opacity(phase == .opening ? 1 : 0)
 
                 CoverView(book: book, size: panelFrame.size)
                     .opacity(isExpanded ? 0 : 1)
