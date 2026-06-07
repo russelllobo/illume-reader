@@ -171,6 +171,18 @@ final class IllumeAppModel: NSObject, ObservableObject {
         let cacheKey: NarrationAudioCacheKey?
     }
 
+    private struct CachedReaderBook: Codable {
+        let schemaVersion: Int
+        let bookID: UUID
+        let documentType: DocumentType
+        let storagePath: String
+        let fileSize: Int
+        let pageCount: Int?
+        let paragraphCount: Int
+        let chapterCount: Int
+        let book: ReaderBook
+    }
+
     private struct PendingReaderImageGeneration: Sendable {
         let chunk: ReaderImageRequestChunk
         let style: ReaderImageStyle
@@ -325,6 +337,10 @@ final class IllumeAppModel: NSObject, ObservableObject {
             async let usage = backend.loadReaderImageUsage(accessToken: accessToken)
 
             books = try await library
+            if let first = books.first,
+               let cachedBook = Self.cachedParsedReaderBook(for: first) {
+                prewarmFirstNarrationChunk(for: first, book: cachedBook, startIndex: first.currentIndex)
+            }
 
             let loadedProfile = try? await profile
             let loadedUsage = try? await usage
@@ -505,6 +521,8 @@ final class IllumeAppModel: NSObject, ObservableObject {
             )
             let inserted = try await backend.insertBook(row, accessToken: session.accessToken)
             updatePendingImport(id: pendingImportID, progress: 90)
+            Self.storeParsedReaderBook(importedBook, for: inserted)
+            prewarmFirstNarrationChunk(for: inserted, book: importedBook, startIndex: inserted.currentIndex)
             warmKokoroTTSIfNeeded()
             if type == .pdf {
                 try? await backend.queuePdfProcessing(bookId: inserted.id, accessToken: session.accessToken)
@@ -536,21 +554,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
         bookTransitionSourceFrame = sourceFrame
         stopSpeaking()
         await runOpening(row) { [self] in
-            let data = try await backend.downloadDocument(storagePath: row.storagePath, accessToken: accessToken)
-            let pages = row.documentType == .pdf ? try await backend.loadBookPages(bookId: row.id, accessToken: accessToken) : []
-            var parsed: ReaderBook
-            if row.documentType == .pdf, !pages.isEmpty {
-                parsed = PdfTextMapper.readerBook(
-                    title: row.title,
-                    author: row.author,
-                    fileName: row.fileName,
-                    pageCount: row.pageCount ?? pages.count,
-                    toc: row.pdfToc,
-                    pages: pages
-                )
-            } else {
-                parsed = try DocumentParser.parse(data: data, fileName: row.fileName, type: row.documentType).book
-            }
+            var parsed = try await loadReaderBookForOpening(row, accessToken: accessToken)
             let start = Self.resolveMeaningfulStart(
                 in: parsed,
                 requestedIndex: row.currentIndex,
@@ -567,32 +571,80 @@ final class IllumeAppModel: NSObject, ObservableObject {
             readerImageChunkIndex = nil
             readerImageStyle = nil
             readerImagePhase = .idle
-            let pendingImageGeneration = await prepareReaderImageForOpening(book: parsed, row: openingRow, accessToken: accessToken)
             activeBookRow = openingRow
             activeBook = parsed
             isReaderPresented = true
-            if let pendingImageGeneration {
-                startReaderImageGeneration(
-                    book: parsed,
-                    row: openingRow,
-                    chunk: pendingImageGeneration.chunk,
-                    accessToken: accessToken,
-                    style: pendingImageGeneration.style
-                )
-            }
             openingBook = nil
             warmKokoroTTSIfNeeded()
             speak(book: parsed, paragraphIndex: start.index)
+            startReaderImagePreparationForOpening(book: parsed, row: openingRow, accessToken: accessToken)
             updateLocalProgress(
                 bookId: row.id,
                 index: start.index,
                 page: start.page,
                 lastOpenedAt: Date()
             )
-            try await backend.saveProgress(
-                bookId: row.id,
-                progress: ReadingProgress(currentIndex: start.index, currentPage: start.page),
+            Task { [backend] in
+                try? await backend.saveProgress(
+                    bookId: row.id,
+                    progress: ReadingProgress(currentIndex: start.index, currentPage: start.page),
+                    accessToken: accessToken
+                )
+            }
+        }
+    }
+
+    private func loadReaderBookForOpening(_ row: BookRow, accessToken: String) async throws -> ReaderBook {
+        if var cached = Self.cachedParsedReaderBook(for: row) {
+            Self.applyLibraryMetadata(from: row, to: &cached)
+            return cached
+        }
+
+        var parsed: ReaderBook
+        if row.documentType == .pdf {
+            let pages = (try? await backend.loadBookPages(bookId: row.id, accessToken: accessToken)) ?? []
+            if !pages.isEmpty {
+                parsed = PdfTextMapper.readerBook(
+                    title: row.title,
+                    author: row.author,
+                    fileName: row.fileName,
+                    pageCount: row.pageCount ?? pages.count,
+                    toc: row.pdfToc,
+                    pages: pages
+                )
+                Self.applyLibraryMetadata(from: row, to: &parsed)
+                Self.storeParsedReaderBook(parsed, for: row)
+                return parsed
+            }
+        }
+
+        let data = try await backend.downloadDocument(storagePath: row.storagePath, accessToken: accessToken)
+        parsed = try DocumentParser.parse(data: data, fileName: row.fileName, type: row.documentType).book
+        Self.applyLibraryMetadata(from: row, to: &parsed)
+        Self.storeParsedReaderBook(parsed, for: row)
+        return parsed
+    }
+
+    private func startReaderImagePreparationForOpening(book: ReaderBook, row: BookRow, accessToken: String) {
+        readerImageGenerationTask?.cancel()
+        readerImageGenerationTask = Task { [weak self] in
+            guard let self else { return }
+            let pendingImageGeneration = await self.prepareReaderImageForOpening(
+                book: book,
+                row: row,
                 accessToken: accessToken
+            )
+            guard !Task.isCancelled,
+                  self.activeBookRow?.id == row.id,
+                  let pendingImageGeneration else {
+                return
+            }
+            self.startReaderImageGeneration(
+                book: book,
+                row: row,
+                chunk: pendingImageGeneration.chunk,
+                accessToken: accessToken,
+                style: pendingImageGeneration.style
             )
         }
     }
@@ -656,7 +708,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
             try? await Task.sleep(for: .milliseconds(220))
             withAnimation(IllumeTheme.blurLoadIn) {
                 books.removeAll { $0.id == row.id }
-                deletingBookIDs.remove(row.id)
+                _ = deletingBookIDs.remove(row.id)
             }
         } catch {
             withAnimation(IllumeTheme.blurLoadIn) {
@@ -760,6 +812,19 @@ final class IllumeAppModel: NSObject, ObservableObject {
         speak(book: book, paragraphIndex: index)
     }
 
+    func openNarrationSpot(in book: ReaderBook) {
+        guard activeBook != nil else { return }
+        let index = narrationControlIndex(in: book)
+        guard book.paragraphs.indices.contains(index) else {
+            isReaderPresented = true
+            return
+        }
+
+        let paragraph = book.paragraphs[index]
+        saveProgress(index: index, page: paragraph.pageNumber ?? 1)
+        isReaderPresented = true
+    }
+
     func setNarrationRate(_ value: Double) {
         let rate = Self.kokoroSpeechRate(from: value)
         guard abs(readerSettings.narrationRate - rate) > 0.001 else { return }
@@ -846,8 +911,66 @@ final class IllumeAppModel: NSObject, ObservableObject {
         }
     }
 
+    private func prewarmFirstNarrationChunk(for row: BookRow, book: ReaderBook, startIndex: Int) {
+        guard let modelDirectory = Self.kokoroModelDirectoryURL,
+              let chunk = Self.narrationChunk(in: book, from: startIndex, wordStart: 0) else { return }
+
+        let rate = Self.kokoroSpeechRate(from: readerSettings.narrationRate)
+        let voice = KokoroNarrationVoice.availableVoice(for: readerSettings.narrationVoice)
+        let key = narrationAudioCacheKey(for: chunk, bookID: row.id, voiceID: voice.id, rate: rate)
+        guard cachedPreparedNarration(for: key) == nil,
+              narrationPrefetchTasks[key] == nil else { return }
+
+        Task { @MainActor [weak self, kokoroTTS] in
+            try? await Task.sleep(for: .milliseconds(1500))
+            guard let self,
+                  self.activeBookRow == nil,
+                  self.openingBook == nil,
+                  !self.narration.isPlaying,
+                  !self.narration.isPreparing,
+                  self.audioPlayer == nil,
+                  self.streamingAudioPlayer == nil,
+                  self.cachedPreparedNarration(for: key) == nil,
+                  self.narrationPrefetchTasks[key] == nil else {
+                return
+            }
+
+            self.narrationPrefetchTasks[key] = Task(priority: .utility) {
+                do {
+                    let speechText = Self.narrationTextForSpeech(chunk.text)
+                    let renderedAudio = try await withThrowingTaskGroup(of: KokoroRenderedAudio.self) { group in
+                        group.addTask {
+                            try await kokoroTTS.render(
+                                text: speechText,
+                                modelDirectory: modelDirectory,
+                                speakerID: voice.speakerID,
+                                rate: rate
+                            )
+                        }
+                        group.addTask {
+                            try await Task.sleep(for: .seconds(60))
+                            throw NarrationPlaybackError.kokoroTimedOut
+                        }
+                        guard let renderedAudio = try await group.next() else {
+                            throw NarrationPlaybackError.emptyAudio
+                        }
+                        group.cancelAll()
+                        return renderedAudio
+                    }
+                    guard !Task.isCancelled else {
+                        try? FileManager.default.removeItem(at: renderedAudio.url)
+                        return nil
+                    }
+                    let alignedChunk = Self.narrationChunk(chunk, alignedToAudioDuration: renderedAudio.duration)
+                    return NarrationPreparedAudio(chunk: alignedChunk, audio: renderedAudio, cacheKey: key)
+                } catch {
+                    return nil
+                }
+            }
+        }
+    }
+
     private func speakKokoro(book: ReaderBook, paragraphIndex: Int, wordStart: Int = 0) async {
-        clearPrefetchedNarration()
         guard let chunk = Self.narrationChunk(in: book, from: paragraphIndex, wordStart: wordStart) else { return }
 
         stopPlayback(keepNarrationState: true)
@@ -869,6 +992,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
                 voiceID: narrationVoiceSnapshot.id,
                 rate: narrationRateSnapshot
             )
+            clearPrefetchedNarration(preserving: [key])
             if let prepared = await preparedNarrationAudioIfAvailable(for: key) {
                 guard (narration.isPlaying || narration.isPreparing),
                       narrationParagraphIndex == chunk.startParagraphIndex,
@@ -901,12 +1025,15 @@ final class IllumeAppModel: NSObject, ObservableObject {
                 voice: narrationVoiceSnapshot,
                 rate: narrationRateSnapshot
             )
+            guard !Task.isCancelled else {
+                discardPreparedNarration(prepared)
+                return
+            }
             guard (narration.isPlaying || narration.isPreparing),
                   narrationParagraphIndex == chunk.startParagraphIndex,
                   narrationChunkEndParagraphIndex == chunk.endParagraphIndex,
                   narrationContinuationParagraphIndex == chunk.continuationParagraphIndex,
-                  narrationContinuationWordStart == chunk.continuationWordStart,
-                  !Task.isCancelled else {
+                  narrationContinuationWordStart == chunk.continuationWordStart else {
                 discardPreparedNarration(prepared)
                 return
             }
@@ -1474,10 +1601,10 @@ final class IllumeAppModel: NSObject, ObservableObject {
         }
     }
 
-    private func clearPrefetchedNarration() {
-        let tasks = Array(narrationPrefetchTasks.values)
-        narrationPrefetchTasks.removeAll()
-        for task in tasks {
+    private func clearPrefetchedNarration(preserving preservedKeys: Set<NarrationAudioCacheKey> = []) {
+        let staleTasks = narrationPrefetchTasks.filter { key, _ in !preservedKeys.contains(key) }
+        for (key, task) in staleTasks {
+            narrationPrefetchTasks[key] = nil
             task.cancel()
             Task {
                 if let prepared = await task.value {
@@ -3169,6 +3296,75 @@ final class IllumeAppModel: NSObject, ObservableObject {
         calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
         let components = calendar.dateComponents([.year, .month], from: now)
         return calendar.date(from: components) ?? now
+    }
+
+    nonisolated private static func cachedParsedReaderBook(for row: BookRow) -> ReaderBook? {
+        let url = parsedReaderBookCacheURL(for: row.id)
+        guard FileManager.default.fileExists(atPath: url.path),
+              let data = try? Data(contentsOf: url),
+              let cached = try? IllumeJSON.decoder().decode(CachedReaderBook.self, from: data),
+              cached.schemaVersion == 1,
+              cached.bookID == row.id,
+              cached.documentType == row.documentType,
+              cached.storagePath == row.storagePath,
+              cached.fileSize == row.fileSize,
+              cached.pageCount == row.pageCount,
+              cached.paragraphCount == row.paragraphCount,
+              cached.chapterCount == row.chapterCount,
+              !cached.book.paragraphs.isEmpty else {
+            return nil
+        }
+        return cached.book
+    }
+
+    nonisolated private static func storeParsedReaderBook(_ book: ReaderBook, for row: BookRow) {
+        guard !book.paragraphs.isEmpty else { return }
+        let cached = CachedReaderBook(
+            schemaVersion: 1,
+            bookID: row.id,
+            documentType: row.documentType,
+            storagePath: row.storagePath,
+            fileSize: row.fileSize,
+            pageCount: row.pageCount,
+            paragraphCount: row.paragraphCount,
+            chapterCount: row.chapterCount,
+            book: book
+        )
+        do {
+            let directory = parsedReaderBookCacheDirectory()
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let data = try IllumeJSON.encoder().encode(cached)
+            try data.write(to: parsedReaderBookCacheURL(for: row.id), options: [.atomic])
+        } catch {
+            print("Could not store parsed reader book cache: \(error)")
+        }
+    }
+
+    nonisolated private static func applyLibraryMetadata(from row: BookRow, to book: inout ReaderBook) {
+        book.title = row.title
+        if !row.author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            book.author = row.author
+        }
+        book.fileName = row.fileName
+        book.coverUrl = row.coverUrl
+    }
+
+    nonisolated private static func parsedReaderBookCacheURL(for bookID: UUID) -> URL {
+        parsedReaderBookCacheDirectory()
+            .appendingPathComponent(bookID.uuidString.lowercased())
+            .appendingPathExtension("json")
+    }
+
+    nonisolated private static func parsedReaderBookCacheDirectory() -> URL {
+        let base = (try? FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )) ?? FileManager.default.temporaryDirectory
+        return base
+            .appendingPathComponent("Illume", isDirectory: true)
+            .appendingPathComponent("ParsedBooks", isDirectory: true)
     }
 
     private func documentType(for url: URL) -> DocumentType {

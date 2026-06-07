@@ -153,12 +153,52 @@ private struct ReaderImageChunkCache {
     }
 }
 
-private enum ReaderSheetDestination: String, Identifiable {
+fileprivate enum ReaderSheetDestination: String, Identifiable {
     case contents
     case imageStyles
     case fontSettings
+    case voices
 
     var id: String { rawValue }
+
+    var menuTitle: String {
+        switch self {
+        case .contents:
+            return "Contents"
+        case .imageStyles:
+            return "Image Styles"
+        case .fontSettings:
+            return "Font Settings"
+        case .voices:
+            return "Voices"
+        }
+    }
+
+    var menuIconName: String {
+        switch self {
+        case .contents:
+            return "list.bullet"
+        case .imageStyles:
+            return "paintpalette.fill"
+        case .fontSettings:
+            return "textformat.size"
+        case .voices:
+            return "waveform"
+        }
+    }
+
+    var menuExpansionAnchor: UnitPoint {
+        switch self {
+        case .contents:
+            return UnitPoint(x: 0.5, y: 0.12)
+        case .imageStyles:
+            return UnitPoint(x: 0.5, y: 0.34)
+        case .fontSettings:
+            return UnitPoint(x: 0.5, y: 0.52)
+        case .voices:
+            return UnitPoint(x: 0.5, y: 0.7)
+        }
+    }
 }
 
 struct ReaderView: View {
@@ -282,8 +322,8 @@ struct ReaderView: View {
                     GeometryReader { geometry in
                         let useCompactControls = isShowingImageMode || controlsCollapsed || geometry.size.width < 430
 
-                        VStack(spacing: speedPickerExpanded ? (useCompactControls ? 12 : 14) : (useCompactControls ? 7 : 9)) {
-                            if !speedPickerExpanded {
+                        VStack(spacing: (speedPickerExpanded || quickMenuOpen) ? (useCompactControls ? 12 : 14) : (useCompactControls ? 7 : 9)) {
+                            if !speedPickerExpanded && !quickMenuOpen {
                                 ReaderProgressStrip(
                                     currentIndex: currentIndex,
                                     totalCount: book.paragraphs.count,
@@ -296,49 +336,71 @@ struct ReaderView: View {
                             if speedPickerExpanded {
                                 ReaderNarrationSpeedPickerPanel(
                                     rate: app.readerSettings.narrationRate,
-                                    voiceID: app.readerSettings.narrationVoice,
                                     isCollapsed: useCompactControls,
                                     onDarkBackground: isShowingImageMode,
                                     selectRate: { rate in
                                         app.setNarrationRate(rate)
                                         revealReaderButtons(autohide: false)
-                                    },
-                                    selectVoice: { voice in
-                                        app.setNarrationVoice(voice.id)
-                                        app.previewNarrationVoice(voice, in: book, from: currentIndex)
-                                        revealReaderButtons(autohide: false)
                                     }
                                 )
-                                .frame(width: min(geometry.size.width - 28, useCompactControls ? 360 : 420))
+                                .frame(width: min(geometry.size.width - 28, useCompactControls ? 336 : 386))
                                 .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottom)))
                             }
 
-                            HStack(alignment: .bottom, spacing: useCompactControls ? 8 : 10) {
-                                ReaderNarrationSpeedPickerButton(
-                                    rate: app.readerSettings.narrationRate,
-                                    voiceID: app.readerSettings.narrationVoice,
-                                    isExpanded: speedPickerExpanded,
+                            if quickMenuOpen {
+                                ReaderQuickMenuOverlay(
+                                    progressPercent: readingProgressPercent(in: book),
+                                    hasTableOfContents: !tableOfContentsEntries(for: book).isEmpty,
+                                    imageModeEnabled: $imageModeEnabled,
+                                    imageModeLoading: app.readerImagePhase == .checking || app.readerImagePhase == .generating,
+                                    imageModeDisabled: imageParagraph(in: book) == nil,
+                                    activeDestination: activeReaderSheet,
                                     isCollapsed: useCompactControls,
                                     onDarkBackground: isShowingImageMode,
-                                    toggleExpansion: {
-                                        readerButtonsAutohideTask?.cancel()
-                                        withAnimation(IllumeTheme.spring) {
-                                            speedPickerExpanded.toggle()
-                                        }
-                                        revealReaderButtons(autohide: false)
+                                    openContents: {
+                                        openQuickMenuDestination(.contents)
                                     },
-                                    selectRate: { rate in
-                                        app.setNarrationRate(rate)
-                                        revealReaderButtons(autohide: false)
+                                    openImageStyles: {
+                                        openQuickMenuDestination(.imageStyles)
                                     },
-                                    selectVoice: { voice in
-                                        app.setNarrationVoice(voice.id)
-                                        app.previewNarrationVoice(voice, in: book, from: currentIndex)
-                                        revealReaderButtons(autohide: false)
+                                    openFontSettings: {
+                                        openQuickMenuDestination(.fontSettings)
+                                    },
+                                    openVoices: {
+                                        openQuickMenuDestination(.voices)
+                                    },
+                                    toggleImageMode: { toggleImageMode(for: book) },
+                                    closeDestination: {
+                                        closeQuickMenuDestination()
+                                    },
+                                    closeMenu: {
+                                        closeQuickMenu()
+                                    },
+                                    destinationContent: { destination in
+                                        readerMenuPanel(for: destination)
                                     }
                                 )
+                                .frame(width: min(geometry.size.width - 28, useCompactControls ? 336 : 386))
+                                .transition(.readerQuickMenuBubble)
+                            }
 
-                                if !speedPickerExpanded {
+                            if !speedPickerExpanded && !quickMenuOpen {
+                                HStack(alignment: .bottom, spacing: useCompactControls ? 8 : 10) {
+                                    ReaderNarrationSpeedPickerButton(
+                                        rate: app.readerSettings.narrationRate,
+                                        isExpanded: speedPickerExpanded,
+                                        isCollapsed: useCompactControls,
+                                        onDarkBackground: isShowingImageMode,
+                                        toggleExpansion: {
+                                            readerButtonsAutohideTask?.cancel()
+                                            withAnimation(IllumeTheme.spring) {
+                                                quickMenuOpen = false
+                                                speedPickerExpanded.toggle()
+                                            }
+                                            revealReaderButtons(autohide: false)
+                                        }
+                                    )
+
                                     ReaderTransportRail(
                                         book: book,
                                         currentIndex: currentIndex,
@@ -364,14 +426,13 @@ struct ReaderView: View {
                                     }
                                     .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottom)))
                                 }
+                                .frame(maxWidth: .infinity, alignment: .center)
                             }
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .offset(y: speedPickerExpanded ? 5 : 0)
                         }
                         .padding(.horizontal, 18)
-                        .frame(width: geometry.size.width, alignment: .bottom)
+                        .frame(width: geometry.size.width, height: geometry.size.height, alignment: .bottom)
                     }
-                    .frame(height: readerControlsHeight(isShowingImageMode: isShowingImageMode, isExpanded: speedPickerExpanded))
+                    .frame(height: readerControlsHeight(isShowingImageMode: isShowingImageMode, speedPickerExpanded: speedPickerExpanded, quickMenuOpen: quickMenuOpen, activeMenuDestination: activeReaderSheet))
                     .padding(.bottom, useCompactControlsBottomPadding(isShowingImageMode: isShowingImageMode))
                     .opacity(hideBottomControls ? 0 : 1)
                     .blur(radius: hideBottomControls ? 14 : 0)
@@ -383,52 +444,13 @@ struct ReaderView: View {
                 }
             }
 
-            if let book = app.activeBook, quickMenuOpen {
-                ZStack(alignment: .bottomTrailing) {
-                    Color.black.opacity(0.001)
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            closeQuickMenu()
-                        }
-
-                    ReaderQuickMenuOverlay(
-                        progressPercent: readingProgressPercent(in: book),
-                        hasTableOfContents: !tableOfContentsEntries(for: book).isEmpty,
-                        imageModeEnabled: $imageModeEnabled,
-                        imageModeLoading: app.readerImagePhase == .checking || app.readerImagePhase == .generating,
-                        imageModeDisabled: imageParagraph(in: book) == nil,
-                        openContents: {
-                            closeQuickMenu()
-                            activeReaderSheet = .contents
-                        },
-                        openImageStyles: {
-                            closeQuickMenu()
-                            activeReaderSheet = .imageStyles
-                        },
-                        openFontSettings: {
-                            closeQuickMenu()
-                            activeReaderSheet = .fontSettings
-                        },
-                        toggleImageMode: { toggleImageMode(for: book) }
-                    )
-                    .frame(width: min(UIScreen.main.bounds.width - 72, 304))
-                    .padding(.trailing, 17)
-                    .padding(.bottom, 18)
-                    .transition(.readerQuickMenuBubble)
-                }
-                .zIndex(12)
-            }
         }
         .foregroundStyle(ReaderDefaultStyle.foreground)
-        .sheet(item: $activeReaderSheet) { destination in
-            readerSheet(for: destination)
-        }
         .onChange(of: activeReaderSheet) {
             withAnimation(IllumeTheme.spring) {
-                readerLiftedForBottomPanel = activeReaderSheet != nil
+                readerLiftedForBottomPanel = false
             }
             if activeReaderSheet != nil {
-                closeQuickMenu()
                 revealReaderButtons(autohide: false)
             } else {
                 scheduleReaderButtonsAutohide()
@@ -740,10 +762,10 @@ struct ReaderView: View {
 
     private func hideReaderButtons(allowDuringPreparation: Bool = false) {
         guard activeReaderSheet == nil,
-              (allowDuringPreparation || !app.narration.isPreparing),
-              !quickMenuOpen else { return }
+              (allowDuringPreparation || !app.narration.isPreparing) else { return }
         withAnimation(IllumeTheme.spring) {
             speedPickerExpanded = false
+            quickMenuOpen = false
         }
         withAnimation(.easeOut(duration: 0.16)) {
             readerButtonsHidden = true
@@ -753,7 +775,7 @@ struct ReaderView: View {
     private func toggleQuickMenu() {
         readerButtonsAutohideTask?.cancel()
         revealReaderButtons(autohide: false)
-        withAnimation(quickMenuOpen ? readerQuickMenuCloseAnimation : readerQuickMenuOpenAnimation) {
+        withAnimation(IllumeTheme.spring) {
             speedPickerExpanded = false
             quickMenuOpen.toggle()
             readerLiftedForBottomPanel = activeReaderSheet != nil
@@ -762,14 +784,15 @@ struct ReaderView: View {
 
     private func closeQuickMenu() {
         guard quickMenuOpen else { return }
-        withAnimation(readerQuickMenuCloseAnimation) {
+        withAnimation(IllumeTheme.spring) {
             quickMenuOpen = false
+            activeReaderSheet = nil
             readerLiftedForBottomPanel = activeReaderSheet != nil
         }
     }
 
     @ViewBuilder
-    private func readerSheet(for destination: ReaderSheetDestination) -> some View {
+    private func readerMenuPanel(for destination: ReaderSheetDestination) -> some View {
         if let book = app.activeBook {
             switch destination {
             case .contents:
@@ -781,20 +804,31 @@ struct ReaderView: View {
                 ) { entry in
                     selectTableOfContentsEntry(entry, in: book)
                 }
-                .presentationDetents([.medium, .large])
-                .presentationCornerRadius(42)
             case .imageStyles:
                 ReaderImageStyleSheet()
-                    .presentationDetents([.height(360), .medium])
-                    .presentationCornerRadius(42)
             case .fontSettings:
                 ReaderFontSettingsSheet()
-                    .presentationDetents([.medium])
-                    .presentationCornerRadius(42)
+            case .voices:
+                ReaderVoiceSettingsSheet()
             }
         } else {
             EmptyView()
         }
+    }
+
+    private func openQuickMenuDestination(_ destination: ReaderSheetDestination) {
+        readerButtonsAutohideTask?.cancel()
+        withAnimation(readerTypographyPanelAnimation) {
+            activeReaderSheet = destination
+        }
+        revealReaderButtons(autohide: false)
+    }
+
+    private func closeQuickMenuDestination() {
+        withAnimation(readerTypographyPanelAnimation) {
+            activeReaderSheet = nil
+        }
+        revealReaderButtons(autohide: false)
     }
 
     private func selectTableOfContentsEntry(_ entry: TableOfContentsEntry, in book: ReaderBook) {
@@ -1116,7 +1150,27 @@ struct ReaderView: View {
         if let anchorLocation,
            anchorLocation >= 0,
            anchorLocation < nsText.length {
-            containingRange = NSRange(location: anchorLocation, length: 0)
+            let windowStart = firstWordStart(in: text, atOrAfter: anchorLocation) ?? anchorLocation
+            let windowEnd = narrationPreviewWindowEnd(in: text, from: windowStart, previewCharacters: previewCharacters)
+            let window = narrationPreviewExpandedWindow(
+                in: text,
+                start: windowStart,
+                end: windowEnd,
+                minimumCharacters: previewCharacters
+            )
+            let excerpt = nsText.substring(with: NSRange(location: window.start, length: window.end - window.start))
+            let adjustedRange = activeRange.location >= window.start && NSMaxRange(activeRange) <= window.end
+                ? NSRange(
+                    location: activeRange.location - window.start,
+                    length: activeRange.length
+                )
+                : nil
+
+            return (
+                excerpt,
+                adjustedRange,
+                firstWordStart(in: text, atOrAfter: window.start) ?? window.start
+            )
         } else {
             containingRange = activeRange
         }
@@ -1233,9 +1287,17 @@ struct ReaderView: View {
         (isShowingImageMode || controlsCollapsed) ? 92 : 112
     }
 
-    private func readerControlsHeight(isShowingImageMode: Bool, isExpanded: Bool) -> CGFloat {
-        guard isExpanded else {
+    private func readerControlsHeight(isShowingImageMode: Bool, speedPickerExpanded: Bool, quickMenuOpen: Bool, activeMenuDestination: ReaderSheetDestination?) -> CGFloat {
+        guard speedPickerExpanded || quickMenuOpen else {
             return useCompactControlsHeight(isShowingImageMode: isShowingImageMode)
+        }
+
+        if quickMenuOpen {
+            if activeMenuDestination != nil {
+                let expandedHeight: CGFloat = (isShowingImageMode || controlsCollapsed) ? 560 : 640
+                return min(UIScreen.main.bounds.height * 0.72, expandedHeight)
+            }
+            return (isShowingImageMode || controlsCollapsed) ? 392 : 420
         }
 
         return (isShowingImageMode || controlsCollapsed) ? 248 : 280
@@ -1472,8 +1534,6 @@ struct TableOfContentsEntry: Identifiable, Equatable {
 }
 
 struct TableOfContentsSheet: View {
-    @Environment(\.dismiss) private var dismiss
-
     let book: ReaderBook
     let entries: [TableOfContentsEntry]
     let currentIndex: Int
@@ -1510,22 +1570,6 @@ struct TableOfContentsSheet: View {
         .scrollIndicators(.hidden)
         .scrollContentBackground(.hidden)
         .background(TableOfContentsStyle.background)
-        .overlay(alignment: .topTrailing) {
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 27, weight: .medium))
-                    .foregroundStyle(TableOfContentsStyle.closeIcon)
-                    .frame(width: 58, height: 58)
-                    .background(.white.opacity(0.82), in: Circle())
-                    .shadow(color: .black.opacity(0.08), radius: 18, y: 10)
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 38)
-            .padding(.trailing, 38)
-            .accessibilityLabel("Close table of contents")
-        }
         .presentationCornerRadius(42)
         .presentationBackground(.clear)
     }
@@ -1536,7 +1580,6 @@ private enum TableOfContentsStyle {
     static let ink = Color.white.opacity(0.94)
     static let secondaryText = Color.white.opacity(0.46)
     static let divider = Color.white.opacity(0.12)
-    static let closeIcon = Color.white.opacity(0.62)
 }
 
 struct TableOfContentsHeader: View {
@@ -1544,25 +1587,24 @@ struct TableOfContentsHeader: View {
     let progressPercent: Int
 
     var body: some View {
-        HStack(alignment: .center, spacing: 17) {
+        HStack(alignment: .center, spacing: 14) {
             cover
 
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 Text(book.title)
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(TableOfContentsStyle.ink)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.trailing, 86)
 
                 pageProgress
             }
         }
-        .padding(.leading, 33)
+        .padding(.leading, 28)
         .padding(.trailing, 28)
-        .padding(.top, 44)
-        .padding(.bottom, 29)
+        .padding(.top, 30)
+        .padding(.bottom, 20)
     }
 
     @ViewBuilder
@@ -1574,7 +1616,7 @@ struct TableOfContentsHeader: View {
                 fallbackCover
             }
         }
-        .frame(width: 55, height: 80)
+        .frame(width: 48, height: 70)
         .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
         .shadow(color: .black.opacity(0.16), radius: 7, x: 0, y: 3)
     }
@@ -1587,7 +1629,7 @@ struct TableOfContentsHeader: View {
         )
         .overlay(alignment: .bottomLeading) {
             Text(book.title.prefix(1))
-                .font(.system(size: 32, weight: .black, design: .rounded))
+                .font(.system(size: 28, weight: .black, design: .rounded))
                 .foregroundStyle(.white.opacity(0.88))
                 .padding(7)
         }
@@ -1601,7 +1643,7 @@ struct TableOfContentsHeader: View {
             Text("\(progressPercent)%")
                 .foregroundStyle(TableOfContentsStyle.ink)
         }
-        .font(.system(size: 21, weight: .regular))
+        .font(.system(size: 18, weight: .regular))
         .monospacedDigit()
         .lineLimit(1)
     }
@@ -2078,7 +2120,6 @@ private extension UIFont {
 
 struct ReaderTransportRail: View {
     @EnvironmentObject private var app: IllumeAppModel
-    @State private var voicePopoverOpen = false
     @State private var speedPopoverOpen = false
 
     let book: ReaderBook
@@ -2093,26 +2134,6 @@ struct ReaderTransportRail: View {
     var body: some View {
         IllumeGlassEffectGroup(spacing: railSpacing) {
             HStack(spacing: railSpacing) {
-                if !isCollapsed {
-                    Button {
-                        voicePopoverOpen.toggle()
-                        speedPopoverOpen = false
-                    } label: {
-                        Text(KokoroNarrationVoice.symbol(for: app.readerSettings.narrationVoice))
-                            .font(.system(.subheadline, design: .rounded, weight: .black))
-                            .foregroundStyle(onDarkBackground ? .white : IllumeTheme.ink)
-                            .frame(width: compactButtonSize, height: compactButtonSize)
-                    }
-                    .illumeNativeGlassButton(tint: buttonTint, borderShape: .circle, controlSize: .small, fallback: ReaderGlassCircleButtonStyle(tint: buttonTint))
-                    .accessibilityLabel("Narration voice")
-                    .popover(isPresented: $voicePopoverOpen, attachmentAnchor: .point(.top), arrowEdge: .bottom) {
-                        NarrationVoicePopover {
-                            voicePopoverOpen = false
-                        }
-                        .presentationCompactAdaptation(.popover)
-                    }
-                }
-
                 ReaderRailIconButton(
                     systemName: "arrow.counterclockwise",
                     isDisabled: currentIndex <= 0,
@@ -2144,10 +2165,9 @@ struct ReaderTransportRail: View {
                 if !isCollapsed {
                     Button {
                         speedPopoverOpen.toggle()
-                        voicePopoverOpen = false
                     } label: {
                         Text(Self.formatRate(app.readerSettings.narrationRate))
-                            .font(.system(.caption, design: .rounded, weight: .black))
+                            .font(IllumeTypography.sans(12, weight: .heavy))
                             .foregroundStyle(onDarkBackground ? .white : IllumeTheme.ink)
                             .frame(width: 40, height: compactButtonSize)
                     }
@@ -2198,157 +2218,61 @@ struct ReaderTransportRail: View {
     }
 }
 
-struct NarrationVoicePopover: View {
-    @EnvironmentObject private var app: IllumeAppModel
-    let dismiss: () -> Void
-
-    var body: some View {
-        VStack(spacing: 10) {
-            Text("Voice")
-                .font(.system(size: 11, weight: .heavy, design: .rounded))
-                .foregroundStyle(IllumeTheme.ink.opacity(0.4))
-                .textCase(.uppercase)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 4)
-
-            VStack(spacing: 8) {
-                ForEach(KokoroNarrationVoice.allCases) { option in
-                    let isSelected = app.readerSettings.narrationVoice == option.id
-
-                    Button {
-                        app.setNarrationVoice(option.id)
-                        dismiss()
-                    } label: {
-                        HStack(spacing: 12) {
-                            Text(option.symbol)
-                                .font(.system(size: 16, weight: .black, design: .rounded))
-                                .frame(width: 32)
-                                .foregroundStyle(isSelected ? .white : IllumeTheme.ink.opacity(0.9))
-
-                            Text(option.label)
-                                .font(.system(size: 15, weight: isSelected ? .bold : .medium, design: .rounded))
-                                .foregroundStyle(isSelected ? .white : IllumeTheme.ink.opacity(0.85))
-
-                            Spacer()
-
-                            if isSelected {
-                                AnimatedWaveformView(color: .white)
-                            } else {
-                                Image(systemName: "circle")
-                                    .font(.system(size: 12, weight: .bold))
-                                    .foregroundStyle(IllumeTheme.ink.opacity(0.24))
-                            }
-                        }
-                        .padding(.horizontal, 14)
-                        .frame(maxWidth: .infinity, minHeight: 46)
-                        .background {
-                            if isSelected {
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .fill(
-                                        LinearGradient(
-                                            colors: [IllumeTheme.accent.opacity(0.9), IllumeTheme.coral.opacity(0.9)],
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        )
-                                    )
-                                    .shadow(color: IllumeTheme.coral.opacity(0.3), radius: 8, x: 0, y: 3)
-                            } else {
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .fill(Color.white.opacity(0.04))
-                            }
-                        }
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .strokeBorder(
-                                    isSelected ? .white.opacity(0.3) : IllumeTheme.ink.opacity(0.08),
-                                    lineWidth: 1
-                                )
-                        }
-                        .scaleEffect(isSelected ? 1.015 : 1.0)
-                        .animation(.spring(response: 0.2, dampingFraction: 0.7), value: isSelected)
-                    }
-                    .buttonStyle(LiquidLiftButtonStyle())
-                    .accessibilityLabel("Set narration voice")
-                    .accessibilityValue(option.label)
-                }
-            }
-        }
-        .padding(14)
-        .frame(width: 260)
-        .background {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .shadow(color: .black.opacity(0.24), radius: 24, x: 0, y: 12)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
-        }
-    }
-}
-
 struct NarrationSpeedPopover: View {
     @EnvironmentObject private var app: IllumeAppModel
-    private let presets = [1.0, 1.25, 1.5, 2.0]
+    private let rates = stride(from: 0.7, through: 2.0, by: 0.1).map { ($0 * 10).rounded() / 10 }
 
     var body: some View {
-        VStack(spacing: 16) {
-            HStack {
-                Text("Speed")
-                    .font(.system(size: 11, weight: .heavy, design: .rounded))
-                    .foregroundStyle(IllumeTheme.ink.opacity(0.4))
-                    .textCase(.uppercase)
+        VStack(spacing: 12) {
+            Text("Narration Speed")
+                .font(IllumeTypography.sans(25, weight: .regular))
+                .foregroundStyle(IllumeTheme.ink.opacity(0.7))
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+                .frame(maxWidth: .infinity)
 
-                Spacer()
+            ZStack {
+                Capsule()
+                    .fill(IllumeTheme.ink.opacity(0.1))
+                    .frame(height: 50)
+                    .padding(.horizontal, 10)
+                    .allowsHitTesting(false)
 
-                Text(ReaderTransportRail.formatRate(app.readerSettings.narrationRate))
-                    .font(.system(size: 15, weight: .black, design: .rounded))
-                    .foregroundStyle(IllumeTheme.ink)
-            }
-            .padding(.horizontal, 4)
-
-            // Custom dynamic gradient slider
-            IllumeSlider(
-                value: narrationRateBinding,
-                bounds: 0.7...2.0,
-                step: 0.05,
-                onDarkBackground: false
-            )
-            .padding(.horizontal, 4)
-
-            HStack(spacing: 8) {
-                ForEach(presets, id: \.self) { preset in
-                    let isSelected = abs(app.readerSettings.narrationRate - preset) < 0.01
-
-                    PresetSpeedButton(
-                        preset: preset,
-                        isSelected: isSelected,
-                        onDarkBackground: false,
-                        action: {
-                            app.setNarrationRate(preset)
-                        }
-                    )
+                Picker("Narration Speed", selection: narrationRateBinding) {
+                    ForEach(rates, id: \.self) { option in
+                        Text(ReaderTransportRail.formatRate(option))
+                            .font(IllumeTypography.sans(34, weight: .regular))
+                            .tag(option)
+                    }
                 }
+                .pickerStyle(.wheel)
+                .labelsHidden()
+                .frame(height: 196)
+                .clipped()
             }
         }
         .padding(16)
-        .frame(width: 240)
+        .frame(width: 288)
         .background {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(.ultraThinMaterial)
+            RoundedRectangle(cornerRadius: 34, style: .continuous)
+                .fill(IllumeTheme.paper.opacity(0.9))
                 .shadow(color: .black.opacity(0.24), radius: 24, x: 0, y: 12)
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 34, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
         }
     }
 
     private var narrationRateBinding: Binding<Double> {
         Binding(
-            get: { app.readerSettings.narrationRate },
+            get: { nearestRate(to: app.readerSettings.narrationRate) },
             set: { app.setNarrationRate($0) }
         )
+    }
+
+    private func nearestRate(to value: Double) -> Double {
+        rates.min(by: { abs($0 - value) < abs($1 - value) }) ?? 1.0
     }
 }
 
@@ -2494,15 +2418,10 @@ struct ReaderNarrationButton: View {
 
 struct ReaderNarrationSpeedPickerButton: View {
     let rate: Double
-    let voiceID: String
     let isExpanded: Bool
     var isCollapsed = false
     var onDarkBackground = false
     let toggleExpansion: () -> Void
-    let selectRate: (Double) -> Void
-    let selectVoice: (KokoroNarrationVoice) -> Void
-
-    private let presets = [0.7, 1.0, 1.25, 1.5, 1.75, 2.0]
 
     var body: some View {
         Button(action: toggleExpansion) {
@@ -2517,7 +2436,7 @@ struct ReaderNarrationSpeedPickerButton: View {
 
     private var speedLabel: some View {
         Text(ReaderTransportRail.formatRate(rate))
-            .font(.system(size: onDarkBackground ? 14 : (isCollapsed ? 12 : 14), weight: .black, design: .rounded))
+            .font(IllumeTypography.sans(onDarkBackground ? 14 : (isCollapsed ? 12 : 14), weight: .heavy))
             .foregroundStyle(onDarkBackground ? .white : IllumeTheme.ink)
             .minimumScaleFactor(0.72)
             .lineLimit(1)
@@ -2535,120 +2454,86 @@ struct ReaderNarrationSpeedPickerButton: View {
 
 struct ReaderNarrationSpeedPickerPanel: View {
     let rate: Double
-    let voiceID: String
     var isCollapsed = false
     var onDarkBackground = false
     let selectRate: (Double) -> Void
-    let selectVoice: (KokoroNarrationVoice) -> Void
 
-    private let presets = [0.7, 1.0, 1.25, 1.5, 1.75, 2.0]
+    private let rates = stride(from: 0.7, through: 2.0, by: 0.1).map { ($0 * 10).rounded() / 10 }
 
     var body: some View {
-        VStack(spacing: sectionSpacing) {
-            speedSection
-            voiceSection
-        }
-        .padding(.horizontal, horizontalPadding)
-        .padding(.vertical, verticalPadding)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .shadow(color: onDarkBackground ? .black.opacity(0.36) : .black.opacity(0.18), radius: 22, x: 0, y: 12)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .strokeBorder(onDarkBackground ? .white.opacity(0.18) : Color.white.opacity(0.12), lineWidth: 1)
-        }
-    }
-
-    private var speedSection: some View {
-        VStack(spacing: innerSpacing) {
-            sectionHeader(title: "Speed", value: ReaderTransportRail.formatRate(rate))
-
-            HStack(spacing: presetSpacing) {
-                ForEach(presets, id: \.self) { preset in
-                    let isSelected = abs(rate - preset) < 0.01
-
-                    PresetSpeedButton(
-                        preset: preset,
-                        isSelected: isSelected,
-                        onDarkBackground: onDarkBackground,
-                        action: {
-                            selectRate(preset)
-                        }
-                    )
-                }
-            }
-
-            // Custom dynamic gradient slider
-            IllumeSlider(
-                value: narrationRateBinding,
-                bounds: 0.7...2.0,
-                step: 0.05,
-                onDarkBackground: onDarkBackground
-            )
-            .padding(.top, 4)
-        }
-    }
-
-    private var voiceSection: some View {
-        VStack(spacing: innerSpacing) {
-            sectionHeader(title: "Voice", value: KokoroNarrationVoice.availableVoice(for: voiceID).label)
-
-            let columns = [
-                GridItem(.flexible(), spacing: voiceGridSpacing),
-                GridItem(.flexible(), spacing: voiceGridSpacing)
-            ]
-
-            LazyVGrid(columns: columns, spacing: voiceGridSpacing) {
-                ForEach(KokoroNarrationVoice.allCases) { voice in
-                    let isSelected = KokoroNarrationVoice.availableVoice(for: voiceID) == voice
-
-                    VoiceCard(
-                        voice: voice,
-                        isSelected: isSelected,
-                        onDarkBackground: onDarkBackground,
-                        action: {
-                            selectVoice(voice)
-                        }
-                    )
-                }
-            }
-        }
-    }
-
-    private func sectionHeader(title: String, value: String) -> some View {
-        HStack {
-            Text(title.uppercased())
-                .font(.system(size: headerFontSize, weight: .heavy, design: .rounded))
-                .foregroundStyle(onDarkBackground ? .white.opacity(0.5) : IllumeTheme.ink.opacity(0.4))
-
-            Spacer()
-
-            Text(value)
-                .font(.system(size: headerValueFontSize, weight: .black, design: .rounded))
-                .foregroundStyle(onDarkBackground ? .white : IllumeTheme.ink)
-                .minimumScaleFactor(0.72)
+        VStack(spacing: isCollapsed ? 10 : 14) {
+            Text("Narration Speed")
+                .font(IllumeTypography.sans(isCollapsed ? 26 : 31, weight: .regular))
+                .foregroundStyle(titleColor)
                 .lineLimit(1)
+                .minimumScaleFactor(0.76)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.top, isCollapsed ? 4 : 8)
+
+            Picker("Narration Speed", selection: narrationRateBinding) {
+                ForEach(rates, id: \.self) { option in
+                    Text(ReaderTransportRail.formatRate(option))
+                        .font(IllumeTypography.sans(isCollapsed ? 34 : 39, weight: .regular))
+                        .foregroundStyle(pickerTextColor)
+                        .tag(option)
+                }
+            }
+            .pickerStyle(.wheel)
+            .labelsHidden()
+            .frame(height: isCollapsed ? 204 : 228)
+            .clipped()
+            .colorScheme(onDarkBackground ? .dark : .light)
+        }
+        .padding(.horizontal, isCollapsed ? 14 : 18)
+        .padding(.top, isCollapsed ? 18 : 22)
+        .padding(.bottom, isCollapsed ? 14 : 18)
+        .frame(maxWidth: .infinity)
+        .background {
+            RoundedRectangle(cornerRadius: panelCornerRadius, style: .continuous)
+                .fill(panelTint)
+        }
+        .illumeLiquidGlassRounded(cornerRadius: panelCornerRadius, tint: panelGlassTint)
+        .shadow(color: onDarkBackground ? .black.opacity(0.38) : .black.opacity(0.18), radius: 24, x: 0, y: 14)
+        .overlay {
+            RoundedRectangle(cornerRadius: panelCornerRadius, style: .continuous)
+                .strokeBorder(borderTint, lineWidth: 1)
         }
     }
 
     private var narrationRateBinding: Binding<Double> {
         Binding(
-            get: { rate },
+            get: { nearestRate(to: rate) },
             set: { selectRate($0) }
         )
     }
 
-    private var sectionSpacing: CGFloat { isCollapsed ? 14 : 18 }
-    private var innerSpacing: CGFloat { isCollapsed ? 8 : 10 }
-    private var presetSpacing: CGFloat { isCollapsed ? 5 : 6 }
-    private var voiceGridSpacing: CGFloat { isCollapsed ? 6 : 8 }
-    private var horizontalPadding: CGFloat { isCollapsed ? 14 : 18 }
-    private var verticalPadding: CGFloat { isCollapsed ? 14 : 18 }
-    private var headerFontSize: CGFloat { isCollapsed ? 10 : 11 }
-    private var headerValueFontSize: CGFloat { isCollapsed ? 13 : 15 }
+    private func nearestRate(to value: Double) -> Double {
+        rates.min(by: { abs($0 - value) < abs($1 - value) }) ?? 1.0
+    }
+
+    private var panelTint: Color {
+        onDarkBackground ? Color.black.opacity(0.72) : IllumeTheme.paper.opacity(0.9)
+    }
+
+    private var panelGlassTint: Color {
+        onDarkBackground ? Color.black.opacity(0.56) : IllumeTheme.paper.opacity(0.72)
+    }
+
+    private var panelCornerRadius: CGFloat {
+        isCollapsed ? 34 : 42
+    }
+
+    private var pickerTextColor: Color {
+        onDarkBackground ? .white : IllumeTheme.ink
+    }
+
+    private var titleColor: Color {
+        onDarkBackground ? .white.opacity(0.9) : IllumeTheme.ink.opacity(0.72)
+    }
+
+    private var borderTint: Color {
+        onDarkBackground ? Color.white.opacity(0.18) : Color.white.opacity(0.22)
+    }
 }
 
 struct ReaderGlassRoundedButtonStyle: ButtonStyle {
@@ -2714,70 +2599,194 @@ struct ReaderTypographySettingsButton: View {
     }
 }
 
-struct ReaderQuickMenuOverlay: View {
+fileprivate struct ReaderQuickMenuOverlay<DestinationContent: View>: View {
     let progressPercent: Int
     let hasTableOfContents: Bool
     @Binding var imageModeEnabled: Bool
     let imageModeLoading: Bool
     let imageModeDisabled: Bool
+    let activeDestination: ReaderSheetDestination?
+    var isCollapsed = false
+    var onDarkBackground = false
     let openContents: () -> Void
     let openImageStyles: () -> Void
     let openFontSettings: () -> Void
+    let openVoices: () -> Void
     let toggleImageMode: () -> Void
+    let closeDestination: () -> Void
+    let closeMenu: () -> Void
+    @ViewBuilder let destinationContent: (ReaderSheetDestination) -> DestinationContent
 
     var body: some View {
-        VStack(spacing: 14) {
-            VStack(spacing: 10) {
-                ReaderQuickMenuRow(
-                    title: "Contents • \(progressPercent)%",
-                    systemName: "list.bullet",
-                    isDisabled: !hasTableOfContents,
-                    action: openContents
+        ZStack {
+            if let activeDestination {
+                ReaderQuickMenuExpandedPanel(
+                    destination: activeDestination,
+                    isCollapsed: isCollapsed,
+                    onDarkBackground: onDarkBackground,
+                    back: closeDestination,
+                    close: closeMenu
+                ) {
+                    destinationContent(activeDestination)
+                }
+                .transition(
+                    .scale(scale: 0.82, anchor: activeDestination.menuExpansionAnchor)
+                        .combined(with: .offset(y: 14))
+                        .combined(with: .opacity)
                 )
-
-                ReaderQuickMenuRow(
-                    title: "Image Styles",
-                    systemName: "paintpalette.fill",
-                    action: openImageStyles
-                )
-
-                ReaderQuickMenuRow(
-                    title: "Font Settings",
-                    systemName: "textformat.size",
-                    action: openFontSettings
-                )
+            } else {
+                rows
+                    .transition(
+                        .scale(scale: 0.92, anchor: .bottomTrailing)
+                            .combined(with: .opacity)
+                    )
             }
-
-            HStack(spacing: 14) {
-                ReaderQuickMenuIconButton(
-                    systemName: imageModeEnabled ? "photo.fill" : "photo",
-                    isSelected: imageModeEnabled,
-                    isLoading: imageModeLoading && imageModeEnabled,
-                    isDisabled: imageModeDisabled,
-                    accessibilityLabel: "Image mode",
-                    action: toggleImageMode
-                )
-
-                ReaderQuickMenuIconButton(
-                    systemName: "paintpalette",
-                    accessibilityLabel: "Image styles",
-                    action: openImageStyles
-                )
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 10)
-        .padding(.bottom, 16)
-        .background(.clear)
-        .illumeLiquidGlassRounded(cornerRadius: 28, tint: ReaderSheetGlass.menuPanelTint)
-        .shadow(color: .black.opacity(0.16), radius: 28, x: 0, y: 18)
+        .frame(maxWidth: .infinity)
+        .animation(readerTypographyPanelAnimation, value: activeDestination?.id)
+        .background {
+            RoundedRectangle(cornerRadius: panelCornerRadius, style: .continuous)
+                .fill(panelTint)
+        }
+        .illumeLiquidGlassRounded(cornerRadius: panelCornerRadius, tint: panelGlassTint)
+        .shadow(color: onDarkBackground ? .black.opacity(0.38) : .black.opacity(0.18), radius: 24, x: 0, y: 14)
+        .overlay {
+            RoundedRectangle(cornerRadius: panelCornerRadius, style: .continuous)
+                .strokeBorder(borderTint, lineWidth: 1)
+        }
+    }
+
+    private var rows: some View {
+        VStack(spacing: isCollapsed ? 8 : 10) {
+            ReaderQuickMenuRow(
+                title: "Contents • \(progressPercent)%",
+                systemName: "list.bullet",
+                isCollapsed: isCollapsed,
+                onDarkBackground: onDarkBackground,
+                isDisabled: !hasTableOfContents,
+                action: openContents
+            )
+
+            ReaderQuickMenuRow(
+                title: "Image Styles",
+                systemName: "paintpalette.fill",
+                isCollapsed: isCollapsed,
+                onDarkBackground: onDarkBackground,
+                action: openImageStyles
+            )
+
+            ReaderQuickMenuRow(
+                title: "Font Settings",
+                systemName: "textformat.size",
+                isCollapsed: isCollapsed,
+                onDarkBackground: onDarkBackground,
+                action: openFontSettings
+            )
+
+            ReaderQuickMenuRow(
+                title: "Voices",
+                systemName: "waveform",
+                isCollapsed: isCollapsed,
+                onDarkBackground: onDarkBackground,
+                action: openVoices
+            )
+
+            ReaderQuickMenuRow(
+                title: "Image Mode",
+                systemName: imageModeEnabled ? "photo.fill" : "photo",
+                isCollapsed: isCollapsed,
+                onDarkBackground: onDarkBackground,
+                isSelected: imageModeEnabled,
+                isLoading: imageModeLoading && imageModeEnabled,
+                isDisabled: imageModeDisabled,
+                action: toggleImageMode
+            )
+        }
+        .padding(.horizontal, isCollapsed ? 14 : 18)
+        .padding(.vertical, isCollapsed ? 16 : 20)
+    }
+
+    private var panelTint: Color {
+        onDarkBackground ? Color.black.opacity(0.72) : IllumeTheme.paper.opacity(0.9)
+    }
+
+    private var panelGlassTint: Color {
+        onDarkBackground ? Color.black.opacity(0.56) : IllumeTheme.paper.opacity(0.72)
+    }
+
+    private var panelCornerRadius: CGFloat {
+        isCollapsed ? 34 : 42
+    }
+
+    private var borderTint: Color {
+        onDarkBackground ? Color.white.opacity(0.18) : Color.white.opacity(0.22)
+    }
+}
+
+fileprivate struct ReaderQuickMenuExpandedPanel<Content: View>: View {
+    let destination: ReaderSheetDestination
+    var isCollapsed = false
+    var onDarkBackground = false
+    let back: () -> Void
+    let close: () -> Void
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: isCollapsed ? 12 : 14) {
+            HStack(spacing: 12) {
+                Button(action: back) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 19, weight: .black))
+                        .foregroundStyle(textColor)
+                        .frame(width: 42, height: 42)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(ReaderGlassCircleButtonStyle(tint: buttonTint, pressedScale: 0.92))
+                .accessibilityLabel("Back to reading menu")
+
+                Label(destination.menuTitle, systemImage: destination.menuIconName)
+                    .font(IllumeTypography.sans(isCollapsed ? 20 : 22, weight: .heavy))
+                    .foregroundStyle(textColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.76)
+
+                Spacer(minLength: 8)
+
+                Button(action: close) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 17, weight: .black))
+                        .foregroundStyle(textColor.opacity(0.84))
+                        .frame(width: 42, height: 42)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(ReaderGlassCircleButtonStyle(tint: buttonTint, pressedScale: 0.92))
+                .accessibilityLabel("Close reading menu")
+            }
+            .padding(.horizontal, isCollapsed ? 14 : 18)
+            .padding(.top, isCollapsed ? 14 : 18)
+
+            content()
+                .clipShape(RoundedRectangle(cornerRadius: isCollapsed ? 28 : 32, style: .continuous))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var textColor: Color {
+        onDarkBackground ? .white : IllumeTheme.ink
+    }
+
+    private var buttonTint: Color {
+        onDarkBackground ? Color.white.opacity(0.13) : Color.white.opacity(0.56)
     }
 }
 
 struct ReaderQuickMenuRow: View {
     let title: String
     let systemName: String
+    var isCollapsed = false
+    var onDarkBackground = false
+    var isSelected = false
+    var isLoading = false
     var isDisabled = false
     let action: () -> Void
 
@@ -2785,57 +2794,47 @@ struct ReaderQuickMenuRow: View {
         Button(action: action) {
             HStack(spacing: 16) {
                 Text(title)
-                    .font(.system(size: 22, weight: .regular))
-                    .foregroundStyle(.black.opacity(isDisabled ? 0.34 : 0.88))
+                    .font(IllumeTypography.sans(isCollapsed ? 20 : 22, weight: .regular))
+                    .foregroundStyle(textColor.opacity(isDisabled ? 0.38 : 1))
                     .lineLimit(1)
                     .minimumScaleFactor(0.68)
 
                 Spacer(minLength: 12)
 
-                Image(systemName: systemName)
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(.black.opacity(isDisabled ? 0.26 : 0.88))
-                    .frame(width: 34)
+                Group {
+                    if isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(textColor.opacity(0.88))
+                    } else {
+                        Image(systemName: systemName)
+                            .font(.system(size: isCollapsed ? 22 : 24, weight: .semibold))
+                    }
+                }
+                .foregroundStyle(textColor.opacity(isDisabled ? 0.3 : 0.88))
+                .frame(width: 34)
             }
             .padding(.leading, 18)
             .padding(.trailing, 16)
-            .frame(height: 56)
+            .frame(height: isCollapsed ? 50 : 56)
             .contentShape(Capsule())
         }
-        .buttonStyle(ReaderGlassCapsuleButtonStyle(tint: Color.white.opacity(0.7), pressedScale: 0.965))
+        .buttonStyle(ReaderGlassCapsuleButtonStyle(tint: buttonTint, pressedScale: 0.965))
         .disabled(isDisabled)
         .opacity(isDisabled ? 0.58 : 1)
+        .accessibilityLabel(title)
+        .accessibilityValue(isSelected ? "On" : "")
     }
-}
 
-struct ReaderQuickMenuIconButton: View {
-    let systemName: String
-    var isSelected = false
-    var isLoading = false
-    var isDisabled = false
-    let accessibilityLabel: String
-    let action: () -> Void
+    private var textColor: Color {
+        onDarkBackground ? .white : IllumeTheme.ink
+    }
 
-    var body: some View {
-        Button(action: action) {
-            Group {
-                if isLoading {
-                    ProgressView()
-                        .controlSize(.regular)
-                        .tint(isSelected ? .white : .black)
-                } else {
-                    Image(systemName: systemName)
-                        .font(.system(size: 23, weight: .semibold))
-                }
-            }
-            .foregroundStyle(isSelected ? .white : .black.opacity(0.9))
-            .frame(width: 58, height: 52)
+    private var buttonTint: Color {
+        if isSelected {
+            return onDarkBackground ? Color.white.opacity(0.34) : Color.white.opacity(0.96)
         }
-        .buttonStyle(ReaderGlassCapsuleButtonStyle(tint: isSelected ? Color.black.opacity(0.78) : Color.white.opacity(0.72), pressedScale: 0.94))
-        .disabled(isDisabled)
-        .opacity(isDisabled ? 0.42 : 1)
-        .accessibilityLabel(accessibilityLabel)
-        .accessibilityValue(isSelected ? "On" : "Off")
+        return onDarkBackground ? Color.white.opacity(0.12) : Color.white.opacity(0.56)
     }
 }
 
@@ -2884,6 +2883,7 @@ private struct ReaderFontSettingsLiquidGlassSheet: View {
                         SliderRow(label: "Text size", value: $app.readerSettings.textScale, range: 0.82...1.25, valueText: "\(Int(app.readerSettings.textScale * 100))%")
                         SliderRow(label: "Line height", value: $app.readerSettings.lineHeight, range: 1.0...1.65, valueText: String(format: "%.2fx", app.readerSettings.lineHeight))
                         SliderRow(label: "Column width", value: $app.readerSettings.lineWidth, range: 32...52, valueText: "\(Int(app.readerSettings.lineWidth))")
+                        ReaderVoiceSettingsRow()
                     }
                     .glassEffectID(GlassID.sliders, in: glassNamespace)
                     .transition(
@@ -2933,6 +2933,7 @@ private struct ReaderFontSettingsFallbackSheet: View {
                 SliderRow(label: "Text size", value: $app.readerSettings.textScale, range: 0.82...1.25, valueText: "\(Int(app.readerSettings.textScale * 100))%")
                 SliderRow(label: "Line height", value: $app.readerSettings.lineHeight, range: 1.0...1.65, valueText: String(format: "%.2fx", app.readerSettings.lineHeight))
                 SliderRow(label: "Column width", value: $app.readerSettings.lineWidth, range: 32...52, valueText: "\(Int(app.readerSettings.lineWidth))")
+                ReaderVoiceSettingsRow()
             }
 
             Spacer()
@@ -2940,6 +2941,28 @@ private struct ReaderFontSettingsFallbackSheet: View {
         .padding(24)
         .background(.clear)
         .illumeLiquidGlassRounded(cornerRadius: 30, tint: ReaderSheetGlass.panelTint)
+    }
+}
+
+struct ReaderVoiceSettingsSheet: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Capsule()
+                .fill(.secondary.opacity(0.25))
+                .frame(width: 42, height: 5)
+                .frame(maxWidth: .infinity)
+
+            Text("Voices")
+                .font(IllumeTypography.sans(34, weight: .heavy))
+
+            ReaderVoiceSettingsRow()
+
+            Spacer(minLength: 0)
+        }
+        .padding(24)
+        .background(.clear)
+        .illumeLiquidGlassRounded(cornerRadius: 30, tint: ReaderSheetGlass.panelTint)
+        .presentationBackground(.clear)
     }
 }
 
@@ -3084,6 +3107,49 @@ struct SliderRow: View {
                 .tint(IllumeTheme.accent)
                 .controlSize(.large)
         }
+    }
+}
+
+struct ReaderVoiceSettingsRow: View {
+    @EnvironmentObject private var app: IllumeAppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                Text("Voice")
+                    .font(IllumeTypography.sans(15, weight: .bold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text(KokoroNarrationVoice.availableVoice(for: app.readerSettings.narrationVoice).label)
+                    .font(IllumeTypography.sans(12, weight: .heavy))
+                    .foregroundStyle(IllumeTheme.ink.opacity(0.78))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(.white.opacity(0.12), in: Capsule())
+            }
+
+            Picker("Voice", selection: narrationVoiceBinding) {
+                ForEach(KokoroNarrationVoice.allCases) { voice in
+                    Text(voice.label)
+                        .font(IllumeTypography.sans(13, weight: .semibold))
+                        .tag(voice.id)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 84, alignment: .leading)
+        .sliderRowGlass()
+        .accessibilityElement(children: .contain)
+    }
+
+    private var narrationVoiceBinding: Binding<String> {
+        Binding(
+            get: { KokoroNarrationVoice.availableVoice(for: app.readerSettings.narrationVoice).id },
+            set: { app.setNarrationVoice($0) }
+        )
     }
 }
 

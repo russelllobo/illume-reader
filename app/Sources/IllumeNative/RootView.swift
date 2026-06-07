@@ -1209,26 +1209,135 @@ struct LibraryNarrationControls: View {
     var body: some View {
         GeometryReader { geometry in
             let currentIndex = app.narrationControlIndex(in: book)
-            let isCollapsed = geometry.size.width < 430
+            let isCompact = geometry.size.width < 390
 
-            ReaderTransportRail(
-                book: book,
-                currentIndex: currentIndex,
-                isPlaying: app.narration.isPlaying,
-                isPreparing: app.narration.isPreparing,
-                isCollapsed: isCollapsed,
-                onDarkBackground: false,
-                playPause: {
-                    app.toggleNarration(for: book, from: currentIndex)
-                },
-                moveToAndNarrate: { index in
-                    app.moveNarrationControl(to: index, in: book)
+            if let activeBookRow = app.activeBookRow {
+                HStack(spacing: isCompact ? 12 : 16) {
+                    Button {
+                        app.openNarrationSpot(in: book)
+                    } label: {
+                        HStack(spacing: isCompact ? 12 : 14) {
+                            CoverView(book: activeBookRow, size: coverSize(isCompact: isCompact))
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .strokeBorder(.white.opacity(0.28), lineWidth: 1)
+                                }
+                                .shadow(color: .black.opacity(0.24), radius: 10, x: 0, y: 5)
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(activeBookRow.title)
+                                    .font(.system(size: isCompact ? 23 : 29, weight: .regular, design: .rounded))
+                                    .foregroundStyle(.white.opacity(0.96))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.74)
+
+                                Text(authorLine(for: activeBookRow))
+                                    .font(.system(size: isCompact ? 18 : 22, weight: .regular, design: .rounded))
+                                    .foregroundStyle(.white.opacity(0.68))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.72)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Open \(activeBookRow.title) at current narration")
+
+                    HStack(spacing: isCompact ? 10 : 14) {
+                        LibraryNarrationPlayButton(
+                            isPlaying: app.narration.isPlaying,
+                            isPreparing: app.narration.isPreparing,
+                            isCompact: isCompact
+                        ) {
+                            app.toggleNarration(for: book, from: currentIndex)
+                        }
+
+                        LibraryNarrationRewindButton(isCompact: isCompact) {
+                            app.moveNarrationControl(to: currentIndex - 1, in: book)
+                        }
+                        .disabled(currentIndex <= 0)
+                        .opacity(currentIndex <= 0 ? 0.42 : 1)
+                    }
                 }
-            )
-            .frame(width: geometry.size.width, height: 84, alignment: .center)
+                .padding(.leading, isCompact ? 12 : 14)
+                .padding(.trailing, isCompact ? 13 : 16)
+                .padding(.vertical, isCompact ? 10 : 12)
+                .frame(width: min(geometry.size.width, 1048), height: isCompact ? 86 : 98)
+                .illumeLiquidGlassCapsule(tint: IllumeTheme.paper.opacity(0.88))
+                .overlay {
+                    Capsule()
+                        .strokeBorder(.white.opacity(0.16), lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.34), radius: 24, x: 0, y: 12)
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
+            }
         }
-        .frame(height: 96)
+        .frame(height: 112)
         .blurLoadIn(radius: 10)
+    }
+
+    private func coverSize(isCompact: Bool) -> CGSize {
+        isCompact ? CGSize(width: 48, height: 64) : CGSize(width: 62, height: 78)
+    }
+
+    private func authorLine(for row: BookRow) -> String {
+        if !row.author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return row.author
+        }
+        if !book.author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return book.author
+        }
+        return row.fileName
+    }
+}
+
+struct LibraryNarrationPlayButton: View {
+    let isPlaying: Bool
+    let isPreparing: Bool
+    let isCompact: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Group {
+                if isPreparing {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .controlSize(.regular)
+                        .tint(IllumeTheme.paper)
+                } else {
+                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: isCompact ? 32 : 39, weight: .black))
+                        .symbolRenderingMode(.monochrome)
+                        .offset(x: isPlaying ? 0 : 3)
+                }
+            }
+            .foregroundStyle(.white)
+            .frame(width: isCompact ? 48 : 58, height: isCompact ? 48 : 58)
+            .contentShape(Circle())
+        }
+        .buttonStyle(LiquidLiftButtonStyle())
+        .accessibilityLabel(isPreparing ? "Preparing narration" : (isPlaying ? "Pause narration" : "Play narration"))
+    }
+}
+
+struct LibraryNarrationRewindButton: View {
+    let isCompact: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "gobackward.15")
+                .font(.system(size: isCompact ? 34 : 41, weight: .black))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(.white)
+                .frame(width: isCompact ? 46 : 54, height: isCompact ? 46 : 54)
+                .contentShape(Circle())
+        }
+        .buttonStyle(LiquidLiftButtonStyle())
+        .accessibilityLabel("Previous paragraph")
     }
 }
 
@@ -1935,6 +2044,7 @@ struct CoverArtwork: View {
 
 struct ProfileSheet: View {
     @EnvironmentObject private var app: IllumeAppModel
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
@@ -1967,7 +2077,15 @@ struct ProfileSheet: View {
                 .illumeNativeGlassButton(tint: IllumeTheme.accent, isProminent: true, fallback: PillButtonStyle(tint: IllumeTheme.accent))
             } else {
                 Button("Go Pro") {
-                    Task { await app.purchasePro() }
+                    dismiss()
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(260))
+                        app.proUpgradePrompt = ProUpgradePrompt(
+                            used: app.imageUsageCount,
+                            limit: app.imageLimit,
+                            isPro: app.isPro
+                        )
+                    }
                 }
                 .illumeNativeGlassButton(tint: IllumeTheme.ink, isProminent: true, fallback: PillButtonStyle(tint: IllumeTheme.ink))
             }
@@ -1990,248 +2108,341 @@ struct ProUpgradeSheet: View {
     let prompt: ProUpgradePrompt
 
     var body: some View {
-        ZStack {
-            // Atmospheric, deep glowing background matching the paper tone
-            IllumeTheme.paper.ignoresSafeArea()
-            
-            // Subtle premium glow gradient
-            RadialGradient(
-                colors: [
-                    IllumeTheme.plum.opacity(0.24),
-                    IllumeTheme.coral.opacity(0.12),
-                    .clear
-                ],
-                center: .topLeading,
-                startRadius: 0,
-                endRadius: 500
-            )
-            .ignoresSafeArea()
-            
-            VStack(spacing: 0) {
-                // Top header bar with dismiss button
-                HStack {
-                    Spacer()
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 26, weight: .bold))
-                            .foregroundStyle(IllumeTheme.ink.opacity(0.48))
-                            .frame(width: 44, height: 44)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(LiquidIconButtonStyle())
-                }
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
-                
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(alignment: .center, spacing: 28) {
-                        
-                        // Icon & Title Section
-                        VStack(spacing: 16) {
-                            // Large glowing Pro badge with gradient and shadow
-                            ZStack {
-                                Circle()
-                                    .fill(
-                                        LinearGradient(
-                                            colors: [IllumeTheme.coral, IllumeTheme.plum],
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        )
-                                    )
-                                    .frame(width: 80, height: 80)
-                                    .shadow(color: IllumeTheme.coral.opacity(0.48), radius: 24, y: 8)
-                                
-                                Image(systemName: "sparkles")
-                                    .font(.system(size: 38, weight: .semibold))
-                                    .foregroundStyle(IllumeTheme.paper)
-                            }
-                            .padding(.top, 10)
-                            
-                            VStack(spacing: 8) {
-                                Text(prompt.isPro ? "Monthly Limit Reached" : "Unlock Infinite Visuals")
-                                    .font(IllumeTypography.heading(32, weight: .bold))
-                                    .foregroundStyle(IllumeTheme.ink)
-                                    .multilineTextAlignment(.center)
+        GeometryReader { proxy in
+            ZStack(alignment: .top) {
+                ProSunBackground()
+
+                VStack(spacing: 0) {
+                    ProPaywallHeader(dismiss: dismiss)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 18)
+
+                    ScrollView(.vertical, showsIndicators: false) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Spacer(minLength: max(44, proxy.size.height * 0.09))
+
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text(prompt.isPro ? "Monthly visuals used" : "Read without limits")
+                                    .font(IllumeTypography.sans(40, weight: .heavy))
+                                    .foregroundStyle(.white)
+                                    .lineSpacing(1)
+                                    .minimumScaleFactor(0.82)
                                     .lineLimit(2)
-                                
-                                Text(prompt.isPro ? "You have used this month's Pro image allowance." : "Step into a fully illustrated reading experience.")
-                                    .font(IllumeTypography.sans(15, weight: .medium))
-                                    .foregroundStyle(IllumeTheme.ink.opacity(0.68))
-                                    .multilineTextAlignment(.center)
-                                    .padding(.horizontal, 16)
+
+                                Text(prompt.isPro ? "You have reached this month's Pro image allowance." : "Keep every book vivid, focused, and easy to stay with.")
+                                    .font(IllumeTypography.sans(13, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.66))
                             }
-                        }
-                        
-                        // Premium status progress meter
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack {
-                                Label {
-                                    Text("Image Limit Status")
-                                        .font(IllumeTypography.sans(14, weight: .bold))
-                                        .foregroundStyle(IllumeTheme.ink)
-                                } icon: {
-                                    Image(systemName: "photo.stack")
-                                        .font(.system(size: 14, weight: .bold))
-                                        .foregroundStyle(IllumeTheme.accent)
+                            .padding(.top, 6)
+
+                            VStack(alignment: .leading, spacing: 14) {
+                                ForEach(featureTitles, id: \.self) { title in
+                                    ProChecklistRow(title: title)
                                 }
-                                
-                                Spacer()
-                                
-                                Text("\(prompt.used) / \(prompt.limit) \(prompt.isPro ? "/ mo" : "total")")
-                                    .font(.system(.footnote, design: .rounded, weight: .bold))
-                                    .monospacedDigit()
-                                    .foregroundStyle(IllumeTheme.ink.opacity(0.88))
                             }
-                            
-                            GeometryReader { proxy in
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(IllumeTheme.ink.opacity(0.08))
-                                    .overlay(alignment: .leading) {
-                                        RoundedRectangle(cornerRadius: 8)
-                                            .fill(
-                                                LinearGradient(
-                                                    colors: [IllumeTheme.coral, IllumeTheme.accent],
-                                                    startPoint: .leading,
-                                                    endPoint: .trailing
-                                                )
-                                            )
-                                            .frame(width: proxy.size.width * min(1, Double(prompt.used) / Double(prompt.limit)))
-                                            .shadow(color: IllumeTheme.coral.opacity(0.36), radius: 6, x: 0, y: 0)
-                                    }
+                            .padding(.top, 28)
+
+                            Spacer(minLength: 44)
+
+                            VStack(spacing: 4) {
+                                Text(prompt.isPro ? "\(prompt.used) / \(prompt.limit) visuals used" : "Only $14.98 /year")
+                                    .font(IllumeTypography.sans(13, weight: .bold))
+                                    .foregroundStyle(.white)
+
+                                Text(prompt.isPro ? "Restore purchases or check back next month." : "Cancel anytime.")
+                                    .font(IllumeTypography.sans(11, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.58))
                             }
-                            .frame(height: 12)
+                            .frame(maxWidth: .infinity)
+
+                            primaryAction
+                                .padding(.top, 20)
+
+                            Divider()
+                                .background(.white.opacity(0.18))
+                                .padding(.top, 18)
+
+                            ProPlanOptions()
+                                .padding(.top, 18)
+                                .padding(.bottom, max(28, proxy.safeAreaInsets.bottom + 12))
                         }
-                        .padding(20)
-                        .background(
-                            RoundedRectangle(cornerRadius: 20)
-                                .fill(IllumeTheme.mist.opacity(0.48))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 20)
-                                        .strokeBorder(IllumeTheme.ink.opacity(0.06), lineWidth: 1)
-                                )
-                        )
-                        .padding(.horizontal, 20)
-                        
-                        // Premium Features list card
-                        VStack(alignment: .leading, spacing: 18) {
-                            Text("WHAT'S INCLUDED IN PRO")
-                                .font(IllumeTypography.sans(11, weight: .bold))
-                                .tracking(1.2)
-                                .foregroundStyle(IllumeTheme.ink.opacity(0.48))
-                                .padding(.bottom, 4)
-                            
-                            FeatureRow(icon: "photo.circle.fill", title: "Unlimited AI Art", description: "Generate beautiful rich illustrations matching the text as you read.")
-                            FeatureRow(icon: "waveform.circle.fill", title: "Ultra-Realistic Narration", description: "High-quality, expressive voices that bring characters to life.")
-                            FeatureRow(icon: "icloud.circle.fill", title: "Seamless Cloud Sync", description: "Access your entire library of EPUBs and PDFs on all your devices.")
-                        }
-                        .padding(20)
-                        .background(
-                            RoundedRectangle(cornerRadius: 22)
-                                .fill(IllumeTheme.mist.opacity(0.32))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 22)
-                                        .strokeBorder(IllumeTheme.ink.opacity(0.04), lineWidth: 1)
-                                )
-                        )
-                        .padding(.horizontal, 20)
-                        
-                        Spacer(minLength: 24)
-                        
-                        // Action Buttons Section
-                        VStack(spacing: 14) {
-                            if prompt.isPro {
-                                Button {
-                                    Task {
-                                        await app.restorePro()
-                                        dismiss()
-                                    }
-                                } label: {
-                                    Text("Restore purchases")
-                                        .font(IllumeTypography.sans(16, weight: .bold))
-                                        .foregroundStyle(IllumeTheme.paper)
-                                        .frame(height: 54)
-                                        .frame(maxWidth: .infinity)
-                                        .background(IllumeTheme.ink, in: Capsule())
-                                }
-                                .buttonStyle(LiquidLiftButtonStyle())
-                            } else {
-                                Button {
-                                    Task {
-                                        await app.purchasePro()
-                                        if app.isPro {
-                                            dismiss()
-                                        }
-                                    }
-                                } label: {
-                                    Text("Upgrade to Pro")
-                                        .font(IllumeTypography.sans(17, weight: .bold))
-                                        .foregroundStyle(IllumeTheme.paper)
-                                        .frame(height: 56)
-                                        .frame(maxWidth: .infinity)
-                                        .background(
-                                            LinearGradient(
-                                                colors: [IllumeTheme.coral, IllumeTheme.accent],
-                                                startPoint: .topLeading,
-                                                endPoint: .bottomTrailing
-                                            ),
-                                            in: Capsule()
-                                        )
-                                        .shadow(color: IllumeTheme.coral.opacity(0.32), radius: 14, y: 6)
-                                }
-                                .buttonStyle(LiquidLiftButtonStyle())
-                                
-                                Button {
-                                    dismiss()
-                                } label: {
-                                    Text("Maybe later")
-                                        .font(IllumeTypography.sans(15, weight: .semibold))
-                                        .foregroundStyle(IllumeTheme.ink.opacity(0.68))
-                                        .frame(height: 48)
-                                        .frame(maxWidth: .infinity)
-                                        .background(
-                                            Capsule()
-                                                .fill(Color.clear)
-                                                .strokeBorder(IllumeTheme.ink.opacity(0.12), lineWidth: 1)
-                                        )
-                                }
-                                .buttonStyle(LiquidLiftButtonStyle())
-                            }
-                        }
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 36)
+                        .padding(.horizontal, 18)
+                        .frame(minHeight: proxy.size.height - 36, alignment: .top)
                     }
                 }
             }
         }
+        .preferredColorScheme(.dark)
         .onAppear {
             app.pauseNarration()
         }
     }
+
+    private var featureTitles: [String] {
+        if prompt.isPro {
+            [
+                "Restore your active subscription",
+                "Keep every premium reader feature",
+                "Cloud sync and visual history",
+                "Natural narration and word tracking",
+                "Family sharing support"
+            ]
+        } else {
+            [
+                "Unlimited AI illustrations",
+                "Natural narration",
+                "Live word tracking",
+                "EPUB and PDF support",
+                "Cloud library sync",
+                "More storage for your books",
+                "Priority reading tools",
+                "Family sharing included"
+            ]
+        }
+    }
+
+    @ViewBuilder
+    private var primaryAction: some View {
+        if prompt.isPro {
+            Button {
+                Task {
+                    await app.restorePro()
+                    dismiss()
+                }
+            } label: {
+                ProPrimaryButtonLabel(title: "Restore purchases", systemName: "arrow.clockwise")
+            }
+            .buttonStyle(LiquidLiftButtonStyle())
+        } else {
+            Button {
+                Task {
+                    await app.purchasePro()
+                    if app.isPro {
+                        dismiss()
+                    }
+                }
+            } label: {
+                ProPrimaryButtonLabel(title: "Continue", systemName: "arrow.right")
+            }
+            .buttonStyle(LiquidLiftButtonStyle())
+        }
+    }
 }
 
-struct FeatureRow: View {
-    let icon: String
-    let title: String
-    let description: String
-    
+private struct ProPaywallHeader: View {
+    let dismiss: DismissAction
+
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            Image(systemName: icon)
-                .font(.system(size: 24, weight: .semibold))
-                .foregroundStyle(IllumeTheme.accent)
-                .frame(width: 32)
-            
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(IllumeTypography.sans(14, weight: .bold))
-                    .foregroundStyle(IllumeTheme.ink)
-                Text(description)
-                    .font(IllumeTypography.sans(12, weight: .medium))
-                    .foregroundStyle(IllumeTheme.ink.opacity(0.62))
-                    .lineLimit(2)
+        HStack(spacing: 8) {
+            Text("illume")
+                .font(IllumeTypography.logo(28, weight: .bold))
+                .foregroundStyle(.white)
+
+            Text("PRO")
+                .font(.system(size: 9, weight: .black, design: .rounded))
+                .foregroundStyle(Color(red: 0.24, green: 0.25, blue: 0.46))
+                .padding(.horizontal, 7)
+                .frame(height: 16)
+                .background(.white, in: Capsule())
+
+            Spacer()
+
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 32, height: 32)
+                    .background(.white.opacity(0.16), in: Circle())
+                    .overlay {
+                        Circle().strokeBorder(.white.opacity(0.18), lineWidth: 1)
+                    }
+                    .contentShape(Circle())
             }
+            .buttonStyle(LiquidLiftButtonStyle())
+            .accessibilityLabel("Close")
+        }
+    }
+}
+
+private struct ProSunBackground: View {
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.26, green: 0.18, blue: 0.22),
+                    IllumeTheme.paper,
+                    Color(red: 0.03, green: 0.03, blue: 0.05)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+
+            OnboardingLogoShine(sunSize: 204, beamLength: 470, showsSparkles: false)
+                .frame(width: 348, height: 310)
+                .offset(x: 112, y: -92)
+
+            RadialGradient(
+                colors: [
+                    IllumeTheme.coral.opacity(0.24),
+                    Color(red: 1.0, green: 0.68, blue: 0.24).opacity(0.1),
+                    .clear
+                ],
+                center: .topTrailing,
+                startRadius: 28,
+                endRadius: 380
+            )
+            .ignoresSafeArea()
+
+            LinearGradient(
+                colors: [.clear, Color(red: 0.03, green: 0.03, blue: 0.05).opacity(0.9)],
+                startPoint: .center,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+        }
+    }
+}
+
+private struct ProChecklistRow: View {
+    let title: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark")
+                .font(.system(size: 10, weight: .black))
+                .foregroundStyle(.white)
+                .frame(width: 18, height: 18)
+                .background(.white.opacity(0.16), in: Circle())
+
+            Text(title)
+                .font(IllumeTypography.sans(15, weight: .medium))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+        }
+    }
+}
+
+private struct ProPrimaryButtonLabel: View {
+    let title: String
+    let systemName: String
+
+    var body: some View {
+        HStack {
+            Spacer()
+
+            Text(title)
+                .font(IllumeTypography.sans(15, weight: .semibold))
+                .foregroundStyle(Color(red: 0.03, green: 0.04, blue: 0.1))
+
+            Spacer()
+
+            Image(systemName: systemName)
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(Color(red: 0.03, green: 0.04, blue: 0.1))
+                .frame(width: 20)
+        }
+        .frame(height: 48)
+        .padding(.horizontal, 20)
+        .background(.white, in: Capsule())
+    }
+}
+
+private struct ProPlanOptions: View {
+    var body: some View {
+        VStack(spacing: 10) {
+            ProPlanCard(
+                title: "Monthly Illume+",
+                price: "$5.98/month",
+                detail: "Unlock premium features with a flexible monthly plan.",
+                badge: "Your Plan",
+                isSelected: false
+            )
+
+            ProPlanCard(
+                title: "Change Plan to Annual Illume+",
+                price: "$39.98/year",
+                detail: "Unlock Illume+ features and save with an annual plan.",
+                badge: nil,
+                isSelected: true
+            )
+        }
+    }
+}
+
+private struct ProPlanCard: View {
+    let title: String
+    let price: String
+    let detail: String
+    let badge: String?
+    let isSelected: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(IllumeTypography.sans(17, weight: .heavy))
+                        .foregroundStyle(.black)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.86)
+
+                    Text(price)
+                        .font(IllumeTypography.sans(12, weight: .medium))
+                        .foregroundStyle(.black.opacity(0.82))
+                }
+
+                Spacer(minLength: 8)
+
+                planIndicator
+            }
+
+            if let badge {
+                HStack(spacing: 5) {
+                    Image(systemName: "star.fill")
+                        .font(.system(size: 9, weight: .bold))
+                    Text(badge)
+                        .font(IllumeTypography.sans(10, weight: .bold))
+                }
+                .foregroundStyle(Color(red: 0.12, green: 0.13, blue: 0.2))
+                .padding(.horizontal, 8)
+                .frame(height: 22)
+                .background(Color.black.opacity(0.06), in: Capsule())
+            }
+
+            Spacer(minLength: 0)
+
+            Text(detail)
+                .font(IllumeTypography.sans(11, weight: .medium))
+                .foregroundStyle(.black.opacity(0.78))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 15)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, minHeight: 118, alignment: .topLeading)
+        .background(Color(red: 0.93, green: 0.93, blue: 0.92), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(isSelected ? Color(red: 0.12, green: 0.13, blue: 0.2) : Color.black.opacity(0.12), lineWidth: isSelected ? 1.4 : 1)
+        }
+    }
+
+    @ViewBuilder
+    private var planIndicator: some View {
+        if isSelected {
+            Image(systemName: "checkmark")
+                .font(.system(size: 9, weight: .black))
+                .foregroundStyle(.white)
+                .frame(width: 19, height: 19)
+                .background(Color(red: 0.12, green: 0.13, blue: 0.2), in: Circle())
+        } else {
+            Circle()
+                .strokeBorder(Color.black.opacity(0.26), lineWidth: 1.4)
+                .frame(width: 19, height: 19)
         }
     }
 }
