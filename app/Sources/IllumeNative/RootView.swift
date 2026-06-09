@@ -2074,8 +2074,52 @@ struct BookOpenCover: View {
     }
 }
 
+@MainActor
+private final class CoverArtworkCache {
+    static let shared = CoverArtworkCache()
+
+    private let images = NSCache<NSString, UIImage>()
+    private var inFlightDownloads: [String: Task<Data?, Never>] = [:]
+
+    func image(for urlString: String) async -> UIImage? {
+        let key = urlString as NSString
+        if let cached = images.object(forKey: key) {
+            return cached
+        }
+
+        guard let url = URL(string: urlString) else { return nil }
+
+        let download: Task<Data?, Never>
+        if let inFlight = inFlightDownloads[urlString] {
+            download = inFlight
+        } else {
+            download = Task {
+                guard let (data, response) = try? await URLSession.shared.data(from: url),
+                      let http = response as? HTTPURLResponse,
+                      (200..<300).contains(http.statusCode) else {
+                    return nil
+                }
+                return data
+            }
+            inFlightDownloads[urlString] = download
+        }
+
+        guard let data = await download.value,
+              let image = UIImage(data: data) else {
+            inFlightDownloads[urlString] = nil
+            return nil
+        }
+
+        images.setObject(image, forKey: key)
+        inFlightDownloads[urlString] = nil
+        return image
+    }
+}
+
 struct CoverArtwork: View {
     let urlString: String
+    @State private var remoteImage: UIImage?
+    @State private var remoteImageURLString: String?
 
     var body: some View {
         if let image = dataURLImage {
@@ -2083,20 +2127,17 @@ struct CoverArtwork: View {
                 .resizable()
                 .scaledToFill()
                 .blurLoadIn(radius: 10)
-        } else if let url = URL(string: urlString) {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let image):
-                    image
-                        .resizable()
-                        .scaledToFill()
-                        .blurLoadIn(radius: 10)
-                default:
-                    Color.clear
-                }
-            }
+        } else if let remoteImage, remoteImageURLString == urlString {
+            Image(uiImage: remoteImage)
+                .resizable()
+                .scaledToFill()
+                .blurLoadIn(radius: 10)
         } else {
             Color.clear
+                .task(id: urlString) {
+                    remoteImage = await CoverArtworkCache.shared.image(for: urlString)
+                    remoteImageURLString = urlString
+                }
         }
     }
 

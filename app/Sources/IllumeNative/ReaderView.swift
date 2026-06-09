@@ -107,12 +107,18 @@ private struct ReaderImageChunkCache {
         var chunkWords: [String] = []
         var chunkStartWord = 1
         var totalWords = 0
+        let contentStart = IllumeAppModel.meaningfulContentStartIndex(in: book)
 
         for (index, paragraph) in book.paragraphs.enumerated() {
             paragraphWordStarts[index] = totalWords
             guard paragraph.kind != .heading else { continue }
 
             let words = paragraph.text.split(whereSeparator: \.isWhitespace).map(String.init)
+            guard index >= contentStart else {
+                totalWords += words.count
+                chunkStartWord += words.count
+                continue
+            }
             for word in words {
                 if chunkWords.count == readerImageChunkWords {
                     let chunkIndex = chunks.count
@@ -1403,9 +1409,8 @@ struct ReaderView: View {
         guard imageChunkCache.paragraphWordStarts.indices.contains(target),
               !imageChunkCache.chunks.isEmpty else { return nil }
         let wordsBeforeTarget = imageChunkCache.paragraphWordStarts[target]
-        let chunkIndex = wordsBeforeTarget / readerImageChunkWords
-        guard imageChunkCache.chunks.indices.contains(chunkIndex) else { return nil }
-        return imageChunkCache.chunks[chunkIndex]
+        let targetWordNumber = max(1, wordsBeforeTarget + 1)
+        return imageChunkCache.chunks.last(where: { $0.startWord <= targetWordNumber }) ?? imageChunkCache.chunks.first
     }
 
     private func nextImageChunk(after chunk: ReaderImageChunk, in book: ReaderBook) -> ReaderImageChunk? {

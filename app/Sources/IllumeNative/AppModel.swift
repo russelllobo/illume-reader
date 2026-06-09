@@ -21,6 +21,7 @@ private let narrationPrefetchLookahead = 3
 private let narrationAudioCacheLimit = 12
 private let narrationVoicePreviewText = "Alice was beginning to get very tired of sitting by her sister on the bank, and of having nothing to do."
 private let narrationVoicePreviewRate = 1.0
+private let narrationKokoroGenerationRate = 1.0
 private let narrationNonTerminalAbbreviations: Set<String> = [
     "adm", "atty", "capt", "cmdr", "col", "dr", "fr", "gen", "gov", "hon",
     "jr", "lt", "maj", "messrs", "miss", "mlle", "mme", "mr", "mrs", "ms",
@@ -598,6 +599,13 @@ final class IllumeAppModel: NSObject, ObservableObject {
             isReaderPresented = true
             openingBook = nil
             warmKokoroTTSIfNeeded()
+            prewarmFirstNarrationChunk(
+                for: openingRow,
+                book: parsed,
+                startIndex: start.index,
+                delayMilliseconds: 0,
+                onlyWhenIdle: false
+            )
             startOpeningNarration(book: parsed, bookID: openingRow.id, paragraphIndex: start.index)
             startReaderImagePreparationForOpening(book: parsed, row: openingRow, accessToken: accessToken)
             updateLocalProgress(
@@ -881,7 +889,6 @@ final class IllumeAppModel: NSObject, ObservableObject {
         guard abs(readerSettings.narrationRate - rate) > 0.001 else { return }
 
         readerSettings.narrationRate = rate
-        clearPrefetchedNarration()
         applyCurrentNarrationPlaybackRate()
     }
 
@@ -952,7 +959,6 @@ final class IllumeAppModel: NSObject, ObservableObject {
         let openingNarrationID = UUID()
         self.openingNarrationID = openingNarrationID
         let task = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(700))
             guard !Task.isCancelled else { return }
             let shouldStart = await MainActor.run {
                 guard let self,
@@ -1005,30 +1011,54 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
         kokoroWarmupTask = Task(priority: .utility) { [weak self, kokoroTTS] in
             try? await kokoroTTS.prepare(modelDirectory: modelDirectory)
+            guard !Task.isCancelled else { return }
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            let canPreparePreviews = await MainActor.run { [weak self] in
+                guard let self else { return false }
+                return self.activeBookRow == nil &&
+                    self.openingBook == nil &&
+                    !self.narration.isPlaying &&
+                    !self.narration.isPreparing &&
+                    self.audioPlayer == nil &&
+                    self.streamingAudioPlayer == nil
+            }
+            guard canPreparePreviews else { return }
             await self?.prepareStoredNarrationVoicePreviews(modelDirectory: modelDirectory)
         }
     }
 
-    private func prewarmFirstNarrationChunk(for row: BookRow, book: ReaderBook, startIndex: Int) {
+    private func prewarmFirstNarrationChunk(
+        for row: BookRow,
+        book: ReaderBook,
+        startIndex: Int,
+        delayMilliseconds: Int = 1500,
+        onlyWhenIdle: Bool = true
+    ) {
         guard let modelDirectory = Self.kokoroModelDirectoryURL,
               let chunk = Self.narrationChunk(in: book, from: startIndex, wordStart: 0) else { return }
 
-        let rate = Self.kokoroSpeechRate(from: readerSettings.narrationRate)
         let voice = KokoroNarrationVoice.availableVoice(for: readerSettings.narrationVoice)
-        let key = narrationAudioCacheKey(for: chunk, bookID: row.id, voiceID: voice.id, rate: rate)
+        let key = narrationAudioCacheKey(for: chunk, bookID: row.id, voiceID: voice.id, rate: narrationKokoroGenerationRate)
         guard cachedPreparedNarration(for: key) == nil,
               narrationPrefetchTasks[key] == nil else { return }
 
         Task { @MainActor [weak self, kokoroTTS] in
-            try? await Task.sleep(for: .milliseconds(1500))
-            guard let self,
-                  self.activeBookRow == nil,
-                  self.openingBook == nil,
-                  !self.narration.isPlaying,
-                  !self.narration.isPreparing,
-                  self.audioPlayer == nil,
-                  self.streamingAudioPlayer == nil,
-                  self.cachedPreparedNarration(for: key) == nil,
+            if delayMilliseconds > 0 {
+                try? await Task.sleep(for: .milliseconds(delayMilliseconds))
+            }
+            guard let self else { return }
+            if onlyWhenIdle {
+                guard self.activeBookRow == nil,
+                      self.openingBook == nil,
+                      !self.narration.isPlaying,
+                      !self.narration.isPreparing,
+                      self.audioPlayer == nil,
+                      self.streamingAudioPlayer == nil else {
+                    return
+                }
+            }
+            guard self.cachedPreparedNarration(for: key) == nil,
                   self.narrationPrefetchTasks[key] == nil else {
                 return
             }
@@ -1042,7 +1072,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
                                 text: speechText,
                                 modelDirectory: modelDirectory,
                                 speakerID: voice.speakerID,
-                                rate: rate
+                                rate: narrationKokoroGenerationRate
                             )
                         }
                         group.addTask {
@@ -1073,7 +1103,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
         stopPlayback(keepNarrationState: true)
 
-        narrationRateSnapshot = Self.kokoroSpeechRate(from: readerSettings.narrationRate)
+        narrationRateSnapshot = narrationKokoroGenerationRate
         let narrationVoiceSnapshot = KokoroNarrationVoice.availableVoice(for: readerSettings.narrationVoice)
         applyNarrationState(for: chunk, in: book, isPlaying: false, isPreparing: true)
 
@@ -2203,7 +2233,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
     private func renderAndPlayPreparedNarration(book: ReaderBook, paragraphIndex: Int, wordStart: Int) async {
         guard let chunk = Self.narrationChunk(in: book, from: paragraphIndex, wordStart: wordStart) else { return }
 
-        narrationRateSnapshot = Self.kokoroSpeechRate(from: readerSettings.narrationRate)
+        narrationRateSnapshot = narrationKokoroGenerationRate
         let narrationVoiceSnapshot = KokoroNarrationVoice.availableVoice(for: readerSettings.narrationVoice)
         applyNarrationState(for: chunk, in: book, isPlaying: false, isPreparing: true)
 
@@ -3175,6 +3205,10 @@ final class IllumeAppModel: NSObject, ObservableObject {
         max(1, min(page, book.pageCount ?? page))
     }
 
+    nonisolated static func meaningfulContentStartIndex(in book: ReaderBook) -> Int {
+        resolveMeaningfulStart(in: book, requestedIndex: 0, savedIndex: 0, savedPage: 1).index
+    }
+
     nonisolated private static func readerImageChunk(in book: ReaderBook, currentIndex: Int) -> ReaderImageRequestChunk? {
         guard !book.paragraphs.isEmpty else { return nil }
 
@@ -3182,7 +3216,8 @@ final class IllumeAppModel: NSObject, ObservableObject {
         var chunkWords: [String] = []
         var chunkStartWord = 1
         var totalWords = 0
-        let target = min(max(currentIndex, 0), book.paragraphs.count - 1)
+        let contentStart = meaningfulContentStartIndex(in: book)
+        let target = min(max(currentIndex, contentStart), book.paragraphs.count - 1)
         var targetWordStart = 0
 
         for (index, paragraph) in book.paragraphs.enumerated() {
@@ -3192,6 +3227,11 @@ final class IllumeAppModel: NSObject, ObservableObject {
             guard paragraph.kind != .heading else { continue }
 
             let words = paragraph.text.split(whereSeparator: \.isWhitespace).map(String.init)
+            guard index >= contentStart else {
+                totalWords += words.count
+                chunkStartWord += words.count
+                continue
+            }
             for word in words {
                 if chunkWords.count == readerImageRequestChunkWords {
                     let chunkIndex = chunks.count
@@ -3223,9 +3263,8 @@ final class IllumeAppModel: NSObject, ObservableObject {
             )
         }
 
-        let chunkIndex = targetWordStart / readerImageRequestChunkWords
-        guard chunks.indices.contains(chunkIndex) else { return nil }
-        return chunks[chunkIndex]
+        let targetWordNumber = max(1, targetWordStart + 1)
+        return chunks.last(where: { $0.startWord <= targetWordNumber }) ?? chunks.first
     }
 
     private func preGenerateReaderImage(
