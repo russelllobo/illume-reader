@@ -58,6 +58,24 @@ struct ReaderImageFunctionResponse: Codable, Equatable {
     let plan: String?
 }
 
+struct ReaderNarrationFunctionRequest: Codable {
+    let text: String
+    let voice: String
+    let rate: Double
+}
+
+struct ReaderNarrationFunctionWord: Codable, Equatable, Sendable {
+    let text: String
+    let start: Double
+    let end: Double
+}
+
+struct ReaderNarrationFunctionResponse: Codable, Equatable, Sendable {
+    let audio: String
+    let outputFormat: String?
+    let words: [ReaderNarrationFunctionWord]?
+}
+
 struct AppleSubscriptionSyncRequest: Codable {
     let signedTransactionInfo: String
     let appTransaction: String?
@@ -234,6 +252,20 @@ final class SupabaseBackend: @unchecked Sendable {
         try await invoke(function: "generate-reader-image", accessToken: accessToken, body: payload)
     }
 
+    func invokeReaderNarration(_ payload: ReaderNarrationFunctionRequest, accessToken: String) async throws -> ReaderNarrationFunctionResponse {
+        let data = try await rawRequest(
+            path: "/functions/v1/edge-tts",
+            method: "POST",
+            accessToken: accessToken,
+            body: payload,
+            encoder: Self.edgeFunctionEncoder()
+        )
+        if let response = try? IllumeJSON.decoder().decode(ReaderNarrationFunctionResponse.self, from: data) {
+            return response
+        }
+        return ReaderNarrationFunctionResponse(audio: data.base64EncodedString(), outputFormat: "wav", words: nil)
+    }
+
     func deleteBook(bookId: UUID, accessToken: String) async throws {
         let _: EmptyResponse = try await invoke(
             function: "delete-reader-book",
@@ -300,6 +332,22 @@ final class SupabaseBackend: @unchecked Sendable {
     private func rawRequest(path: String, method: String, accessToken: String?) async throws -> Data {
         var request = baseRequest(path: path, accessToken: accessToken)
         request.httpMethod = method
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        return data
+    }
+
+    private func rawRequest<Body: Encodable>(
+        path: String,
+        method: String,
+        accessToken: String?,
+        body: Body,
+        encoder: JSONEncoder = IllumeJSON.encoder()
+    ) async throws -> Data {
+        var request = baseRequest(path: path, accessToken: accessToken)
+        request.httpMethod = method
+        request.httpBody = try encoder.encode(AnyEncodable(body))
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let (data, response) = try await session.data(for: request)
         try validate(response: response, data: data)
         return data

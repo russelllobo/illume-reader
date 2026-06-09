@@ -879,6 +879,9 @@ struct ReaderView: View {
         activeReaderSheet = nil
         Task { @MainActor in
             await Task.yield()
+            if book.paragraphs.indices.contains(entry.paragraphIndex) {
+                app.speak(book: book, paragraphIndex: entry.paragraphIndex)
+            }
             withAnimation(IllumeTheme.blurLoadIn) {
                 readerContentVisible = true
             }
@@ -948,7 +951,7 @@ struct ReaderView: View {
         app.saveProgress(index: index, page: paragraph.pageNumber ?? 1)
         pendingParagraphID = paragraph.id
         scrollRequest += 1
-        app.speak(book: book, paragraphIndex: index)
+        app.speak(book: book, paragraphIndex: index, wordStart: 0)
     }
 
     private func restoreInitialIndex(in book: ReaderBook) {
@@ -1304,7 +1307,7 @@ struct ReaderView: View {
     private func narrationPreviewCharacterLimit(for height: CGFloat, viewportWidth: CGFloat) -> Int {
         let scale = min(app.readerSettings.textScale, 1.18)
         let fontSize = 18 * scale
-        let lineHeight = UIFont.systemSerifFont(ofSize: fontSize, weight: .regular).lineHeight
+        let lineHeight = UIFont.readerFont(ofSize: fontSize, weight: .regular, family: app.readerSettings.fontFamily).lineHeight
         let lineSpacing = 3.4 + CGFloat(min(max(app.readerSettings.lineHeight, 1.0), 1.55) - 1.0) * 7.2
         let visibleLines = max(1, Int(floor(height / (lineHeight + lineSpacing))))
         let availableWidth = max(140, viewportWidth - 84)
@@ -1492,15 +1495,26 @@ struct ReaderToolbar: View {
         ZStack {
             Text(bookTitle)
                 .font(.system(size: 15, weight: .bold, design: .rounded))
-                .foregroundStyle(foreground.opacity(onDarkBackground ? 0.88 : 0.78))
+                .foregroundStyle(titleForeground)
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
-                .padding(.horizontal, 64)
+                .padding(.horizontal, 16)
+                .frame(height: 42)
+                .frame(maxWidth: 248)
+                .background {
+                    Capsule()
+                        .fill(titleFill)
+                }
+                .illumeLiquidGlassCapsule(tint: titleGlassTint)
+                .overlay {
+                    Capsule()
+                        .strokeBorder(titleBorder, lineWidth: 1)
+                }
+                .shadow(color: titleShadow, radius: 16, x: 0, y: 8)
+                .padding(.horizontal, 72)
                 .frame(maxWidth: .infinity, alignment: .center)
 
             HStack {
-                Spacer()
-
                 Button(action: close) {
                     Image(systemName: "books.vertical.fill")
                         .font(.system(size: 14, weight: .black))
@@ -1512,12 +1526,34 @@ struct ReaderToolbar: View {
                 .contentShape(Circle())
                 .accessibilityLabel("Back to library")
                 .accessibilityIdentifier("reader.backToLibrary")
+
+                Spacer()
             }
         }
         .padding(.horizontal, 18)
         .padding(.top, 8)
         .padding(.bottom, 8)
         .zIndex(4)
+    }
+
+    private var titleForeground: Color {
+        onDarkBackground ? .white.opacity(0.94) : IllumeTheme.ink.opacity(0.86)
+    }
+
+    private var titleFill: Color {
+        onDarkBackground ? Color.black.opacity(0.34) : Color.white.opacity(0.42)
+    }
+
+    private var titleGlassTint: Color {
+        onDarkBackground ? Color.black.opacity(0.46) : IllumeTheme.paper.opacity(0.62)
+    }
+
+    private var titleBorder: Color {
+        onDarkBackground ? Color.white.opacity(0.2) : IllumeTheme.paper.opacity(0.1)
+    }
+
+    private var titleShadow: Color {
+        onDarkBackground ? Color.black.opacity(0.34) : Color.black.opacity(0.08)
     }
 }
 
@@ -1811,13 +1847,13 @@ struct ParagraphView: View {
         let size = 18.5 * scale
         switch paragraph.kind {
         case .heading:
-            return UIFont.systemSerifFont(ofSize: 24 * scale, weight: .bold)
+            return UIFont.readerFont(ofSize: 24 * scale, weight: .bold, family: app.readerSettings.fontFamily)
         case .quote:
-            let font = UIFont.systemSerifFont(ofSize: size, weight: .medium)
+            let font = UIFont.readerFont(ofSize: size, weight: .medium, family: app.readerSettings.fontFamily)
             let descriptor = font.fontDescriptor.withSymbolicTraits(.traitItalic) ?? font.fontDescriptor
             return UIFont(descriptor: descriptor, size: size)
         default:
-            return UIFont.systemSerifFont(ofSize: size, weight: .regular)
+            return UIFont.readerFont(ofSize: size, weight: .regular, family: app.readerSettings.fontFamily)
         }
     }
 
@@ -1882,13 +1918,13 @@ private struct ReaderNarrationPreviewPanel: View {
         let size = 18 * scale
         switch paragraph.kind {
         case .heading:
-            return UIFont.systemSerifFont(ofSize: 22 * scale, weight: .bold)
+            return UIFont.readerFont(ofSize: 22 * scale, weight: .bold, family: app.readerSettings.fontFamily)
         case .quote:
-            let font = UIFont.systemSerifFont(ofSize: size, weight: .medium)
+            let font = UIFont.readerFont(ofSize: size, weight: .medium, family: app.readerSettings.fontFamily)
             let descriptor = font.fontDescriptor.withSymbolicTraits(.traitItalic) ?? font.fontDescriptor
             return UIFont(descriptor: descriptor, size: size)
         default:
-            return UIFont.systemSerifFont(ofSize: size, weight: .regular)
+            return UIFont.readerFont(ofSize: size, weight: .regular, family: app.readerSettings.fontFamily)
         }
     }
 
@@ -2173,6 +2209,15 @@ struct ReaderAttributedText: UIViewRepresentable {
 }
 
 private extension UIFont {
+    static func readerFont(ofSize size: CGFloat, weight: UIFont.Weight, family: ReaderFontFamily) -> UIFont {
+        switch family {
+        case .serif:
+            return systemSerifFont(ofSize: size, weight: weight)
+        case .sansSerif:
+            return systemFont(ofSize: size, weight: weight)
+        }
+    }
+
     static func systemSerifFont(ofSize size: CGFloat, weight: UIFont.Weight) -> UIFont {
         let baseFont = UIFont.systemFont(ofSize: size, weight: weight)
         guard let descriptor = baseFont.fontDescriptor.withDesign(.serif) else {
@@ -2907,127 +2952,217 @@ struct ReaderFontSettingsSheet: View {
     @EnvironmentObject private var app: IllumeAppModel
 
     var body: some View {
-        if #available(iOS 26.0, *) {
-            ReaderFontSettingsLiquidGlassSheet()
-                .presentationBackground(.clear)
-        } else {
-            ReaderFontSettingsFallbackSheet()
-                .presentationBackground(.clear)
-        }
-    }
-}
-
-@available(iOS 26.0, *)
-private struct ReaderFontSettingsLiquidGlassSheet: View {
-    @EnvironmentObject private var app: IllumeAppModel
-    @Namespace private var glassNamespace
-    @State private var isExpanded = false
-
-    private enum GlassID: String {
-        case panel
-        case sliders
-    }
-
-    var body: some View {
-        GlassEffectContainer(spacing: isExpanded ? 20 : 44) {
-            VStack(alignment: .leading, spacing: isExpanded ? 22 : 8) {
-                Capsule()
-                    .fill(.secondary.opacity(0.25))
-                    .frame(width: 42, height: 5)
-                    .frame(maxWidth: .infinity)
-
-                if isExpanded {
-                    Text("Font Settings")
-                        .font(.system(.largeTitle, design: .rounded, weight: .black))
-                        .transition(
-                            .scale(0.96, anchor: .top)
-                                .combined(with: .blurReplace)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(ReaderFontFamily.allCases) { family in
+                    Button {
+                        app.readerSettings.fontFamily = family
+                    } label: {
+                        ReaderFontFamilyOption(
+                            family: family,
+                            isSelected: app.readerSettings.fontFamily == family
                         )
-
-                    VStack(spacing: 12) {
-                        SliderRow(label: "Text size", value: $app.readerSettings.textScale, range: 0.82...1.25, valueText: "\(Int(app.readerSettings.textScale * 100))%")
-                        SliderRow(label: "Line height", value: $app.readerSettings.lineHeight, range: 1.0...1.65, valueText: String(format: "%.2fx", app.readerSettings.lineHeight))
-                        SliderRow(label: "Column width", value: $app.readerSettings.lineWidth, range: 32...52, valueText: "\(Int(app.readerSettings.lineWidth))")
-                        ReaderVoiceSettingsRow()
                     }
-                    .glassEffectID(GlassID.sliders, in: glassNamespace)
-                    .transition(
-                        .scale(scale: 0.72, anchor: .top)
-                            .combined(with: .offset(y: -18))
-                            .combined(with: .opacity)
-                    )
-
-                    Spacer()
+                    .buttonStyle(.plain)
                 }
             }
-            .padding(24)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.clear)
-            .glassEffect(.regular.tint(ReaderSheetGlass.panelTint), in: RoundedRectangle(cornerRadius: 30, style: .continuous))
-            .glassEffectID(GlassID.panel, in: glassNamespace)
+            .padding(.top, 18)
+            .padding(.bottom, 18)
         }
-        .animation(readerTypographyPanelAnimation, value: isExpanded)
-        .onAppear {
-            isExpanded = false
-            Task { @MainActor in
-                await Task.yield()
-                withAnimation(readerTypographyPanelAnimation) {
-                    isExpanded = true
-                }
-            }
-        }
+        .scrollIndicators(.hidden)
+        .scrollContentBackground(.hidden)
+        .background(TableOfContentsStyle.background)
+        .presentationCornerRadius(42)
+        .presentationBackground(.clear)
     }
 }
 
 private let readerTypographyPanelAnimation = Animation.spring(response: 0.44, dampingFraction: 0.78, blendDuration: 0.08)
 
-private struct ReaderFontSettingsFallbackSheet: View {
-    @EnvironmentObject private var app: IllumeAppModel
+struct ReaderFontFamilyOption: View {
+    let family: ReaderFontFamily
+    let isSelected: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            Capsule()
-                .fill(.secondary.opacity(0.25))
-                .frame(width: 42, height: 5)
-                .frame(maxWidth: .infinity)
+        HStack(spacing: 14) {
+            ReaderFontFamilyPreview(family: family, isSelected: isSelected)
 
-            Text("Font Settings")
-                .font(.system(.largeTitle, design: .rounded, weight: .black))
+            Text(family.label)
+                .font(.system(size: 18, weight: isSelected ? .bold : .regular))
+                .foregroundStyle(TableOfContentsStyle.ink)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-            VStack(spacing: 12) {
-                SliderRow(label: "Text size", value: $app.readerSettings.textScale, range: 0.82...1.25, valueText: "\(Int(app.readerSettings.textScale * 100))%")
-                SliderRow(label: "Line height", value: $app.readerSettings.lineHeight, range: 1.0...1.65, valueText: String(format: "%.2fx", app.readerSettings.lineHeight))
-                SliderRow(label: "Column width", value: $app.readerSettings.lineWidth, range: 32...52, valueText: "\(Int(app.readerSettings.lineWidth))")
-                ReaderVoiceSettingsRow()
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(TableOfContentsStyle.ink)
             }
-
-            Spacer()
         }
-        .padding(24)
-        .background(.clear)
-        .illumeLiquidGlassRounded(cornerRadius: 30, tint: ReaderSheetGlass.panelTint)
+        .padding(.leading, 28)
+        .padding(.trailing, 38)
+        .padding(.vertical, 12)
+        .background(isSelected ? Color.white.opacity(0.055) : Color.clear)
+        .contentShape(Rectangle())
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(TableOfContentsStyle.divider)
+                .frame(height: 0.7)
+                .padding(.leading, 28)
+                .padding(.trailing, 28)
+        }
+        .accessibilityLabel(family.label)
+        .accessibilityValue(isSelected ? "Selected" : "")
+    }
+}
+
+struct ReaderFontFamilyPreview: View {
+    let family: ReaderFontFamily
+    let isSelected: Bool
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: isSelected
+                            ? [IllumeTheme.accent.opacity(0.95), IllumeTheme.coral.opacity(0.88)]
+                            : [Color.white.opacity(0.16), Color.white.opacity(0.06)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+
+            Text(family.sample)
+                .font(.system(size: 23, weight: .bold, design: family == .serif ? .serif : .default))
+                .foregroundStyle(TableOfContentsStyle.ink)
+                .lineLimit(1)
+        }
+        .frame(width: 56, height: 56)
+        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .strokeBorder(Color.white.opacity(isSelected ? 0.28 : 0.1), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.16), radius: 7, x: 0, y: 3)
     }
 }
 
 struct ReaderVoiceSettingsSheet: View {
+    @EnvironmentObject private var app: IllumeAppModel
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Capsule()
-                .fill(.secondary.opacity(0.25))
-                .frame(width: 42, height: 5)
-                .frame(maxWidth: .infinity)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Narration Voice")
+                    .font(IllumeTypography.sans(24, weight: .heavy))
+                    .foregroundStyle(TableOfContentsStyle.ink)
+                    .padding(.leading, 28)
+                    .padding(.trailing, 38)
+                    .padding(.top, 24)
+                    .padding(.bottom, 8)
 
-            Text("Voices")
-                .font(IllumeTypography.sans(34, weight: .heavy))
-
-            ReaderVoiceSettingsRow()
-
-            Spacer(minLength: 0)
+                ForEach(KokoroNarrationVoice.allCases) { voice in
+                    Button {
+                        app.setNarrationVoice(voice.id)
+                    } label: {
+                        ReaderVoiceOption(
+                            voice: voice,
+                            isSelected: KokoroNarrationVoice.availableVoice(for: app.readerSettings.narrationVoice) == voice
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.bottom, 18)
         }
-        .padding(24)
-        .background(.clear)
-        .illumeLiquidGlassRounded(cornerRadius: 30, tint: ReaderSheetGlass.panelTint)
+        .scrollIndicators(.hidden)
+        .scrollContentBackground(.hidden)
+        .background(TableOfContentsStyle.background)
+        .presentationCornerRadius(42)
         .presentationBackground(.clear)
+    }
+}
+
+struct ReaderVoiceOption: View {
+    let voice: KokoroNarrationVoice
+    let isSelected: Bool
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ReaderVoicePreview(voice: voice, isSelected: isSelected)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(voice.displayName)
+                    .font(.system(size: 18, weight: isSelected ? .bold : .regular))
+                    .foregroundStyle(TableOfContentsStyle.ink)
+                    .lineLimit(1)
+
+                Text("Grade \(voice.grade)")
+                    .font(IllumeTypography.sans(12, weight: .bold))
+                    .foregroundStyle(TableOfContentsStyle.ink.opacity(0.55))
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(TableOfContentsStyle.ink)
+            }
+        }
+        .padding(.leading, 28)
+        .padding(.trailing, 38)
+        .padding(.vertical, 12)
+        .background(isSelected ? Color.white.opacity(0.055) : Color.clear)
+        .contentShape(Rectangle())
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(TableOfContentsStyle.divider)
+                .frame(height: 0.7)
+                .padding(.leading, 28)
+                .padding(.trailing, 28)
+        }
+        .accessibilityLabel(voice.displayName)
+        .accessibilityValue(isSelected ? "Selected" : "Grade \(voice.grade)")
+    }
+}
+
+struct ReaderVoicePreview: View {
+    let voice: KokoroNarrationVoice
+    let isSelected: Bool
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: isSelected
+                            ? [IllumeTheme.accent.opacity(0.95), IllumeTheme.coral.opacity(0.88)]
+                            : [Color.white.opacity(0.16), Color.white.opacity(0.06)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+
+            VStack(spacing: 2) {
+                Text(voice.countryFlag)
+                    .font(.system(size: 18))
+
+                Text(voice.symbol)
+                    .font(IllumeTypography.sans(14, weight: .heavy))
+                    .foregroundStyle(TableOfContentsStyle.ink)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+        }
+        .frame(width: 56, height: 56)
+        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .strokeBorder(Color.white.opacity(isSelected ? 0.28 : 0.1), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.16), radius: 7, x: 0, y: 3)
     }
 }
 
@@ -3185,6 +3320,10 @@ struct SliderRow: View {
 struct ReaderVoiceSettingsRow: View {
     @EnvironmentObject private var app: IllumeAppModel
 
+    private var selectedVoice: KokoroNarrationVoice {
+        KokoroNarrationVoice.availableVoice(for: app.readerSettings.narrationVoice)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
@@ -3192,7 +3331,7 @@ struct ReaderVoiceSettingsRow: View {
                     .font(IllumeTypography.sans(15, weight: .bold))
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                Text(KokoroNarrationVoice.availableVoice(for: app.readerSettings.narrationVoice).label)
+                Text(selectedVoice.displayName)
                     .font(IllumeTypography.sans(12, weight: .heavy))
                     .foregroundStyle(IllumeTheme.ink.opacity(0.78))
                     .lineLimit(1)
@@ -3202,26 +3341,40 @@ struct ReaderVoiceSettingsRow: View {
                     .background(.white.opacity(0.12), in: Capsule())
             }
 
-            Picker("Voice", selection: narrationVoiceBinding) {
+            Menu {
                 ForEach(KokoroNarrationVoice.allCases) { voice in
-                    Text(voice.label)
-                        .font(IllumeTypography.sans(13, weight: .semibold))
-                        .tag(voice.id)
+                    Button {
+                        app.setNarrationVoice(voice.id)
+                    } label: {
+                        Label(voice.displayName, systemImage: selectedVoice == voice ? "checkmark" : "waveform")
+                    }
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Text("\(selectedVoice.displayName) · Grade \(selectedVoice.grade)")
+                        .font(IllumeTypography.sans(15, weight: .bold))
+                        .foregroundStyle(IllumeTheme.ink)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(IllumeTheme.ink.opacity(0.62))
+                }
+                .padding(.horizontal, 14)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(.white.opacity(0.12), lineWidth: 1)
                 }
             }
-            .pickerStyle(.segmented)
         }
         .padding(16)
         .frame(maxWidth: .infinity, minHeight: 84, alignment: .leading)
         .sliderRowGlass()
         .accessibilityElement(children: .contain)
-    }
-
-    private var narrationVoiceBinding: Binding<String> {
-        Binding(
-            get: { KokoroNarrationVoice.availableVoice(for: app.readerSettings.narrationVoice).id },
-            set: { app.setNarrationVoice($0) }
-        )
     }
 }
 

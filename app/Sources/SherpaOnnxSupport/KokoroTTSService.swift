@@ -40,10 +40,24 @@ public actor KokoroTTSService {
 public struct KokoroRenderedAudio: Sendable {
     public let url: URL
     public let duration: TimeInterval
+    public let wordTimings: [KokoroWordTiming]
 
-    public init(url: URL, duration: TimeInterval) {
+    public init(url: URL, duration: TimeInterval, wordTimings: [KokoroWordTiming] = []) {
         self.url = url
         self.duration = duration
+        self.wordTimings = wordTimings
+    }
+}
+
+public struct KokoroWordTiming: Codable, Sendable {
+    public let text: String
+    public let start: Double
+    public let end: Double
+
+    public init(text: String, start: Double, end: Double) {
+        self.text = text
+        self.start = start
+        self.end = end
     }
 }
 
