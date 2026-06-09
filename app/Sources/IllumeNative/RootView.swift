@@ -1020,15 +1020,18 @@ struct LibraryShell: View {
     @State private var bookToDelete: BookRow?
     @State private var selectedClassic: ClassicBook?
 
-    private var availableClassics: [ClassicBook] {
-        app.availableClassics()
+    private var classicShelves: [ClassicGenreShelf] {
+        ClassicCatalog.shelves()
     }
 
     private var expandedPanelClassics: [ClassicBook] {
-        guard let selectedClassic, !availableClassics.contains(selectedClassic) else {
-            return availableClassics
+        let shelfBooks = classicShelves.flatMap(\.books)
+        var seen = Set<String>()
+        var uniqueBooks = shelfBooks.filter { seen.insert($0.id).inserted }
+        if let selectedClassic, !seen.contains(selectedClassic.id) {
+            uniqueBooks.insert(selectedClassic, at: 0)
         }
-        return [selectedClassic] + availableClassics
+        return uniqueBooks
     }
 
     var body: some View {
@@ -1054,9 +1057,9 @@ struct LibraryShell: View {
                             ContinueSection(renameBook: beginRenaming, deleteBook: beginDeleting)
                         }
 
-                        if !availableClassics.isEmpty {
+                        if !classicShelves.isEmpty {
                             ClassicsSection(
-                                classics: availableClassics,
+                                shelves: classicShelves,
                                 selectedClassic: $selectedClassic
                             )
                         }
@@ -1379,7 +1382,6 @@ struct LibraryHeader: View {
                                 .font(.system(.title3, design: .rounded, weight: .bold))
                                 .foregroundStyle(IllumeTheme.ink)
                                 .lineLimit(2)
-                            BookOpeningStatus(book: first)
                             Text(first.author.isEmpty ? first.fileName : first.author)
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
@@ -1425,7 +1427,6 @@ struct ContinueSection: View {
                                         .font(.system(.subheadline, design: .rounded, weight: .bold))
                                         .foregroundStyle(IllumeTheme.ink)
                                         .lineLimit(2)
-                                    BookOpeningStatus(book: book)
                                 }
                                 .frame(width: 118, height: 58, alignment: .topLeading)
                             }
@@ -1445,17 +1446,47 @@ struct ContinueSection: View {
 }
 
 struct ClassicsSection: View {
-    let classics: [ClassicBook]
+    let shelves: [ClassicGenreShelf]
     @Binding var selectedClassic: ClassicBook?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("classics")
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("classics")
                 .font(IllumeTypography.logo(28))
+                Spacer()
+                Text("Standard Ebooks")
+                    .font(.caption.weight(.black))
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 22) {
+                ForEach(Array(shelves.enumerated()), id: \.element.id) { shelfIndex, shelf in
+                    ClassicGenreRow(
+                        shelf: shelf,
+                        selectedClassic: $selectedClassic
+                    )
+                    .blurLoadIn(delay: min(Double(shelfIndex) * 0.025, 0.16), radius: 8)
+                }
+            }
+            .animation(IllumeTheme.spring, value: selectedClassic?.id)
+        }
+    }
+}
+
+struct ClassicGenreRow: View {
+    let shelf: ClassicGenreShelf
+    @Binding var selectedClassic: ClassicBook?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            Text(shelf.title)
+                .font(.system(.headline, design: .rounded, weight: .black))
+                .foregroundStyle(IllumeTheme.ink)
 
             ScrollView(.horizontal) {
                 LazyHStack(alignment: .top, spacing: 16) {
-                    ForEach(Array(classics.enumerated()), id: \.element.id) { index, classic in
+                    ForEach(Array(shelf.books.enumerated()), id: \.element.id) { index, classic in
                         ClassicBookCard(
                             classic: classic,
                             isSelected: selectedClassic?.id == classic.id,
@@ -1466,11 +1497,10 @@ struct ClassicsSection: View {
                                 }
                             }
                         )
-                            .blurLoadIn(delay: min(Double(index) * 0.018, 0.14), radius: 8)
+                        .blurLoadIn(delay: min(Double(index) * 0.018, 0.14), radius: 8)
                     }
                 }
                 .padding(.vertical, 2)
-                .animation(IllumeTheme.spring, value: selectedClassic?.id)
             }
             .scrollIndicators(.hidden)
         }
@@ -1478,20 +1508,36 @@ struct ClassicsSection: View {
 }
 
 struct ClassicBookCard: View {
+    @EnvironmentObject private var app: IllumeAppModel
     let classic: ClassicBook
     let isSelected: Bool
     let isPanelOpen: Bool
     let onToggle: () -> Void
 
+    private var isImported: Bool {
+        app.hasImportedClassic(classic)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Button(action: onToggle) {
                 VStack(alignment: .leading, spacing: 10) {
-                    ClassicCover(resourceName: classic.coverResourceName)
+                    ClassicCover(resourceName: classic.coverResourceName, remoteURL: classic.coverUrl)
                         .opacity(isSelected && isPanelOpen ? 0.58 : 1)
                         .overlay {
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
                                 .strokeBorder(IllumeTheme.ink.opacity(isSelected ? 0.32 : 0), lineWidth: 2)
+                        }
+                        .overlay(alignment: .topTrailing) {
+                            if isImported {
+                                Image(systemName: "checkmark")
+                                    .font(.caption2.weight(.black))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 24, height: 24)
+                                    .background(IllumeTheme.accent, in: Circle())
+                                    .padding(7)
+                                    .transition(.scale.combined(with: .opacity))
+                            }
                         }
 
                     VStack(alignment: .leading, spacing: 6) {
@@ -1579,6 +1625,8 @@ struct ClassicExpandedPanel: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .lineSpacing(2)
 
+                GenreChipRow(genres: classic.genres)
+
                 actionButton
             }
             .padding(16)
@@ -1654,6 +1702,7 @@ struct ClassicCoverPicker: View {
                     } label: {
                         ClassicCover(
                             resourceName: classic.coverResourceName,
+                            remoteURL: classic.coverUrl,
                             isExpanded: classic.id == selectedClassic.id
                         )
                         .overlay {
@@ -1697,8 +1746,30 @@ struct ClassicCoverPicker: View {
     }
 }
 
+struct GenreChipRow: View {
+    let genres: [String]
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 7) {
+                ForEach(genres, id: \.self) { genre in
+                    Text(genre)
+                        .font(.caption.weight(.black))
+                        .foregroundStyle(IllumeTheme.ink.opacity(0.72))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(IllumeTheme.accent.opacity(0.16), in: Capsule())
+                }
+            }
+            .padding(.vertical, 1)
+        }
+        .scrollIndicators(.hidden)
+    }
+}
+
 struct ClassicCover: View {
     let resourceName: String
+    var remoteURL: URL?
     var isExpanded = false
 
     var body: some View {
@@ -1716,23 +1787,13 @@ struct ClassicCover: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
+            } else if let remoteURL {
+                CoverArtwork(urlString: remoteURL.absoluteString)
             }
         }
         .frame(width: isExpanded ? 150 : 118, height: isExpanded ? 216 : 170)
         .clipShape(RoundedRectangle(cornerRadius: isExpanded ? 18 : 14, style: .continuous))
         .shadow(color: .black.opacity(isExpanded ? 0.2 : 0.14), radius: isExpanded ? 18 : 12, y: isExpanded ? 12 : 8)
-    }
-}
-
-struct BookOpeningStatus: View {
-    @EnvironmentObject private var app: IllumeAppModel
-    let book: BookRow
-
-    var body: some View {
-        if app.openingBook?.id == book.id {
-            AnimatedEllipsisText("Opening")
-                .transition(.opacity.combined(with: .move(edge: .top)))
-        }
     }
 }
 
@@ -1879,7 +1940,6 @@ struct BookGrid: View {
                                 .font(.system(.subheadline, design: .rounded, weight: .bold))
                                 .foregroundStyle(IllumeTheme.ink)
                                 .lineLimit(2)
-                            BookOpeningStatus(book: book)
                             Text(book.documentType.rawValue.uppercased())
                                 .font(.caption2.weight(.black))
                                 .foregroundStyle(.secondary)

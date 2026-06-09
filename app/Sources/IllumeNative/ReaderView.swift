@@ -3,7 +3,7 @@ import IllumeCore
 import SwiftUI
 import UIKit
 
-private let readerImageChunkWords = 750
+private let readerImageChunkWords = 100
 private let readerTypographyPanelLift: CGFloat = 190
 private let readerScrollSpaceName = "readerScroll"
 private let readerNarrationActiveWordTopBand: CGFloat = 0.30
@@ -491,6 +491,7 @@ struct ReaderView: View {
         }
         .onChange(of: app.readerSettings.imageStyle) {
             guard imageModeEnabled, let book = app.activeBook else { return }
+            app.cancelReaderImagePrefetching()
             scheduledImageChunkIndex = nil
             scheduleImageGeneration(for: book, delay: .zero)
         }
@@ -718,6 +719,7 @@ struct ReaderView: View {
             app.readerImageResponse = nil
             app.readerImagePhase = .idle
             app.readerImageStyle = nil
+            app.cancelReaderImagePrefetching()
             scheduledImageChunkIndex = nil
         }
 
@@ -1158,22 +1160,21 @@ struct ReaderView: View {
                 end: windowEnd,
                 minimumCharacters: previewCharacters
             )
-            let excerpt = nsText.substring(with: NSRange(location: window.start, length: window.end - window.start))
-            let adjustedRange = activeRange.location >= window.start && NSMaxRange(activeRange) <= window.end
-                ? NSRange(
+            if activeRange.location >= window.start && NSMaxRange(activeRange) <= window.end {
+                let excerpt = nsText.substring(with: NSRange(location: window.start, length: window.end - window.start))
+                let adjustedRange = NSRange(
                     location: activeRange.location - window.start,
                     length: activeRange.length
                 )
-                : nil
 
-            return (
-                excerpt,
-                adjustedRange,
-                firstWordStart(in: text, atOrAfter: window.start) ?? window.start
-            )
-        } else {
-            containingRange = activeRange
+                return (
+                    excerpt,
+                    adjustedRange,
+                    firstWordStart(in: text, atOrAfter: window.start) ?? window.start
+                )
+            }
         }
+        containingRange = activeRange
         let windowStart = narrationPreviewWindowStart(
             in: text,
             containing: containingRange,
@@ -1310,10 +1311,19 @@ struct ReaderView: View {
     private func scheduleImageGeneration(for book: ReaderBook, delay: Duration = .milliseconds(520)) {
         guard !imageReaderTextExpanded else { return }
         guard let chunk = imageChunk(in: book) else { return }
+        let nextChunk = nextImageChunk(after: chunk, in: book)
         if app.readerImageChunkIndex == chunk.index,
            app.readerImageStyle == app.readerSettings.imageStyle,
            app.readerImagePhase == .checking || app.readerImagePhase == .generating || app.readerImagePhase == .ready {
             scheduledImageChunkIndex = chunk.index
+            if let nextChunk {
+                app.prefetchImage(
+                    text: nextChunk.text,
+                    chunkIndex: nextChunk.index,
+                    startWord: nextChunk.startWord,
+                    endWord: nextChunk.endWord
+                )
+            }
             return
         }
         guard scheduledImageChunkIndex != chunk.index else { return }
@@ -1324,6 +1334,14 @@ struct ReaderView: View {
                 try? await Task.sleep(for: delay)
             }
             guard !Task.isCancelled else { return }
+            if let nextChunk, !Task.isCancelled {
+                app.prefetchImage(
+                    text: nextChunk.text,
+                    chunkIndex: nextChunk.index,
+                    startWord: nextChunk.startWord,
+                    endWord: nextChunk.endWord
+                )
+            }
             await app.generateImage(text: chunk.text, chunkIndex: chunk.index, startWord: chunk.startWord, endWord: chunk.endWord)
         }
     }
@@ -1357,6 +1375,17 @@ struct ReaderView: View {
         let chunkIndex = wordsBeforeTarget / readerImageChunkWords
         guard imageChunkCache.chunks.indices.contains(chunkIndex) else { return nil }
         return imageChunkCache.chunks[chunkIndex]
+    }
+
+    private func nextImageChunk(after chunk: ReaderImageChunk, in book: ReaderBook) -> ReaderImageChunk? {
+        let bookID = app.activeBookRow?.id
+        if !imageChunkCache.matches(bookID: bookID, book: book) {
+            imageChunkCache = ReaderImageChunkCache.build(bookID: bookID, book: book)
+        }
+
+        let nextIndex = chunk.index + 1
+        guard imageChunkCache.chunks.indices.contains(nextIndex) else { return nil }
+        return imageChunkCache.chunks[nextIndex]
     }
 
     private func tableOfContentsEntries(for book: ReaderBook) -> [TableOfContentsEntry] {
@@ -2970,31 +2999,27 @@ struct ReaderImageStyleSheet: View {
     @EnvironmentObject private var app: IllumeAppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Capsule()
-                .fill(.secondary.opacity(0.25))
-                .frame(width: 42, height: 5)
-                .frame(maxWidth: .infinity)
-
-            Text("Image Styles")
-                .font(.system(.largeTitle, design: .rounded, weight: .black))
-
-            VStack(spacing: 12) {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
                 ForEach(ReaderImageStyle.allCases, id: \.self) { style in
-                    ReaderImageStyleOption(
-                        style: style,
-                        isSelected: app.readerSettings.imageStyle == style
-                    ) {
+                    Button {
                         app.readerSettings.imageStyle = style
+                    } label: {
+                        ReaderImageStyleOption(
+                            style: style,
+                            isSelected: app.readerSettings.imageStyle == style
+                        )
                     }
+                    .buttonStyle(.plain)
                 }
             }
-
-            Spacer(minLength: 0)
+            .padding(.top, 18)
+            .padding(.bottom, 18)
         }
-        .padding(24)
-        .background(.clear)
-        .illumeLiquidGlassRounded(cornerRadius: 30, tint: ReaderSheetGlass.panelTint)
+        .scrollIndicators(.hidden)
+        .scrollContentBackground(.hidden)
+        .background(TableOfContentsStyle.background)
+        .presentationCornerRadius(42)
         .presentationBackground(.clear)
     }
 }
@@ -3002,43 +3027,40 @@ struct ReaderImageStyleSheet: View {
 struct ReaderImageStyleOption: View {
     let style: ReaderImageStyle
     let isSelected: Bool
-    let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 13) {
-                Image(style.previewResourceName, bundle: .module)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: 96, height: 82)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(.black.opacity(0.1), lineWidth: 1)
-                    )
+        HStack(spacing: 14) {
+            Image(style.previewResourceName, bundle: .module)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 56, height: 56)
+                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                .shadow(color: .black.opacity(0.16), radius: 7, x: 0, y: 3)
 
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(style.label)
-                        .font(.system(.headline, design: .rounded, weight: .black))
-                    Text(style.summary)
-                        .font(.system(.caption, design: .rounded, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+            Text(style.label)
+                .font(.system(size: 18, weight: isSelected ? .bold : .regular))
+                .foregroundStyle(TableOfContentsStyle.ink)
+                .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 24, weight: .bold))
-                        .foregroundStyle(IllumeTheme.accent)
-                }
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(TableOfContentsStyle.ink)
             }
-            .padding(10)
-            .frame(maxWidth: .infinity, minHeight: 104, alignment: .leading)
-            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
-        .buttonStyle(LiquidCardButtonStyle(cornerRadius: 14, tint: isSelected ? Color.white.opacity(0.28) : ReaderSheetGlass.tint))
+        .padding(.leading, 28)
+        .padding(.trailing, 38)
+        .padding(.vertical, 12)
+        .background(isSelected ? Color.white.opacity(0.055) : Color.clear)
+        .contentShape(Rectangle())
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(TableOfContentsStyle.divider)
+                .frame(height: 0.7)
+                .padding(.leading, 28)
+                .padding(.trailing, 28)
+        }
         .accessibilityLabel(style.label)
         .accessibilityValue(isSelected ? "Selected" : "")
     }
@@ -3056,13 +3078,6 @@ private extension ReaderImageStyle {
         switch self {
         case .cartoon: "Cartoon"
         case .cute: "Cute"
-        }
-    }
-
-    var summary: String {
-        switch self {
-        case .cartoon: "Bold Sunday funnies look with bright 1980s color."
-        case .cute: "Kawaii anime feel with pastel modern colors."
         }
     }
 

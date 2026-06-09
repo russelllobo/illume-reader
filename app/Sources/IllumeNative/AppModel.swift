@@ -11,7 +11,7 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-private let readerImageRequestChunkWords = 750
+private let readerImageRequestChunkWords = 100
 private let narrationChunkMinimumCharacters = 80
 private let narrationChunkMaximumCharacters = 220
 private let narrationChunkHardMaximumCharacters = 420
@@ -104,6 +104,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
     private var narrationCurrentAudioCacheKey: NarrationAudioCacheKey?
     private var kokoroWarmupTask: Task<Void, Never>?
     private var readerImageGenerationTask: Task<Void, Never>?
+    private var readerImagePrefetchTasks: [ReaderImagePrefetchKey: Task<ReaderImageFunctionResponse?, Never>] = [:]
     private var uploadedBookNoticeTask: Task<Void, Never>?
     private var narrationParagraphIndex: Int?
     private var narrationChunkEndParagraphIndex: Int?
@@ -185,6 +186,12 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
     private struct PendingReaderImageGeneration: Sendable {
         let chunk: ReaderImageRequestChunk
+        let style: ReaderImageStyle
+    }
+
+    private struct ReaderImagePrefetchKey: Hashable, Sendable {
+        let bookID: UUID
+        let chunkIndex: Int
         let style: ReaderImageStyle
     }
 
@@ -305,6 +312,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
         billingProfile = nil
         readerImageUsage = nil
         readerImageRowCount = 0
+        cancelReaderImagePrefetchTasks()
         readerImageResponse = nil
         readerImageChunkIndex = nil
         readerImageStyle = nil
@@ -442,14 +450,23 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
     func bookMatchingClassic(_ classic: ClassicBook) -> BookRow? {
         let targetTitle = Self.normalizedTitle(classic.title)
-        return books.first { Self.normalizedTitle($0.title) == targetTitle }
+        let targetFileName = classic.fileName
+        return books.first { book in
+            book.documentType == .epub &&
+            (
+                book.fileName == targetFileName ||
+                Self.normalizedTitle(book.title) == targetTitle
+            )
+        }
     }
 
     func hasImportedClassic(_ classic: ClassicBook) -> Bool {
         books.contains { book in
             book.documentType == .epub &&
-            book.fileName == classic.fileName &&
-            Self.normalizedTitle(book.title) == Self.normalizedTitle(classic.title)
+            (
+                book.fileName == classic.fileName ||
+                Self.normalizedTitle(book.title) == Self.normalizedTitle(classic.title)
+            )
         }
     }
 
@@ -567,6 +584,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
             parsed.coverUrl = row.coverUrl
             readerImageGenerationTask?.cancel()
             readerImageGenerationTask = nil
+            cancelReaderImagePrefetchTasks()
             readerImageResponse = nil
             readerImageChunkIndex = nil
             readerImageStyle = nil
@@ -653,6 +671,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
         let row = activeBookRow
         readerImageGenerationTask?.cancel()
         readerImageGenerationTask = nil
+        cancelReaderImagePrefetchTasks()
         closingBook = row
         isReaderPresented = false
         openingBook = nil
@@ -1478,6 +1497,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
                     isPlaying: narration.isPlaying,
                     isPreparing: narration.isPreparing
                 )
+                updateNarrationHighlight(at: currentNarrationPlaybackSeconds)
                 updateNowPlayingInfo(duration: renderedAudio.duration)
                 streamingAudioPlayer?.markStreamFinished()
             } else {
@@ -2689,6 +2709,32 @@ final class IllumeAppModel: NSObject, ObservableObject {
         let bookTitle = activeBook?.title ?? row.title
         let author = activeBook?.author ?? row.author
         let style = readerSettings.imageStyle
+        let prefetchKey = ReaderImagePrefetchKey(bookID: row.id, chunkIndex: chunkIndex, style: style)
+        if let prefetchTask = readerImagePrefetchTasks[prefetchKey] {
+            readerImageChunkIndex = chunkIndex
+            readerImageStyle = style
+            readerImageResponse = nil
+            readerImagePhase = .generating
+            let prefetchedResponse = await prefetchTask.value
+            readerImagePrefetchTasks[prefetchKey] = nil
+            guard activeBookRow?.id == row.id,
+                  readerImageChunkIndex == chunkIndex,
+                  readerImageStyle == style,
+                  !Task.isCancelled else { return }
+            if let prefetchedResponse {
+                readerImageResponse = prefetchedResponse
+                applyReaderImageCount(prefetchedResponse.imageCount, plan: prefetchedResponse.plan)
+                if prefetchedResponse.imageUrl != nil {
+                    await preloadReaderImageIfNeeded(prefetchedResponse.imageUrl)
+                    readerImagePhase = .ready
+                } else if prefetchedResponse.limitReached == true {
+                    handleReaderImageLimitReached(prefetchedResponse)
+                } else {
+                    readerImagePhase = .error
+                }
+                return
+            }
+        }
         await runReaderImageTask { [self] in
             readerImageChunkIndex = chunkIndex
             readerImageStyle = style
@@ -2742,6 +2788,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
             readerImageStyle = style
             applyReaderImageCount(generationResponse.imageCount, plan: generationResponse.plan)
             if generationResponse.imageUrl != nil {
+                await preloadReaderImageIfNeeded(generationResponse.imageUrl)
                 readerImagePhase = .ready
             } else if generationResponse.limitReached == true {
                 readerImagePhase = .error
@@ -2750,6 +2797,61 @@ final class IllumeAppModel: NSObject, ObservableObject {
                 await reload()
             }
         }
+    }
+
+    func prefetchImage(text: String, chunkIndex: Int, startWord: Int, endWord: Int) {
+        guard let row = activeBookRow,
+              let book = activeBook,
+              let accessToken = session?.accessToken else { return }
+        let style = readerSettings.imageStyle
+        let key = ReaderImagePrefetchKey(bookID: row.id, chunkIndex: chunkIndex, style: style)
+        guard readerImagePrefetchTasks[key] == nil else { return }
+        if readerImageChunkIndex == chunkIndex,
+           readerImageStyle == style,
+           readerImagePhase == .checking || readerImagePhase == .generating || readerImagePhase == .ready {
+            return
+        }
+        guard canRequestNewReaderImage else { return }
+
+        let request = ReaderImageFunctionRequest(
+            author: book.author,
+            bookId: row.id,
+            bookTitle: book.title,
+            checkOnly: nil,
+            chunkIndex: chunkIndex,
+            startWord: startWord,
+            endWord: endWord,
+            imageStyle: style,
+            text: text,
+            style: style
+        )
+        let task = Task { [backend] in
+            try? await backend.invokeReaderImage(request, accessToken: accessToken)
+        }
+        readerImagePrefetchTasks[key] = task
+
+        Task { [weak self] in
+            let response = await task.value
+            guard let self else { return }
+            if self.readerImagePrefetchTasks[key] != nil {
+                self.readerImagePrefetchTasks[key] = nil
+            }
+            guard let response else { return }
+            self.applyReaderImageCount(response.imageCount, plan: response.plan)
+            if response.imageCount == nil,
+               let usage = try? await self.backend.loadReaderImageUsage(accessToken: accessToken) {
+                self.readerImageUsage = usage
+            }
+        }
+    }
+
+    func cancelReaderImagePrefetching() {
+        cancelReaderImagePrefetchTasks()
+    }
+
+    private func cancelReaderImagePrefetchTasks() {
+        readerImagePrefetchTasks.values.forEach { $0.cancel() }
+        readerImagePrefetchTasks.removeAll()
     }
 
     private func prepareReaderImageForOpening(
