@@ -4184,7 +4184,7 @@ struct ReaderSettings: Equatable {
     var lineWidth: Double = 39
     var fontFamily: ReaderFontFamily = .serif
     var narrationRate: Double = 1.0
-    var narrationVoice: String = KokoroNarrationVoice.heart.id
+    var narrationVoice: String = KokoroNarrationVoice.bella.id
     var imageStyle: ReaderImageStyle = .cartoon
 }
 
@@ -4453,7 +4453,7 @@ enum KokoroNarrationVoice: String, CaseIterable, Identifiable, Sendable {
     static func availableVoice(for id: String) -> KokoroNarrationVoice {
         guard let voice = Self(rawValue: id),
               allCases.contains(voice) else {
-            return .heart
+            return .bella
         }
 
         return voice

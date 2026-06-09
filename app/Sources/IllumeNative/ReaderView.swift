@@ -11,7 +11,11 @@ private let readerNarrationActiveWordBottomBand: CGFloat = 0.68
 private let readerNarrationTargetViewportPosition: CGFloat = 0.46
 private let readerButtonsAutohideDelay: Duration = .seconds(3)
 private let readerImageTextCollapsedHeight: CGFloat = 78
-private let readerImageTextHiddenControlsHeight: CGFloat = 142
+private let readerImageTextVisibleControlsBottomPadding: CGFloat = 118
+private let readerImageTextHiddenControlsBottomPadding: CGFloat = 26
+private let readerImageTextHiddenControlsHeight: CGFloat = readerImageTextCollapsedHeight
+    + readerImageTextVisibleControlsBottomPadding
+    - readerImageTextHiddenControlsBottomPadding
 private let readerImageTextReturnDelay: Duration = .seconds(2)
 private let readerMiniplayerDismissTranslation: CGFloat = 34
 private let readerMiniplayerDismissPredictedTranslation: CGFloat = 68
@@ -321,6 +325,16 @@ struct ReaderView: View {
                 }
             }
 
+            if quickMenuOpen {
+                Color.black.opacity(0.001)
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        closeQuickMenu()
+                    }
+                    .zIndex(7)
+            }
+
             if let book = app.activeBook {
                 let isShowingImageMode = imageModeEnabled && imageParagraph(in: book) != nil
                 let hideBottomControls = shouldHideReaderButtons
@@ -380,9 +394,6 @@ struct ReaderView: View {
                                     toggleImageMode: { toggleImageMode(for: book) },
                                     closeDestination: {
                                         closeQuickMenuDestination()
-                                    },
-                                    closeMenu: {
-                                        closeQuickMenu()
                                     },
                                     destinationContent: { destination in
                                         readerMenuPanel(for: destination)
@@ -453,9 +464,10 @@ struct ReaderView: View {
                         DragGesture(minimumDistance: 14)
                             .onEnded { value in
                                 hideReaderButtonsIfDismissSwipe(value)
-                            }
+                        }
                     )
                 }
+                .zIndex(8)
             }
 
         }
@@ -541,6 +553,9 @@ struct ReaderView: View {
         Group {
             if onImageBackground && !imageReaderTextExpanded {
                 let previewHeight = shouldHideReaderButtons ? readerImageTextHiddenControlsHeight : readerImageTextCollapsedHeight
+                let previewBottomPadding = shouldHideReaderButtons
+                    ? readerImageTextHiddenControlsBottomPadding
+                    : readerImageTextVisibleControlsBottomPadding
                 ZStack(alignment: .bottom) {
                     VStack(spacing: 0) {
                         Color.black.opacity(0.001)
@@ -550,7 +565,7 @@ struct ReaderView: View {
                             }
 
                         Spacer()
-                            .frame(height: previewHeight + (shouldHideReaderButtons ? 26 : 118))
+                            .frame(height: previewHeight + previewBottomPadding)
                     }
 
                     ReaderNarrationPreviewPanel(
@@ -577,7 +592,7 @@ struct ReaderView: View {
                         revealReaderButtons()
                     }
                     .padding(.horizontal, 24)
-                    .padding(.bottom, shouldHideReaderButtons ? 26 : 118)
+                    .padding(.bottom, previewBottomPadding)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                 .transition(.readerTextBlurIn)
@@ -753,6 +768,10 @@ struct ReaderView: View {
 
     private func toggleReaderButtons(allowDuringPreparation: Bool = false) {
         readerButtonsAutohideTask?.cancel()
+        if quickMenuOpen {
+            closeQuickMenu()
+            return
+        }
         if readerButtonsHidden {
             revealReaderButtons()
         } else {
@@ -895,6 +914,11 @@ struct ReaderView: View {
         proxy: ScrollViewProxy,
         onImageBackground: Bool
     ) {
+        if quickMenuOpen {
+            closeQuickMenu()
+            return
+        }
+
         let textWidth = min(textColumnWidth + 36, viewportWidth)
         let horizontalMargin = max((viewportWidth - textWidth) / 2, 0)
 
@@ -1670,14 +1694,12 @@ struct TableOfContentsSheet: View {
         }
         .scrollIndicators(.hidden)
         .scrollContentBackground(.hidden)
-        .background(TableOfContentsStyle.background)
         .presentationCornerRadius(42)
         .presentationBackground(.clear)
     }
 }
 
 private enum TableOfContentsStyle {
-    static let background = Color(red: 0.075, green: 0.073, blue: 0.068)
     static let ink = Color.white.opacity(0.94)
     static let secondaryText = Color.white.opacity(0.46)
     static let divider = Color.white.opacity(0.12)
@@ -2724,7 +2746,6 @@ fileprivate struct ReaderQuickMenuOverlay<DestinationContent: View>: View {
     let openVoices: () -> Void
     let toggleImageMode: () -> Void
     let closeDestination: () -> Void
-    let closeMenu: () -> Void
     @ViewBuilder let destinationContent: (ReaderSheetDestination) -> DestinationContent
 
     var body: some View {
@@ -2734,8 +2755,7 @@ fileprivate struct ReaderQuickMenuOverlay<DestinationContent: View>: View {
                     destination: activeDestination,
                     isCollapsed: isCollapsed,
                     onDarkBackground: onDarkBackground,
-                    back: closeDestination,
-                    close: closeMenu
+                    back: closeDestination
                 ) {
                     destinationContent(activeDestination)
                 }
@@ -2838,7 +2858,6 @@ fileprivate struct ReaderQuickMenuExpandedPanel<Content: View>: View {
     var isCollapsed = false
     var onDarkBackground = false
     let back: () -> Void
-    let close: () -> Void
     @ViewBuilder let content: () -> Content
 
     var body: some View {
@@ -2861,22 +2880,11 @@ fileprivate struct ReaderQuickMenuExpandedPanel<Content: View>: View {
                     .minimumScaleFactor(0.76)
 
                 Spacer(minLength: 8)
-
-                Button(action: close) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 17, weight: .black))
-                        .foregroundStyle(textColor.opacity(0.84))
-                        .frame(width: 42, height: 42)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(ReaderGlassCircleButtonStyle(tint: buttonTint, pressedScale: 0.92))
-                .accessibilityLabel("Close reading menu")
             }
             .padding(.horizontal, isCollapsed ? 14 : 18)
             .padding(.top, isCollapsed ? 14 : 18)
 
             content()
-                .clipShape(RoundedRectangle(cornerRadius: isCollapsed ? 28 : 32, style: .continuous))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -2971,7 +2979,6 @@ struct ReaderFontSettingsSheet: View {
         }
         .scrollIndicators(.hidden)
         .scrollContentBackground(.hidden)
-        .background(TableOfContentsStyle.background)
         .presentationCornerRadius(42)
         .presentationBackground(.clear)
     }
@@ -3054,14 +3061,6 @@ struct ReaderVoiceSettingsSheet: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                Text("Narration Voice")
-                    .font(IllumeTypography.sans(24, weight: .heavy))
-                    .foregroundStyle(TableOfContentsStyle.ink)
-                    .padding(.leading, 28)
-                    .padding(.trailing, 38)
-                    .padding(.top, 24)
-                    .padding(.bottom, 8)
-
                 ForEach(KokoroNarrationVoice.allCases) { voice in
                     Button {
                         app.setNarrationVoice(voice.id)
@@ -3074,11 +3073,11 @@ struct ReaderVoiceSettingsSheet: View {
                     .buttonStyle(.plain)
                 }
             }
+            .padding(.top, 18)
             .padding(.bottom, 18)
         }
         .scrollIndicators(.hidden)
         .scrollContentBackground(.hidden)
-        .background(TableOfContentsStyle.background)
         .presentationCornerRadius(42)
         .presentationBackground(.clear)
     }
@@ -3089,21 +3088,12 @@ struct ReaderVoiceOption: View {
     let isSelected: Bool
 
     var body: some View {
-        HStack(spacing: 14) {
-            ReaderVoicePreview(voice: voice, isSelected: isSelected)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(voice.displayName)
-                    .font(.system(size: 18, weight: isSelected ? .bold : .regular))
-                    .foregroundStyle(TableOfContentsStyle.ink)
-                    .lineLimit(1)
-
-                Text("Grade \(voice.grade)")
-                    .font(IllumeTypography.sans(12, weight: .bold))
-                    .foregroundStyle(TableOfContentsStyle.ink.opacity(0.55))
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+        HStack(spacing: 12) {
+            Text(voice.displayName)
+                .font(.system(size: 18, weight: isSelected ? .bold : .regular))
+                .foregroundStyle(TableOfContentsStyle.ink)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             if isSelected {
                 Image(systemName: "checkmark")
@@ -3113,7 +3103,7 @@ struct ReaderVoiceOption: View {
         }
         .padding(.leading, 28)
         .padding(.trailing, 38)
-        .padding(.vertical, 12)
+        .padding(.vertical, 14)
         .background(isSelected ? Color.white.opacity(0.055) : Color.clear)
         .contentShape(Rectangle())
         .overlay(alignment: .bottom) {
@@ -3124,45 +3114,7 @@ struct ReaderVoiceOption: View {
                 .padding(.trailing, 28)
         }
         .accessibilityLabel(voice.displayName)
-        .accessibilityValue(isSelected ? "Selected" : "Grade \(voice.grade)")
-    }
-}
-
-struct ReaderVoicePreview: View {
-    let voice: KokoroNarrationVoice
-    let isSelected: Bool
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: isSelected
-                            ? [IllumeTheme.accent.opacity(0.95), IllumeTheme.coral.opacity(0.88)]
-                            : [Color.white.opacity(0.16), Color.white.opacity(0.06)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-
-            VStack(spacing: 2) {
-                Text(voice.countryFlag)
-                    .font(.system(size: 18))
-
-                Text(voice.symbol)
-                    .font(IllumeTypography.sans(14, weight: .heavy))
-                    .foregroundStyle(TableOfContentsStyle.ink)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-            }
-        }
-        .frame(width: 56, height: 56)
-        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                .strokeBorder(Color.white.opacity(isSelected ? 0.28 : 0.1), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.16), radius: 7, x: 0, y: 3)
+        .accessibilityValue(isSelected ? "Selected" : "")
     }
 }
 
@@ -3189,7 +3141,6 @@ struct ReaderImageStyleSheet: View {
         }
         .scrollIndicators(.hidden)
         .scrollContentBackground(.hidden)
-        .background(TableOfContentsStyle.background)
         .presentationCornerRadius(42)
         .presentationBackground(.clear)
     }
@@ -3346,12 +3297,12 @@ struct ReaderVoiceSettingsRow: View {
                     Button {
                         app.setNarrationVoice(voice.id)
                     } label: {
-                        Label(voice.displayName, systemImage: selectedVoice == voice ? "checkmark" : "waveform")
+                        Text(voice.displayName)
                     }
                 }
             } label: {
                 HStack(spacing: 10) {
-                    Text("\(selectedVoice.displayName) · Grade \(selectedVoice.grade)")
+                    Text(selectedVoice.displayName)
                         .font(IllumeTypography.sans(15, weight: .bold))
                         .foregroundStyle(IllumeTheme.ink)
                         .lineLimit(1)
