@@ -495,6 +495,12 @@ struct ReaderView: View {
             scheduledImageChunkIndex = nil
             scheduleImageGeneration(for: book, delay: .zero)
         }
+        .onChange(of: app.readerImagePhase) {
+            guard app.readerImagePhase == .ready,
+                  imageModeEnabled,
+                  let book = app.activeBook else { return }
+            scheduleNextImagePrefetch(for: book)
+        }
         .onAppear {
             guard let book = app.activeBook else { return }
             restoreInitialIndex(in: book)
@@ -1316,14 +1322,7 @@ struct ReaderView: View {
            app.readerImageStyle == app.readerSettings.imageStyle,
            app.readerImagePhase == .checking || app.readerImagePhase == .generating || app.readerImagePhase == .ready {
             scheduledImageChunkIndex = chunk.index
-            if let nextChunk {
-                app.prefetchImage(
-                    text: nextChunk.text,
-                    chunkIndex: nextChunk.index,
-                    startWord: nextChunk.startWord,
-                    endWord: nextChunk.endWord
-                )
-            }
+            prefetchImageChunk(nextChunk)
             return
         }
         guard scheduledImageChunkIndex != chunk.index else { return }
@@ -1334,16 +1333,28 @@ struct ReaderView: View {
                 try? await Task.sleep(for: delay)
             }
             guard !Task.isCancelled else { return }
-            if let nextChunk, !Task.isCancelled {
-                app.prefetchImage(
-                    text: nextChunk.text,
-                    chunkIndex: nextChunk.index,
-                    startWord: nextChunk.startWord,
-                    endWord: nextChunk.endWord
-                )
-            }
             await app.generateImage(text: chunk.text, chunkIndex: chunk.index, startWord: chunk.startWord, endWord: chunk.endWord)
+            guard !Task.isCancelled else { return }
+            prefetchImageChunk(nextChunk)
         }
+    }
+
+    private func scheduleNextImagePrefetch(for book: ReaderBook) {
+        guard !imageReaderTextExpanded,
+              let chunk = imageChunk(in: book),
+              app.readerImageChunkIndex == chunk.index,
+              app.readerImageStyle == app.readerSettings.imageStyle else { return }
+        prefetchImageChunk(nextImageChunk(after: chunk, in: book))
+    }
+
+    private func prefetchImageChunk(_ chunk: ReaderImageChunk?) {
+        guard let chunk else { return }
+        app.prefetchImage(
+            text: chunk.text,
+            chunkIndex: chunk.index,
+            startWord: chunk.startWord,
+            endWord: chunk.endWord
+        )
     }
 
     private func imageParagraph(in book: ReaderBook) -> ReaderParagraph? {

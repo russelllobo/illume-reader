@@ -98,6 +98,8 @@ final class IllumeAppModel: NSObject, ObservableObject {
     private var remoteCommandTargets: [Any] = []
     private var hasConfiguredRemoteCommands = false
     private var narrationTask: Task<Void, Never>?
+    private var openingNarrationTask: Task<Void, Never>?
+    private var openingNarrationID: UUID?
     private var narrationPrefetchTasks: [NarrationAudioCacheKey: Task<NarrationPreparedAudio?, Never>] = [:]
     private var narrationAudioCache: [NarrationAudioCacheKey: NarrationPreparedAudio] = [:]
     private var narrationAudioCacheOrder: [NarrationAudioCacheKey] = []
@@ -118,6 +120,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
     private var appleContinuation: CheckedContinuation<AuthSession, Error>?
     private var googleWebAuthSession: ASWebAuthenticationSession?
     private var appleNonce = ""
+    private var bookTransitionFrames: [UUID: CGRect] = [:]
 
     enum AuthMode {
         case signIn
@@ -568,7 +571,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
     func open(_ row: BookRow, sourceFrame: CGRect? = nil) async {
         guard let accessToken = session?.accessToken else { return }
-        bookTransitionSourceFrame = sourceFrame
+        bookTransitionSourceFrame = sourceFrame ?? bookTransitionFrames[row.id]
         stopSpeaking()
         await runOpening(row) { [self] in
             var parsed = try await loadReaderBookForOpening(row, accessToken: accessToken)
@@ -594,7 +597,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
             isReaderPresented = true
             openingBook = nil
             warmKokoroTTSIfNeeded()
-            speak(book: parsed, paragraphIndex: start.index)
+            startOpeningNarration(book: parsed, bookID: openingRow.id, paragraphIndex: start.index)
             startReaderImagePreparationForOpening(book: parsed, row: openingRow, accessToken: accessToken)
             updateLocalProgress(
                 bookId: row.id,
@@ -669,6 +672,10 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
     func closeReader() {
         let row = activeBookRow
+        if bookTransitionSourceFrame == nil, let row, let frame = bookTransitionFrames[row.id] {
+            bookTransitionSourceFrame = frame
+        }
+        cancelOpeningNarration()
         readerImageGenerationTask?.cancel()
         readerImageGenerationTask = nil
         cancelReaderImagePrefetchTasks()
@@ -682,10 +689,28 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
         guard let row else { return }
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(460))
+            try? await Task.sleep(for: .milliseconds(390))
             guard self?.closingBook?.id == row.id else { return }
             self?.closingBook = nil
             self?.bookTransitionSourceFrame = nil
+        }
+    }
+
+    func recordBookTransitionFrame(bookID: UUID, frame: CGRect) {
+        guard frame.width > 1,
+              frame.height > 1,
+              frame.minX.isFinite,
+              frame.minY.isFinite,
+              frame.width.isFinite,
+              frame.height.isFinite else {
+            return
+        }
+
+        bookTransitionFrames[bookID] = frame
+
+        guard closingBook?.id == bookID, bookTransitionSourceFrame == nil else { return }
+        withAnimation(IllumeTheme.blurLoadIn) {
+            bookTransitionSourceFrame = frame
         }
     }
 
@@ -912,7 +937,54 @@ final class IllumeAppModel: NSObject, ObservableObject {
         }
     }
 
+    private func startOpeningNarration(book: ReaderBook, bookID: UUID, paragraphIndex: Int) {
+        openingNarrationTask?.cancel()
+        narrationTask?.cancel()
+        stopPlayback(keepNarrationState: false)
+
+        let openingNarrationID = UUID()
+        self.openingNarrationID = openingNarrationID
+        let task = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled else { return }
+            let shouldStart = await MainActor.run {
+                guard let self,
+                      self.openingNarrationID == openingNarrationID,
+                      self.isReaderPresented,
+                      self.activeBookRow?.id == bookID,
+                      self.activeBook != nil else {
+                    return false
+                }
+                return true
+            }
+            guard shouldStart, !Task.isCancelled else { return }
+            await self?.speakKokoro(book: book, paragraphIndex: paragraphIndex)
+            try? await Task.sleep(for: .milliseconds(1500))
+            await MainActor.run {
+                guard let self, self.openingNarrationID == openingNarrationID else { return }
+                self.openingNarrationTask = nil
+                self.openingNarrationID = nil
+                self.narrationTask = nil
+            }
+        }
+
+        openingNarrationTask = task
+        narrationTask = task
+    }
+
+    private func cancelOpeningNarration() {
+        guard let openingNarrationTask else { return }
+        openingNarrationTask.cancel()
+        narrationTask?.cancel()
+        narrationTask = nil
+        openingNarrationID = nil
+        stopPlayback(keepNarrationState: false)
+        resetNarrationTracking()
+        self.openingNarrationTask = nil
+    }
+
     func speak(book: ReaderBook, paragraphIndex: Int, wordStart: Int = 0) {
+        cancelOpeningNarration()
         narrationTask?.cancel()
         stopPlayback(keepNarrationState: false)
         narrationTask = Task {
@@ -1065,6 +1137,9 @@ final class IllumeAppModel: NSObject, ObservableObject {
     }
 
     func stopSpeaking() {
+        openingNarrationTask?.cancel()
+        openingNarrationTask = nil
+        openingNarrationID = nil
         narrationTask?.cancel()
         narrationTask = nil
         voicePreviewTask?.cancel()
@@ -2833,11 +2908,12 @@ final class IllumeAppModel: NSObject, ObservableObject {
         Task { [weak self] in
             let response = await task.value
             guard let self else { return }
-            if self.readerImagePrefetchTasks[key] != nil {
+            if response == nil, self.readerImagePrefetchTasks[key] != nil {
                 self.readerImagePrefetchTasks[key] = nil
             }
             guard let response else { return }
             self.applyReaderImageCount(response.imageCount, plan: response.plan)
+            await self.preloadReaderImageIfNeeded(response.imageUrl)
             if response.imageCount == nil,
                let usage = try? await self.backend.loadReaderImageUsage(accessToken: accessToken) {
                 self.readerImageUsage = usage

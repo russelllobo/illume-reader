@@ -17,7 +17,7 @@ struct RootView: View {
                     .transition(.opacity)
             } else if app.isSignedIn {
                 LibraryShell()
-                    .libraryBlurReentry(isReaderTransitionActive: app.isReaderPresented)
+                    .libraryBlurReentry(isReaderTransitionActive: app.isReaderPresented || app.closingBook != nil)
                     .blurLoadIn(radius: 7)
                     .transition(.scale(scale: 0.98).combined(with: .opacity))
             } else {
@@ -1455,9 +1455,6 @@ struct ClassicsSection: View {
                 Text("classics")
                 .font(IllumeTypography.logo(28))
                 Spacer()
-                Text("Standard Ebooks")
-                    .font(.caption.weight(.black))
-                    .foregroundStyle(.secondary)
             }
 
             VStack(alignment: .leading, spacing: 22) {
@@ -1526,7 +1523,7 @@ struct ClassicBookCard: View {
                         .opacity(isSelected && isPanelOpen ? 0.58 : 1)
                         .overlay {
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .strokeBorder(IllumeTheme.ink.opacity(isSelected ? 0.32 : 0), lineWidth: 2)
+                                .strokeBorder(IllumeTheme.paper.opacity(isSelected ? 0.72 : 0), lineWidth: 2)
                         }
                         .overlay(alignment: .topTrailing) {
                             if isImported {
@@ -1690,44 +1687,49 @@ struct ClassicCoverPicker: View {
     let selectedClassic: ClassicBook
     let selectClassic: (ClassicBook) -> Void
     @State private var centeredClassicID: String?
+    private let expandedCoverWidth: CGFloat = 150
 
     var body: some View {
-        ScrollView(.horizontal) {
-            LazyHStack(alignment: .center, spacing: 12) {
-                ForEach(classics) { classic in
-                    Button {
-                        withAnimation(IllumeTheme.spring) {
-                            selectClassic(classic)
+        GeometryReader { geometry in
+            let horizontalInset = max(0, (geometry.size.width - expandedCoverWidth) / 2)
+
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .center, spacing: 12) {
+                    ForEach(classics) { classic in
+                        Button {
+                            withAnimation(IllumeTheme.spring) {
+                                selectClassic(classic)
+                            }
+                        } label: {
+                            ClassicCover(
+                                resourceName: classic.coverResourceName,
+                                remoteURL: classic.coverUrl,
+                                isExpanded: classic.id == selectedClassic.id
+                            )
+                            .overlay {
+                                RoundedRectangle(cornerRadius: classic.id == selectedClassic.id ? 18 : 14, style: .continuous)
+                                    .strokeBorder(IllumeTheme.paper.opacity(classic.id == selectedClassic.id ? 0.72 : 0), lineWidth: 2)
+                            }
+                            .scaleEffect(classic.id == selectedClassic.id ? 1 : 0.82)
+                            .opacity(classic.id == selectedClassic.id ? 1 : 0.78)
+                            .zIndex(classic.id == selectedClassic.id ? 1 : 0)
                         }
-                    } label: {
-                        ClassicCover(
-                            resourceName: classic.coverResourceName,
-                            remoteURL: classic.coverUrl,
-                            isExpanded: classic.id == selectedClassic.id
-                        )
-                        .overlay {
-                            RoundedRectangle(cornerRadius: classic.id == selectedClassic.id ? 18 : 14, style: .continuous)
-                                .strokeBorder(IllumeTheme.ink.opacity(classic.id == selectedClassic.id ? 0.28 : 0), lineWidth: 2)
-                        }
-                        .scaleEffect(classic.id == selectedClassic.id ? 1 : 0.82)
-                        .opacity(classic.id == selectedClassic.id ? 1 : 0.78)
-                        .zIndex(classic.id == selectedClassic.id ? 1 : 0)
+                        .frame(width: expandedCoverWidth, height: 216)
+                        .buttonStyle(LiquidLiftButtonStyle())
+                        .id(classic.id)
+                        .accessibilityLabel("\(classic.title), \(classic.author)")
                     }
-                    .frame(width: 150, height: 216)
-                    .buttonStyle(LiquidLiftButtonStyle())
-                    .id(classic.id)
-                    .accessibilityLabel("\(classic.title), \(classic.author)")
                 }
+                .padding(.vertical, 12)
+                .scrollTargetLayout()
             }
-            .padding(.horizontal, 42)
-            .padding(.vertical, 12)
-            .scrollTargetLayout()
+            .scrollClipDisabled()
+            .scrollIndicators(.hidden)
+            .scrollTargetBehavior(.viewAligned)
+            .scrollPosition(id: $centeredClassicID, anchor: .center)
+            .contentMargins(.horizontal, horizontalInset, for: .scrollContent)
         }
         .frame(height: 236)
-        .scrollClipDisabled()
-        .scrollIndicators(.hidden)
-        .scrollTargetBehavior(.viewAligned)
-        .scrollPosition(id: $centeredClassicID, anchor: .center)
         .onAppear {
             centeredClassicID = selectedClassic.id
         }
@@ -1775,18 +1777,17 @@ struct ClassicCover: View {
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [IllumeTheme.ink, IllumeTheme.coral],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+                .fill(IllumeTheme.mist.opacity(0.72))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(IllumeTheme.paper.opacity(0.18))
+                }
 
             if let image = UIImage(named: "\(resourceName).jpg", in: .module, compatibleWith: nil) {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
+                    .blurLoadIn(radius: 10)
             } else if let remoteURL {
                 CoverArtwork(urlString: remoteURL.absoluteString)
             }
@@ -2053,6 +2054,7 @@ struct BookOpenButton<Label: View>: View {
 }
 
 struct BookOpenCover: View {
+    @EnvironmentObject private var app: IllumeAppModel
     let book: BookRow
     let size: CGSize
     @Binding var sourceFrame: CGRect?
@@ -2060,6 +2062,15 @@ struct BookOpenCover: View {
     var body: some View {
         CoverView(book: book, size: size)
             .trackBookTransitionFrame($sourceFrame)
+            .onAppear {
+                if let sourceFrame {
+                    app.recordBookTransitionFrame(bookID: book.id, frame: sourceFrame)
+                }
+            }
+            .onChange(of: sourceFrame) { _, newValue in
+                guard let newValue else { return }
+                app.recordBookTransitionFrame(bookID: book.id, frame: newValue)
+            }
     }
 }
 
@@ -2612,8 +2623,9 @@ struct BookScreenTransitionPanel: View {
         GeometryReader { proxy in
             let screenFrame = CGRect(origin: .zero, size: proxy.size)
             let source = sourceFrame ?? fallbackSourceFrame(in: proxy.size)
-            let panelFrame = isExpanded ? screenFrame : source
-            let cornerRadius = isExpanded ? 0 : min(18, panelFrame.width * 0.18)
+            let expandedFrame = phase == .opening ? screenFrame : centeredCoverFrame(in: proxy.size)
+            let panelFrame = isExpanded ? expandedFrame : source
+            let cornerRadius = phase == .opening && isExpanded ? 0 : min(18, panelFrame.width * 0.18)
 
             ZStack {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -2625,23 +2637,26 @@ struct BookScreenTransitionPanel: View {
                     .opacity(phase == .opening ? 1 : 0)
 
                 CoverView(book: book, size: panelFrame.size)
-                    .opacity(isExpanded ? 0 : 1)
+                    .opacity(coverOpacity(isExpanded: isExpanded))
                     .position(x: panelFrame.midX, y: panelFrame.midY)
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .ignoresSafeArea()
+            .animation(transitionAnimation, value: sourceFrame)
         }
         .onAppear {
-            let animation = reduceMotion
-                ? Animation.easeOut(duration: 0.01)
-                : Animation.timingCurve(0.18, 0.82, 0.18, 1, duration: 0.22)
-
-            withAnimation(animation) {
+            withAnimation(transitionAnimation) {
                 isExpanded = phase == .opening
                     ? true
                     : false
             }
         }
+    }
+
+    private var transitionAnimation: Animation {
+        reduceMotion
+            ? Animation.easeOut(duration: 0.01)
+            : Animation.timingCurve(0.18, 0.82, 0.18, 1, duration: 0.32)
     }
 
     private func fallbackSourceFrame(in size: CGSize) -> CGRect {
@@ -2653,6 +2668,26 @@ struct BookScreenTransitionPanel: View {
             width: width,
             height: height
         )
+    }
+
+    private func centeredCoverFrame(in size: CGSize) -> CGRect {
+        let width = min(max(size.width * 0.42, 138), 220)
+        let height = width * 1.44
+        return CGRect(
+            x: (size.width - width) / 2,
+            y: (size.height - height) / 2,
+            width: width,
+            height: height
+        )
+    }
+
+    private func coverOpacity(isExpanded: Bool) -> Double {
+        switch phase {
+        case .opening:
+            return isExpanded ? 0 : 1
+        case .closing:
+            return 1
+        }
     }
 }
 
