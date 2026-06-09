@@ -81,6 +81,11 @@ private struct ReaderNarrationPreviewSnippet {
     let visibleWordStart: Int
 }
 
+private struct ReaderNarrationPreviewAnchor: Equatable {
+    let paragraphID: String
+    let wordStart: Int
+}
+
 private struct ReaderImageChunkCache {
     let bookID: UUID?
     let firstParagraphID: String?
@@ -237,6 +242,7 @@ struct ReaderView: View {
     @State private var imageReaderTextReturnTask: Task<Void, Never>?
     @State private var suppressNextImageReaderTextCollapse = false
     @State private var suppressNextImageReaderTextReturn = false
+    @State private var imageNarrationPreviewAnchor: ReaderNarrationPreviewAnchor?
 
     private let imageChromeToggleBottomExclusion: CGFloat = 128
 
@@ -507,6 +513,7 @@ struct ReaderView: View {
             imageReaderTextReturnTask?.cancel()
             imageReaderTextReturnTask = nil
             imageReaderTextExpanded = false
+            imageNarrationPreviewAnchor = nil
             revealReaderButtons()
             if let book = app.activeBook {
                 restoreInitialIndex(in: book)
@@ -541,6 +548,7 @@ struct ReaderView: View {
             readerButtonsAutohideTask = nil
             imageReaderTextReturnTask?.cancel()
             imageReaderTextReturnTask = nil
+            imageNarrationPreviewAnchor = nil
         }
     }
 
@@ -556,6 +564,11 @@ struct ReaderView: View {
                 let previewBottomPadding = shouldHideReaderButtons
                     ? readerImageTextHiddenControlsBottomPadding
                     : readerImageTextVisibleControlsBottomPadding
+                let previewCharacters = narrationPreviewCharacterLimit(
+                    for: readerImageTextCollapsedHeight,
+                    viewportWidth: viewport.size.width
+                )
+                let previewSnippet = narrationPreviewSnippet(in: book, previewCharacters: previewCharacters)
                 ZStack(alignment: .bottom) {
                     VStack(spacing: 0) {
                         Color.black.opacity(0.001)
@@ -569,16 +582,14 @@ struct ReaderView: View {
                     }
 
                     ReaderNarrationPreviewPanel(
-                        snippet: narrationPreviewSnippet(
-                            in: book,
-                            previewCharacters: narrationPreviewCharacterLimit(
-                                for: previewHeight,
-                                viewportWidth: viewport.size.width
-                            )
-                        ),
+                        snippet: previewSnippet,
                         textColor: .white,
                         height: previewHeight
                     ) { snippet, wordStart in
+                        imageNarrationPreviewAnchor = ReaderNarrationPreviewAnchor(
+                            paragraphID: snippet.paragraph.id,
+                            wordStart: snippet.visibleWordStart
+                        )
                         startNarrationFromWord(
                             snippet.visibleWordStart + wordStart,
                             paragraphIndex: snippet.paragraphIndex,
@@ -750,6 +761,7 @@ struct ReaderView: View {
             imageReaderTextReturnTask?.cancel()
             imageReaderTextReturnTask = nil
             imageReaderTextExpanded = false
+            imageNarrationPreviewAnchor = nil
             revealReaderButtons()
             app.readerImageResponse = nil
             app.readerImagePhase = .idle
@@ -885,6 +897,11 @@ struct ReaderView: View {
     }
 
     private func selectTableOfContentsEntry(_ entry: TableOfContentsEntry, in book: ReaderBook) {
+        withAnimation(IllumeTheme.spring) {
+            quickMenuOpen = false
+            activeReaderSheet = nil
+            readerLiftedForBottomPanel = false
+        }
         readerContentVisible = false
         currentIndex = entry.paragraphIndex
         if book.paragraphs.indices.contains(entry.paragraphIndex) {
@@ -895,7 +912,6 @@ struct ReaderView: View {
         }
         pendingParagraphID = entry.paragraphID
         scrollRequest += 1
-        activeReaderSheet = nil
         Task { @MainActor in
             await Task.yield()
             if book.paragraphs.indices.contains(entry.paragraphIndex) {
@@ -943,6 +959,7 @@ struct ReaderView: View {
             readerContentVisible = false
             imageReaderTextExpanded = false
         }
+        imageNarrationPreviewAnchor = nil
 
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(95))
@@ -970,6 +987,7 @@ struct ReaderView: View {
         withAnimation(IllumeTheme.spring) {
             imageReaderTextExpanded = false
         }
+        imageNarrationPreviewAnchor = nil
         currentIndex = index
         let paragraph = book.paragraphs[index]
         app.saveProgress(index: index, page: paragraph.pageNumber ?? 1)
@@ -1026,6 +1044,7 @@ struct ReaderView: View {
         withAnimation(IllumeTheme.spring) {
             imageReaderTextExpanded = false
         }
+        imageNarrationPreviewAnchor = nil
         guard currentIndex != index else { return }
         currentIndex = index
         app.saveProgress(index: index, page: paragraph.pageNumber ?? 1)
@@ -1083,6 +1102,7 @@ struct ReaderView: View {
         withAnimation(IllumeTheme.blurLoadIn) {
             imageReaderTextExpanded = false
         }
+        imageNarrationPreviewAnchor = nil
         if let book = app.activeBook {
             scheduleImageGeneration(for: book)
         }
@@ -1127,11 +1147,13 @@ struct ReaderView: View {
                     proxy.scrollTo(targetID, anchor: .top)
                     imageReaderTextExpanded = false
                 }
+                imageNarrationPreviewAnchor = nil
                 scheduleImageGeneration(for: book)
             } else {
                 withAnimation(IllumeTheme.blurLoadIn) {
                     imageReaderTextExpanded = false
                 }
+                imageNarrationPreviewAnchor = nil
                 scheduleImageGeneration(for: book)
             }
         }
@@ -1161,7 +1183,13 @@ struct ReaderView: View {
 
         let paragraph = book.paragraphs[targetIndex]
         let activeRange = narrationIndex == nil ? nil : app.narration.wordRange
-        let anchorLocation = app.narration.sectionParagraphID == paragraph.id ? app.narration.sectionWordStart : nil
+        let pinnedAnchor = imageNarrationPreviewAnchor?.paragraphID == paragraph.id
+            ? imageNarrationPreviewAnchor?.wordStart
+            : nil
+        let narrationAnchor = app.narration.sectionParagraphID == paragraph.id
+            ? app.narration.sectionWordStart
+            : nil
+        let anchorLocation = pinnedAnchor ?? narrationAnchor
         let excerpt = narrationPreviewExcerpt(
             for: paragraph.text,
             activeRange: activeRange,
@@ -3429,11 +3457,11 @@ struct ReaderImageTopPanel: View {
                             .font(.largeTitle)
                             .foregroundStyle(.white.opacity(0.48))
                     default:
-                        ReaderImagePendingView()
+                        Color.clear
                     }
                 }
             } else {
-                ReaderImagePendingView()
+                Color.clear
             }
 
             if imageReadabilityScrimOpacity > 0 {
@@ -3525,26 +3553,6 @@ struct ReaderImageCheckingView: View {
     }
 }
 
-struct ReaderImagePendingView: View {
-    var body: some View {
-        LinearGradient(
-            colors: [
-                Color(red: 0.045, green: 0.052, blue: 0.064),
-                Color(red: 0.08, green: 0.075, blue: 0.092),
-                Color(red: 0.035, green: 0.055, blue: 0.052)
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
-        .overlay {
-            Rectangle()
-                .fill(.ultraThinMaterial.opacity(0.72))
-        }
-        .blur(radius: 12)
-        .scaleEffect(1.04)
-    }
-}
-
 struct ReaderImageDataURLView: View {
     let dataURL: String
     var contentMode: ContentMode = .fill
@@ -3564,9 +3572,7 @@ struct ReaderImageDataURLView: View {
                 )
                 .blurLoadIn(radius: animatesImageIn ? 13 : 0)
             } else {
-                ProgressView()
-                    .controlSize(.large)
-                    .tint(.white)
+                Color.clear
             }
         }
         .task(id: dataURL) {
@@ -3689,7 +3695,7 @@ struct ReaderImageGeneratingView: View {
 
     var body: some View {
         ZStack {
-            ReaderImagePendingView()
+            Color.clear
 
             if let backdropURLString, ReaderImageURL.isDataImageURL(backdropURLString) {
                 ReaderImageDataURLView(

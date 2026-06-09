@@ -31,7 +31,6 @@ let package = Package(
             name: "IllumeNative",
             dependencies: [
                 "IllumeCore",
-                "SherpaOnnxSupport",
                 .product(name: "Supabase", package: "supabase-swift"),
                 .product(name: "ZIPFoundation", package: "ZIPFoundation")
             ],
@@ -39,32 +38,8 @@ let package = Package(
                 .process("Resources/Fonts"),
                 .process("Resources/ClassicCovers"),
                 .process("Resources/ImageStyles"),
-                .process("Resources/PrivacyInfo.xcprivacy"),
-                .copy("Resources/KokoroTTS")
+                .process("Resources/PrivacyInfo.xcprivacy")
             ]
-        ),
-        .target(
-            name: "CSherpaOnnx",
-            publicHeadersPath: "include"
-        ),
-        .target(
-            name: "SherpaOnnxSupport",
-            dependencies: [
-                "CSherpaOnnx",
-                "SherpaOnnxBinary",
-                "OnnxRuntimeBinary"
-            ],
-            linkerSettings: [
-                .linkedLibrary("c++")
-            ]
-        ),
-        .binaryTarget(
-            name: "SherpaOnnxBinary",
-            path: "Vendor/SherpaOnnx/sherpa-onnx.xcframework"
-        ),
-        .binaryTarget(
-            name: "OnnxRuntimeBinary",
-            path: "Vendor/SherpaOnnx/onnxruntime.xcframework"
         ),
         .testTarget(
             name: "IllumeCoreTests",

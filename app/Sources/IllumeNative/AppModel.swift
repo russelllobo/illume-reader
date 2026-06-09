@@ -6,7 +6,6 @@ import Foundation
 import IllumeCore
 import MediaPlayer
 import Security
-import SherpaOnnxSupport
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
@@ -80,7 +79,6 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
     let backend = SupabaseBackend()
     lazy var billing = BillingService(backend: backend)
-    private let kokoroTTS = KokoroTTSService()
     private var audioPlayer: AVPlayer?
     private var streamingAudioPlayer: NarrationStreamingAudioPlayer?
     private var audioEndObserver: NSObjectProtocol?
@@ -716,14 +714,12 @@ final class IllumeAppModel: NSObject, ObservableObject {
         readerImageChunkIndex = nil
         readerImageStyle = nil
         readerImagePhase = .idle
+    }
 
-        guard let row else { return }
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(285))
-            guard self?.closingBook?.id == row.id else { return }
-            self?.closingBook = nil
-            self?.bookTransitionSourceFrame = nil
-        }
+    func finishClosingBookTransition(for bookID: UUID) {
+        guard closingBook?.id == bookID else { return }
+        closingBook = nil
+        bookTransitionSourceFrame = nil
     }
 
     func recordBookTransitionFrame(bookID: UUID, frame: CGRect, isContinueTarget: Bool = false) {
@@ -3198,27 +3194,6 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
     private static func kokoroSpeechRate(from value: Double) -> Double {
         min(2.0, max(0.7, value))
-    }
-
-    private static var kokoroModelDirectoryURL: URL? {
-        if let bundledModelFile = Bundle.module.url(
-            forResource: "model",
-            withExtension: "onnx",
-            subdirectory: "KokoroTTS/kokoro-multi-lang-v1_0"
-        ) {
-            return bundledModelFile.deletingLastPathComponent()
-        }
-
-        if let bundledModelFile = Bundle.module.url(forResource: "model", withExtension: "onnx") {
-            return bundledModelFile.deletingLastPathComponent()
-        }
-
-        let nestedDirectory = Bundle.module.resourceURL?
-            .appendingPathComponent("KokoroTTS", isDirectory: true)
-            .appendingPathComponent("kokoro-multi-lang-v1_0", isDirectory: true)
-        guard let nestedDirectory else { return nil }
-        let nestedModelFile = nestedDirectory.appendingPathComponent("model.onnx")
-        return FileManager.default.fileExists(atPath: nestedModelFile.path) ? nestedDirectory : nil
     }
 
     func generateImage(text: String, chunkIndex: Int, startWord: Int, endWord: Int) async {

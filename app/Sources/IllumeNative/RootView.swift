@@ -30,7 +30,10 @@ struct RootView: View {
                 BookScreenTransitionPanel(
                     book: closingBook,
                     sourceFrame: app.bookTransitionSourceFrame,
-                    phase: .closing
+                    phase: .closing,
+                    onCompleted: {
+                        app.finishClosingBookTransition(for: closingBook.id)
+                    }
                 )
                     .zIndex(3)
             }
@@ -2647,16 +2650,18 @@ struct BookScreenTransitionPanel: View {
     let book: BookRow
     let sourceFrame: CGRect?
     let phase: Phase
+    let onCompleted: () -> Void
 
     enum Phase {
         case opening
         case closing
     }
 
-    init(book: BookRow, sourceFrame: CGRect?, phase: Phase) {
+    init(book: BookRow, sourceFrame: CGRect?, phase: Phase, onCompleted: @escaping () -> Void = {}) {
         self.book = book
         self.sourceFrame = sourceFrame
         self.phase = phase
+        self.onCompleted = onCompleted
         _isExpanded = State(initialValue: phase == .closing)
     }
 
@@ -2686,10 +2691,14 @@ struct BookScreenTransitionPanel: View {
             .animation(transitionAnimation, value: sourceFrame)
         }
         .onAppear {
-            withAnimation(transitionAnimation) {
+            withAnimation(transitionAnimation, completionCriteria: .logicallyComplete) {
                 isExpanded = phase == .opening
                     ? true
                     : false
+            } completion: {
+                if phase == .closing {
+                    onCompleted()
+                }
             }
         }
     }
