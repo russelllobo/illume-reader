@@ -13,6 +13,8 @@ private let readerButtonsAutohideDelay: Duration = .seconds(3)
 private let readerImageTextCollapsedHeight: CGFloat = 78
 private let readerImageTextHiddenControlsHeight: CGFloat = 142
 private let readerImageTextReturnDelay: Duration = .seconds(2)
+private let readerMiniplayerDismissTranslation: CGFloat = 34
+private let readerMiniplayerDismissPredictedTranslation: CGFloat = 68
 private let readerNarrationPreviewMinimumCharacters = 96
 private let readerNarrationPreviewMaximumCharacters = 180
 private let readerQuickMenuOpenAnimation = Animation.spring(response: 0.18, dampingFraction: 0.66, blendDuration: 0.03)
@@ -441,6 +443,12 @@ struct ReaderView: View {
                     .zIndex(8)
                     .animation(.easeOut(duration: 0.16), value: hideBottomControls)
                     .blurLoadIn(radius: 10)
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 14)
+                            .onEnded { value in
+                                hideReaderButtonsIfDismissSwipe(value)
+                            }
+                    )
                 }
             }
 
@@ -778,6 +786,18 @@ struct ReaderView: View {
         withAnimation(.easeOut(duration: 0.16)) {
             readerButtonsHidden = true
         }
+    }
+
+    private func hideReaderButtonsIfDismissSwipe(_ value: DragGesture.Value) {
+        let translation = value.translation
+        let predictedTranslation = value.predictedEndTranslation
+        let isMostlyVertical = translation.height > abs(translation.width)
+        let passedDistance = translation.height >= readerMiniplayerDismissTranslation
+        let passedFlickDistance = predictedTranslation.height >= readerMiniplayerDismissPredictedTranslation
+
+        guard isMostlyVertical, passedDistance || passedFlickDistance else { return }
+        readerButtonsAutohideTask?.cancel()
+        hideReaderButtons(allowDuringPreparation: true)
     }
 
     private func toggleQuickMenu() {
@@ -3041,12 +3061,7 @@ struct ReaderImageStyleOption: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            Image(style.previewResourceName, bundle: .module)
-                .resizable()
-                .scaledToFill()
-                .frame(width: 56, height: 56)
-                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-                .shadow(color: .black.opacity(0.16), radius: 7, x: 0, y: 3)
+            ReaderImageStylePreview(style: style)
 
             Text(style.label)
                 .font(.system(size: 18, weight: isSelected ? .bold : .regular))
@@ -3074,6 +3089,32 @@ struct ReaderImageStyleOption: View {
         }
         .accessibilityLabel(style.label)
         .accessibilityValue(isSelected ? "Selected" : "")
+    }
+}
+
+struct ReaderImageStylePreview: View {
+    let style: ReaderImageStyle
+
+    var body: some View {
+        Group {
+            if let image = previewImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Color.white.opacity(0.1)
+            }
+        }
+        .frame(width: 56, height: 56)
+        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        .shadow(color: .black.opacity(0.16), radius: 7, x: 0, y: 3)
+    }
+
+    private var previewImage: UIImage? {
+        guard let url = Bundle.module.url(forResource: style.previewResourceName, withExtension: "jpg") else {
+            return nil
+        }
+        return UIImage(contentsOfFile: url.path)
     }
 }
 

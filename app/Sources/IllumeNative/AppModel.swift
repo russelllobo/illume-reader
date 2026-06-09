@@ -121,6 +121,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
     private var googleWebAuthSession: ASWebAuthenticationSession?
     private var appleNonce = ""
     private var bookTransitionFrames: [UUID: CGRect] = [:]
+    private var continueBookTransitionFrame: CGRect?
 
     enum AuthMode {
         case signIn
@@ -672,7 +673,9 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
     func closeReader() {
         let row = activeBookRow
-        if bookTransitionSourceFrame == nil, let row, let frame = bookTransitionFrames[row.id] {
+        if let frame = continueBookTransitionFrame {
+            bookTransitionSourceFrame = frame
+        } else if bookTransitionSourceFrame == nil, let row, let frame = bookTransitionFrames[row.id] {
             bookTransitionSourceFrame = frame
         }
         cancelOpeningNarration()
@@ -689,14 +692,14 @@ final class IllumeAppModel: NSObject, ObservableObject {
 
         guard let row else { return }
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(390))
+            try? await Task.sleep(for: .milliseconds(285))
             guard self?.closingBook?.id == row.id else { return }
             self?.closingBook = nil
             self?.bookTransitionSourceFrame = nil
         }
     }
 
-    func recordBookTransitionFrame(bookID: UUID, frame: CGRect) {
+    func recordBookTransitionFrame(bookID: UUID, frame: CGRect, isContinueTarget: Bool = false) {
         guard frame.width > 1,
               frame.height > 1,
               frame.minX.isFinite,
@@ -707,8 +710,12 @@ final class IllumeAppModel: NSObject, ObservableObject {
         }
 
         bookTransitionFrames[bookID] = frame
+        if isContinueTarget {
+            continueBookTransitionFrame = frame
+        }
 
-        guard closingBook?.id == bookID, bookTransitionSourceFrame == nil else { return }
+        guard isContinueTarget || (closingBook?.id == bookID && bookTransitionSourceFrame == nil) else { return }
+        guard closingBook != nil else { return }
         withAnimation(IllumeTheme.blurLoadIn) {
             bookTransitionSourceFrame = frame
         }

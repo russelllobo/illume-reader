@@ -1373,7 +1373,12 @@ struct LibraryHeader: View {
             if let first = app.books.first {
                 BookOpenButton(book: first) { sourceFrame in
                     HStack(spacing: 16) {
-                        BookOpenCover(book: first, size: CGSize(width: 86, height: 124), sourceFrame: sourceFrame)
+                        BookOpenCover(
+                            book: first,
+                            size: CGSize(width: 86, height: 124),
+                            sourceFrame: sourceFrame,
+                            isContinueTarget: true
+                        )
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Continue")
                                 .font(.system(.subheadline, design: .rounded, weight: .bold))
@@ -1813,7 +1818,7 @@ struct PendingLibraryBook: View {
                     .hidden()
                     .overlay(alignment: .leading) {
                         if pendingImport.statusText == "Generating visuals" {
-                            AnimatedEllipsisText("Generating visuals")
+                            FadingStatusText("Generating visuals")
                         } else {
                             Text(pendingImport.statusText)
                                 .font(.caption.weight(.bold))
@@ -1829,9 +1834,9 @@ struct PendingLibraryBook: View {
     }
 }
 
-struct AnimatedEllipsisText: View {
+struct FadingStatusText: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var dotCount = 0
+    @State private var isDimmed = false
 
     let text: String
 
@@ -1840,22 +1845,16 @@ struct AnimatedEllipsisText: View {
     }
 
     var body: some View {
-        Text(text + String(repeating: ".", count: dotCount))
+        Text(text)
             .font(.caption.weight(.bold))
             .foregroundStyle(IllumeTheme.accent)
-            .monospacedDigit()
             .lineLimit(1)
             .minimumScaleFactor(0.84)
-            .task {
-                guard !reduceMotion else {
-                    dotCount = 3
-                    return
-                }
-
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: .milliseconds(360))
-                    guard !Task.isCancelled else { return }
-                    dotCount = (dotCount + 1) % 4
+            .opacity(isDimmed ? 0.45 : 1)
+            .onAppear {
+                guard !reduceMotion else { return }
+                withAnimation(.easeInOut(duration: 0.95).repeatForever(autoreverses: true)) {
+                    isDimmed = true
                 }
             }
             .accessibilityLabel(text)
@@ -1867,7 +1866,7 @@ struct PendingImportCover: View {
     let size: CGSize
 
     private var blurRadius: CGFloat {
-        max(0, CGFloat(100 - pendingImport.progress) * 0.18)
+        max(0, CGFloat(100 - pendingImport.progress) * 0.28)
     }
 
     var body: some View {
@@ -1890,11 +1889,11 @@ struct PendingImportCover: View {
         }
         .frame(width: size.width, height: size.height)
         .blur(radius: blurRadius)
-        .saturation(max(0.65, 1 - Double(100 - pendingImport.progress) * 0.003))
-        .opacity(max(0.72, 1 - Double(100 - pendingImport.progress) * 0.0024))
+        .saturation(max(0.54, 1 - Double(100 - pendingImport.progress) * 0.0042))
+        .opacity(max(0.64, 1 - Double(100 - pendingImport.progress) * 0.0032))
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(IllumeTheme.paper.opacity(0.14 + Double(100 - pendingImport.progress) * 0.003))
+                .fill(IllumeTheme.paper.opacity(0.16 + Double(100 - pendingImport.progress) * 0.0042))
         }
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .shadow(color: .black.opacity(0.14), radius: 12, y: 8)
@@ -2058,18 +2057,19 @@ struct BookOpenCover: View {
     let book: BookRow
     let size: CGSize
     @Binding var sourceFrame: CGRect?
+    var isContinueTarget = false
 
     var body: some View {
         CoverView(book: book, size: size)
             .trackBookTransitionFrame($sourceFrame)
             .onAppear {
                 if let sourceFrame {
-                    app.recordBookTransitionFrame(bookID: book.id, frame: sourceFrame)
+                    app.recordBookTransitionFrame(bookID: book.id, frame: sourceFrame, isContinueTarget: isContinueTarget)
                 }
             }
             .onChange(of: sourceFrame) { _, newValue in
                 guard let newValue else { return }
-                app.recordBookTransitionFrame(bookID: book.id, frame: newValue)
+                app.recordBookTransitionFrame(bookID: book.id, frame: newValue, isContinueTarget: isContinueTarget)
             }
     }
 }
@@ -2656,7 +2656,7 @@ struct BookScreenTransitionPanel: View {
     private var transitionAnimation: Animation {
         reduceMotion
             ? Animation.easeOut(duration: 0.01)
-            : Animation.timingCurve(0.18, 0.82, 0.18, 1, duration: 0.32)
+            : Animation.timingCurve(0.18, 0.82, 0.2, 1, duration: 0.28)
     }
 
     private func fallbackSourceFrame(in size: CGSize) -> CGRect {
