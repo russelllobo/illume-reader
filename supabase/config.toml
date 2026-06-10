@@ -75,6 +75,7 @@ site_url = "https://illumereader.com"
 additional_redirect_urls = [
   "http://localhost:5173/**",
   "https://illumereader.com",
+  "https://illumereader.com/auth/native-callback",
   "com.illumereader.ios://auth-callback"
 ]
 jwt_expiry = 3600

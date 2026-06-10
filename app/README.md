@@ -37,7 +37,7 @@ Google sign-in uses Supabase hosted OAuth with an iOS callback scheme. Enable Go
 </array>
 ```
 
-The same callback URL, `com.illumereader.ios://auth-callback`, must be allowed in Supabase Auth redirect URLs. The production Site URL can remain `https://illumereader.com`; the native callback still needs to be present in the additional redirect allow list so Supabase does not fall back to the web app after Google sign-in.
+Google OAuth asks Supabase to return through the HTTPS bridge `https://illumereader.com/auth/native-callback`, which immediately redirects into the native callback URL `com.illumereader.ios://auth-callback`. Both URLs must be allowed in Supabase Auth redirect URLs. The production Site URL can remain `https://illumereader.com`.
 
 ## Apple Sign-In
 

@@ -4037,7 +4037,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
     private func performGoogleSignIn() async throws -> AuthSession {
         let supabaseSession = try await backend.client.auth.signInWithOAuth(
             provider: .google,
-            redirectTo: SupabaseConfig().oauthRedirectURL
+            redirectTo: SupabaseConfig().oauthBridgeRedirectURL
         ) { [weak self] session in
             session.presentationContextProvider = self
         }
