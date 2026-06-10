@@ -110,6 +110,7 @@ const edgeTtsDevProxy = () => ({
 export default defineConfig({
   plugins: [edgeTtsDevProxy(), react()],
   server: {
+    allowedHosts: [".trycloudflare.com"],
     port: 5173
   }
 });

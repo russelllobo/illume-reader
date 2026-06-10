@@ -9991,6 +9991,10 @@ html[data-color-scheme] .library-upgrade-button {
   border-top: 5px solid #ec4899;
 }
 
+.integration-card.tiktok {
+  border-top: 5px solid #111827;
+}
+
 .integration-header {
   display: flex;
   justify-content: space-between;
@@ -10020,6 +10024,10 @@ html[data-color-scheme] .library-upgrade-button {
 
 .integration-brand-icon.instagram {
   background: linear-gradient(45deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%);
+}
+
+.integration-brand-icon.tiktok {
+  background: #111827;
 }
 
 .integration-brand-info h2 {
@@ -10824,6 +10832,10 @@ html[data-color-scheme] .library-upgrade-button {
 
 .weekly-views-legend i.instagram {
   background: #ec4899;
+}
+
+.weekly-views-legend i.tiktok {
+  background: #111827;
 }
 
 /* Background Gridlines */
@@ -11752,6 +11764,12 @@ html[data-color-scheme] .library-upgrade-button {
   background: rgba(236, 72, 153, 0.1);
   color: #f472b6;
   border: 1px solid rgba(236, 72, 153, 0.2);
+}
+
+.platform-badge.tiktok {
+  background: rgba(15, 23, 42, 0.12);
+  color: #e5e7eb;
+  border: 1px solid rgba(148, 163, 184, 0.28);
 }
 
 .platform-badge.both {

@@ -2464,6 +2464,12 @@ const InstagramIcon = () => (
   </svg>
 );
 
+const TikTokIcon = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
+    <path d="M17.2 2c.32 2.55 1.76 4.08 4.28 4.24v3.1a7.17 7.17 0 0 1-4.18-1.28v6.1c0 5.1-5.54 7.35-9.48 4.45-4.12-3.03-2.54-9.66 2.64-10.3.74-.09 1.48-.04 2.2.14v3.24a3.6 3.6 0 0 0-2.04-.21 2.8 2.8 0 1 0 3.32 2.75V2h3.26Z" />
+  </svg>
+);
+
 const ExternalLinkIcon = () => (
   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ display: 'inline-block', verticalAlign: 'middle', marginLeft: 4 }}>
     <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
@@ -2579,8 +2585,23 @@ type InstagramPostPreview = {
   totalInteractions?: number;
   totalViewTime?: number;
 };
+type TikTokVideoPreview = {
+  comments?: number;
+  duration: string;
+  durationSeconds?: number;
+  id: string;
+  imageUrl: string;
+  likes?: number;
+  published: string;
+  publishedAt?: string;
+  shares?: number;
+  title: string;
+  url?: string;
+  views: number;
+};
 
 const WEEKLY_DASHBOARD_START_DATE = "2026-05-18";
+type DashboardTab = "users" | "weekly_views" | "content" | "instagram" | "tiktok";
 type SortDirection = "asc" | "desc";
 type YouTubePerformanceSortKey =
   | "duration"
@@ -2599,6 +2620,7 @@ type CombinedPerformanceSortKey =
   | "totalViews"
   | "ytViews"
   | "igViews"
+  | "ttViews"
   | "averageViewPercentage"
   | "ytAverageViewPercentage"
   | "igAverageViewPercentage"
@@ -2650,6 +2672,10 @@ const LEGACY_YOUTUBE_CLIENT_ID = "1013878176385-hhhdtg9kim3g6gencok1ka058osc25q1
 const YOUTUBE_DEFAULT_CLIENT_ID =
   (import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined) ??
   "1013878176385-hhhdtg9kim3g6gencok1ka058osc25q1.apps.googleusercontent.com";
+const TIKTOK_OAUTH_SCOPE = "user.info.basic,video.list";
+const TIKTOK_DEFAULT_CLIENT_KEY =
+  (import.meta.env.VITE_TIKTOK_CLIENT_KEY as string | undefined) ??
+  "sbawrw36ejuxde41rf";
 
 const storedYouTubeAccessToken = () =>
   localStorage.getItem("reader-yt-access-token") ??
@@ -4055,6 +4081,342 @@ function InstagramIntegrationSection({ refreshSignal, onLinksChanged }: { refres
   );
 }
 
+function TikTokIntegrationSection({ refreshSignal, onLinksChanged }: { refreshSignal: number; onLinksChanged?: () => void }) {
+  const [tiktokVideos, setTiktokVideos] = useState<TikTokVideoPreview[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("reader-tt-videos-cache") || "[]");
+    } catch {
+      return [];
+    }
+  });
+  const [fetchError, setFetchError] = useState("");
+  const [feedLoading, setFeedLoading] = useState(false);
+  const [feedFetched, setFeedFetched] = useState(false);
+  const [ttStatus, setTtStatus] = useState<ServiceConnectionStatus>(() => {
+    const stored = localStorage.getItem("reader-tt-status") as ServiceConnectionStatus;
+    return stored && stored !== "simulated" ? stored : "disconnected";
+  });
+  const [ttClientKey, setTtClientKey] = useState(() => localStorage.getItem("reader-tt-client-key") ?? TIKTOK_DEFAULT_CLIENT_KEY);
+  const [ttRedirectUri, setTtRedirectUri] = useState(() => localStorage.getItem("reader-tt-redirect-uri") ?? window.location.origin + "/auth/tiktok/callback");
+  const [links, setLinks] = useState<Record<string, string>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("reader-tt-yt-links") || "{}");
+    } catch {
+      return {};
+    }
+  });
+  const [manualLinkVideo, setManualLinkVideo] = useState<TikTokVideoPreview | null>(null);
+  const [selectedYtVideoId, setSelectedYtVideoId] = useState("");
+
+  const cachedYtVideos: YouTubeVideoPreview[] = useMemo(() => {
+    try {
+      return JSON.parse(localStorage.getItem("reader-yt-videos-cache") || "[]");
+    } catch {
+      return [];
+    }
+  }, [refreshSignal, manualLinkVideo]);
+
+  const formatTikTokNumber = (value: number | string | undefined) =>
+    new Intl.NumberFormat("en-GB", { maximumFractionDigits: 1 }).format(Number(value ?? 0) || 0);
+
+  const formatTikTokViews = (views: string | number | undefined) => {
+    const count = Number(views ?? 0);
+    if (Number.isNaN(count) || count <= 0) return "No views";
+    if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M views`;
+    if (count >= 1000) return `${(count / 1000).toFixed(1)}K views`;
+    return `${count} views`;
+  };
+
+  const formatTikTokTimeAgo = (dateStr?: string) => {
+    if (!dateStr) return "";
+    const date = new Date(dateStr);
+    if (Number.isNaN(date.getTime())) return "";
+    const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+    const intervals = [
+      { label: "year", seconds: 31536000 },
+      { label: "month", seconds: 2592000 },
+      { label: "week", seconds: 604800 },
+      { label: "day", seconds: 86400 },
+      { label: "hour", seconds: 3600 },
+      { label: "minute", seconds: 60 }
+    ];
+    const match = intervals.find((interval) => Math.floor(seconds / interval.seconds) >= 1);
+    if (!match) return "just now";
+    const value = Math.floor(seconds / match.seconds);
+    return `${value} ${match.label}${value > 1 ? "s" : ""} ago`;
+  };
+
+  const formatTikTokDuration = (seconds: number) => {
+    const rounded = Math.round(seconds || 0);
+    const minutes = Math.floor(rounded / 60);
+    const remainder = rounded % 60;
+    return `${minutes}:${String(remainder).padStart(2, "0")}`;
+  };
+
+  const handleTikTokOAuth = () => {
+    const clientKey = ttClientKey.trim();
+    const redirectUri = ttRedirectUri.trim();
+    if (!clientKey) {
+      setFetchError("Enter your TikTok client key before linking TikTok.");
+      return;
+    }
+    localStorage.setItem("reader-tt-client-key", clientKey);
+    localStorage.setItem("reader-tt-redirect-uri", redirectUri);
+    const url = new URL("https://www.tiktok.com/v2/auth/authorize/");
+    url.searchParams.set("client_key", clientKey);
+    url.searchParams.set("scope", TIKTOK_OAUTH_SCOPE);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("redirect_uri", redirectUri);
+    url.searchParams.set("state", crypto.randomUUID());
+    window.location.href = url.toString();
+  };
+
+  const handleLink = (ttId: string, ytId: string) => {
+    const newLinks = { ...links, [ttId]: ytId };
+    setLinks(newLinks);
+    localStorage.setItem("reader-tt-yt-links", JSON.stringify(newLinks));
+    setManualLinkVideo(null);
+    setSelectedYtVideoId("");
+    if (onLinksChanged) onLinksChanged();
+  };
+
+  const handleUnlink = (ttId: string) => {
+    const newLinks = { ...links };
+    delete newLinks[ttId];
+    setLinks(newLinks);
+    localStorage.setItem("reader-tt-yt-links", JSON.stringify(newLinks));
+    if (onLinksChanged) onLinksChanged();
+  };
+
+  const handleFetchFeed = async () => {
+    setFeedLoading(true);
+    setFetchError("");
+
+    try {
+      const { data, error } = await supabase.functions.invoke("tiktok-feed", { body: {} });
+      if (error) throw new Error(await edgeFunctionErrorMessage(error));
+
+      const videos = (data?.videos ?? []).map((item: any): TikTokVideoPreview => {
+        const durationSeconds = Number(item.duration ?? 0) || 0;
+        const publishedAt = item.create_time
+          ? new Date(Number(item.create_time) * 1000).toISOString()
+          : undefined;
+        return {
+          comments: Number(item.comment_count ?? 0),
+          duration: formatTikTokDuration(durationSeconds),
+          durationSeconds,
+          id: String(item.id),
+          imageUrl: item.cover_image_url ?? "",
+          likes: Number(item.like_count ?? 0),
+          published: formatTikTokTimeAgo(publishedAt),
+          publishedAt,
+          shares: Number(item.share_count ?? 0),
+          title: item.title || item.video_description || "TikTok video",
+          url: item.share_url ?? item.embed_link,
+          views: Number(item.view_count ?? 0)
+        };
+      });
+
+      setTiktokVideos(videos);
+      localStorage.setItem("reader-tt-videos-cache", JSON.stringify(videos));
+      setTtStatus("connected");
+      localStorage.setItem("reader-tt-status", "connected");
+      setFeedFetched(true);
+    } catch (err) {
+      console.error("TikTok API retrieval failed:", err);
+      setFetchError(err instanceof Error ? err.message : "Failed to load TikTok feed.");
+      if (err instanceof Error && err.message.toLowerCase().includes("link tiktok")) {
+        setTtStatus("disconnected");
+        localStorage.setItem("reader-tt-status", "disconnected");
+      }
+    } finally {
+      setFeedLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void handleFetchFeed();
+  }, [refreshSignal]);
+
+  useEffect(() => {
+    localStorage.setItem("reader-tt-videos-cache", JSON.stringify(tiktokVideos));
+  }, [tiktokVideos]);
+
+  return (
+    <div className="content-integrations-section">
+      <div className="preview-feed-section">
+        <div className="preview-feed-header">
+          <div>
+            <h2>TikTok Videos</h2>
+            <p>Latest public TikTok videos with current public counters.</p>
+          </div>
+          {feedLoading && (
+            <span className="feed-refresh-status">
+              <Loader2 className="spin" size={16} aria-hidden="true" />
+              Pulling API content...
+            </span>
+          )}
+          <button className="dashboard-secondary-button" onClick={handleTikTokOAuth} type="button" style={{ width: "auto", margin: 0, padding: "0 16px" }}>
+            <TikTokIcon />
+            <span>Link TikTok</span>
+          </button>
+        </div>
+
+        <div className="credentials-form" style={{ marginBottom: 20 }}>
+          <div className="form-group">
+            <label htmlFor="tt-client-key">TikTok client key</label>
+            <input id="tt-client-key" value={ttClientKey} onChange={(event) => setTtClientKey(event.target.value)} placeholder="TikTok app client key" />
+          </div>
+          <div className="form-group">
+            <label htmlFor="tt-redirect-uri">Redirect URI</label>
+            <input id="tt-redirect-uri" value={ttRedirectUri} onChange={(event) => setTtRedirectUri(event.target.value)} />
+          </div>
+        </div>
+
+        {fetchError && (
+          <div className="dashboard-error" style={{ margin: "0 0 18px 0" }}>
+            <span>{fetchError}</span>
+          </div>
+        )}
+
+        {ttStatus === "disconnected" && !feedFetched ? (
+          <div className="dashboard-sparkline-empty" style={{ minHeight: 140 }}>
+            <InfoIcon />
+            <span style={{ marginTop: 8, fontWeight: 700 }}>No TikTok source is connected.</span>
+            <small style={{ color: "#64748b", marginTop: 4 }}>Create a TikTok Developer app, add this redirect URI, then link TikTok.</small>
+          </div>
+        ) : !feedFetched ? (
+          <div className="dashboard-sparkline-empty" style={{ minHeight: 140 }}>
+            <InfoIcon />
+            <span style={{ marginTop: 8, fontWeight: 700, color: "#1e293b" }}>Fetching starts automatically when the TikTok tab opens.</span>
+          </div>
+        ) : (
+          <div className="media-feed-grid">
+            {tiktokVideos.map((video) => {
+              const linkedYtId = links[video.id];
+              const linkedYtVideo = cachedYtVideos.find((item) => item.id === linkedYtId);
+
+              return (
+                <article className="youtube-video-card tiktok-video-card" key={video.id}>
+                  <div className="video-thumbnail-container instagram-image-container">
+                    {video.imageUrl ? <img src={video.imageUrl} alt={video.title} /> : <div className="dashboard-image-missing"><TikTokIcon /></div>}
+                    <span className="video-duration">{video.duration}</span>
+                    {linkedYtVideo && (
+                      <span className="youtube-linked-badge-icon" title="Linked to YouTube video">
+                        <YouTubeIcon />
+                      </span>
+                    )}
+                  </div>
+                  <div className="video-details instagram-post-details">
+                    <h4 className="instagram-caption">{video.title || "TikTok video"}</h4>
+                    <div className="video-stats">
+                      <span>{formatTikTokViews(video.views)}</span>
+                      <span>{video.published}</span>
+                    </div>
+                    <div className="video-engagement-stats">
+                      <span>
+                        <ThumbsUp size={13} aria-hidden="true" />
+                        {formatTikTokNumber(video.likes)}
+                      </span>
+                      <span>
+                        <MessageCircle size={13} aria-hidden="true" />
+                        {formatTikTokNumber(video.comments)}
+                      </span>
+                    </div>
+                    <div className="ig-post-yt-link-section">
+                      {linkedYtVideo ? (
+                        <div className="ig-post-yt-badge linked">
+                          <YouTubeIcon />
+                          <span className="yt-title" title={linkedYtVideo.title}>
+                            {linkedYtVideo.title}
+                          </span>
+                          <button className="ig-post-yt-unlink-btn" onClick={() => handleUnlink(video.id)} title="Unlink YouTube video" type="button">
+                            <X size={12} />
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          className="ig-post-yt-link-btn"
+                          onClick={() => {
+                            setManualLinkVideo(video);
+                            setSelectedYtVideoId("");
+                          }}
+                          type="button"
+                        >
+                          <Link2 size={13} />
+                          <span>Link YouTube Video</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {manualLinkVideo && (
+        <div className="auth-modal-backdrop" onClick={() => setManualLinkVideo(null)}>
+          <div className="auth-modal-dialog ig-yt-link-dialog" onClick={(event) => event.stopPropagation()}>
+            <h3>Link TikTok Video to YouTube</h3>
+            <div className="auth-modal-body ig-yt-link-modal-body">
+              <div className="link-modal-split-preview">
+                <div className="ig-preview-thumbnail-container">
+                  {manualLinkVideo.imageUrl ? <img src={manualLinkVideo.imageUrl} alt="" /> : <div className="dashboard-image-missing"><TikTokIcon /></div>}
+                  <div className="ig-preview-overlay">
+                    <span>{formatTikTokNumber(manualLinkVideo.views)} views</span>
+                    <span>{formatTikTokNumber(manualLinkVideo.likes)} likes</span>
+                  </div>
+                </div>
+                <div className="ig-preview-copy">
+                  <span className="ig-preview-label">TikTok video</span>
+                  <p className="ig-preview-caption-text">{manualLinkVideo.title}</p>
+                  {manualLinkVideo.publishedAt && (
+                    <span className="ig-preview-date">
+                      Published on {new Date(manualLinkVideo.publishedAt).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="link-dropdown-form-row">
+                <label htmlFor="tt-yt-video-select">Select target YouTube Video:</label>
+                <select
+                  id="tt-yt-video-select"
+                  value={selectedYtVideoId}
+                  onChange={(event) => setSelectedYtVideoId(event.target.value)}
+                  className="yt-select-dropdown"
+                >
+                  <option value="">-- Choose YouTube Video --</option>
+                  {cachedYtVideos.map((video) => (
+                    <option key={video.id} value={video.id}>
+                      {video.title} ({video.views || "0 views"})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="auth-modal-footer">
+              <button className="dashboard-secondary-button" onClick={() => setManualLinkVideo(null)} type="button">
+                Cancel
+              </button>
+              <button
+                className="dashboard-primary-button"
+                disabled={!selectedYtVideoId}
+                onClick={() => handleLink(manualLinkVideo.id, selectedYtVideoId)}
+                type="button"
+                style={{ width: "auto", margin: 0 }}
+              >
+                Link & Sync Views
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: number; linksVersion?: number }) {
   const [hoveredWeekIndex, setHoveredWeekIndex] = useState<number | null>(null);
   const [averageViewExpanded, setAverageViewExpanded] = useState(false);
@@ -4124,10 +4486,26 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
     }
   }, [refreshSignal]);
 
+  const ttVideos = useMemo((): TikTokVideoPreview[] => {
+    try {
+      return JSON.parse(localStorage.getItem("reader-tt-videos-cache") || "[]");
+    } catch {
+      return [];
+    }
+  }, [refreshSignal]);
+
   // 4. Read links mapping
   const links = useMemo((): Record<string, string> => {
     try {
       return JSON.parse(localStorage.getItem("reader-ig-yt-links") || "{}");
+    } catch {
+      return {};
+    }
+  }, [refreshSignal, linksVersion]);
+
+  const ttLinks = useMemo((): Record<string, string> => {
+    try {
+      return JSON.parse(localStorage.getItem("reader-tt-yt-links") || "{}");
     } catch {
       return {};
     }
@@ -4269,11 +4647,14 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
   const releasedVideoDates = useMemo(() => {
     const dates: string[] = [];
     const processedIgIds = new Set<string>();
+    const processedTtIds = new Set<string>();
 
     ytVideos.forEach((ytVideo) => {
       const linkedIg = igPosts.find((post) => links[post.id] === ytVideo.id);
+      const linkedTt = ttVideos.find((video) => ttLinks[video.id] === ytVideo.id);
       if (linkedIg) processedIgIds.add(linkedIg.id);
-      const publishedAt = ytVideo.publishedAt || linkedIg?.publishedAt;
+      if (linkedTt) processedTtIds.add(linkedTt.id);
+      const publishedAt = ytVideo.publishedAt || linkedIg?.publishedAt || linkedTt?.publishedAt;
       if (publishedAt) dates.push(publishedAt);
     });
 
@@ -4283,8 +4664,14 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
       }
     });
 
+    ttVideos.forEach((ttVideo) => {
+      if (!processedTtIds.has(ttVideo.id) && ttVideo.publishedAt) {
+        dates.push(ttVideo.publishedAt);
+      }
+    });
+
     return dates;
-  }, [igPosts, links, ytVideos]);
+  }, [igPosts, links, ttLinks, ttVideos, ytVideos]);
 
   const getReleasedVideoCountForWeek = useCallback((startDateStr: string, endDateStr: string) => {
     const startTime = dateFromIsoDate(startDateStr).getTime();
@@ -4308,6 +4695,19 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
         : total;
     }, 0);
   }, [dateFromIsoDate, parseViews, ytVideos]);
+
+  const getPublishedTtViewsForWeek = useCallback((startDateStr: string, endDateStr: string) => {
+    const startTime = dateFromIsoDate(startDateStr).getTime();
+    const endTime = dateFromIsoDate(endDateStr).getTime() + 24 * 60 * 60 * 1000 - 1;
+
+    return ttVideos.reduce((total, video) => {
+      if (!video.publishedAt) return total;
+      const publishedTime = new Date(video.publishedAt).getTime();
+      return Number.isFinite(publishedTime) && publishedTime >= startTime && publishedTime <= endTime
+        ? total + Number(video.views ?? 0)
+        : total;
+    }, 0);
+  }, [dateFromIsoDate, ttVideos]);
 
   // 6. Compute weekly combined analytics
   const weeklyViewsData = useMemo(() => {
@@ -4335,6 +4735,17 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
       weekBucketsBetween(startDate, sortedDays[sortedDays.length - 1].day).forEach(addBucket);
     }
 
+    if (ttVideos.length) {
+      const sortedTtDates = ttVideos
+        .map((video) => video.publishedAt?.slice(0, 10) ?? "")
+        .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
+        .sort();
+      if (sortedTtDates.length) {
+        const startDate = sortedTtDates[0] < WEEKLY_DASHBOARD_START_DATE ? WEEKLY_DASHBOARD_START_DATE : sortedTtDates[0];
+        weekBucketsBetween(startDate, sortedTtDates[sortedTtDates.length - 1]).forEach(addBucket);
+      }
+    }
+
     const sourceRows = [...bucketsByStartDate.values()]
       .filter((week) => week.startDate >= WEEKLY_DASHBOARD_START_DATE)
       .sort((left, right) => left.startDate.localeCompare(right.startDate));
@@ -4345,13 +4756,15 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
       const publishedYtViews = getPublishedYtViewsForWeek(week.startDate, week.endDate);
       const ytViews = analyticsYtViews || publishedYtViews;
       const igViews = getIgViewsForWeek(week.startDate, week.endDate);
-      const totalViews = ytViews + igViews;
+      const ttViews = getPublishedTtViewsForWeek(week.startDate, week.endDate);
+      const totalViews = ytViews + igViews + ttViews;
       const releasedVideoCount = getReleasedVideoCountForWeek(week.startDate, week.endDate);
       return {
         ...week,
         views: Number(youtubeWeek?.views ?? week.views ?? 0) || publishedYtViews,
         ytViews,
         igViews,
+        ttViews,
         totalViews,
         releasedVideoCount,
         averageViewsPerReleasedVideo: releasedVideoCount ? totalViews / releasedVideoCount : null
@@ -4372,7 +4785,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
         weeklyChangePercent
       };
     });
-  }, [igDailyViews, weeklyViews, youtubeRange, weekBucketsBetween, getIgViewsForWeek, getPublishedYtViewsForWeek, getReleasedVideoCountForWeek]);
+  }, [igDailyViews, ttVideos, weeklyViews, youtubeRange, weekBucketsBetween, getIgViewsForWeek, getPublishedTtViewsForWeek, getPublishedYtViewsForWeek, getReleasedVideoCountForWeek]);
 
   const weeklyViewsDateRange = useMemo(() => {
     if (!weeklyViewsData.length) return "";
@@ -4394,6 +4807,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
   const weeklyViewsTotals = useMemo(() => {
     const ytViews = weeklyViewsData.reduce((sum, week) => sum + week.ytViews, 0);
     const igViews = weeklyViewsData.reduce((sum, week) => sum + week.igViews, 0);
+    const ttViews = weeklyViewsData.reduce((sum, week) => sum + week.ttViews, 0);
     const totalViews = weeklyViewsData.reduce((sum, week) => sum + week.totalViews, 0);
     const releasedVideoCount = weeklyViewsData.reduce((sum, week) => sum + week.releasedVideoCount, 0);
 
@@ -4401,6 +4815,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
       averageViewsPerReleasedVideo: releasedVideoCount ? totalViews / releasedVideoCount : null,
       igViews,
       releasedVideoCount,
+      ttViews,
       totalViews,
       ytViews
     };
@@ -4408,7 +4823,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 
   // 7. Aggregate combined video entries (linked items merged into one entry)
   const combinedEntries = useMemo(() => {
-	    const entries: Array<{
+    const entries: Array<{
 		      averageViewPercentage: number | null;
 		      color: string;
 		      duration: string;
@@ -4416,6 +4831,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 		      id: string;
 	      ytVideo: YouTubeVideoPreview | null;
 	      igPost: InstagramPostPreview | null;
+	      ttVideo: TikTokVideoPreview | null;
 	      imageUrl: string;
 	      publishedAt?: string;
 	      stayedToWatch: number | null;
@@ -4425,17 +4841,19 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 		      igCaption: string | null;
 		      igEngagedViews: number | null;
 		      igAverageViewPercentage: number | null;
-		      platform: "youtube" | "instagram" | "both";
+		      platform: "youtube" | "instagram" | "tiktok" | "both";
 		      ytAverageViewPercentage: number | null;
 		      ytEngagedViews: number | null;
 	      ytViews: number;
       igViews: number;
+      ttViews: number;
       totalViews: number;
       watchHours: number;
       watchTimeShare: number;
     }> = [];
 
     const processedIgIds = new Set<string>();
+    const processedTtIds = new Set<string>();
     const analyticsByVideoId = new Map(ytAnalytics.map((row) => [row.video, row]));
     const totalWatchHours = ytAnalytics.reduce((total, row) => total + Number(row.estimatedMinutesWatched ?? 0) / 60, 0) +
       igPosts.reduce((total, post) => {
@@ -4448,9 +4866,11 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
       index: number;
       ytVideo: YouTubeVideoPreview | null;
       igPost: InstagramPostPreview | null;
+      ttVideo: TikTokVideoPreview | null;
       ytViews: number;
       igViews: number;
-      platform: "youtube" | "instagram" | "both";
+      ttViews: number;
+      platform: "youtube" | "instagram" | "tiktok" | "both";
     }) => {
       const ytRow = values.ytVideo ? analyticsByVideoId.get(values.ytVideo.id) : undefined;
 	      const ytDurationSeconds = parseDurationSeconds(values.ytVideo?.duration);
@@ -4461,14 +4881,15 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
         ? igTotalViewTime / 3600000
         : (igAverageWatchSeconds * values.igViews) / 3600;
       const ytWatchHours = Number(ytRow?.estimatedMinutesWatched ?? 0) / 60;
-      const totalViews = values.ytViews + values.igViews;
+      const totalViews = values.ytViews + values.igViews + values.ttViews;
+      const watchMetricViews = values.ytViews + values.igViews;
 	      const watchHours = ytWatchHours + igWatchHours;
 	      const ytAverageViewPercentage = ytRow ? Number(ytRow.averageViewPercentage ?? 0) : null;
 	      const igAverageViewPercentage = igDurationSeconds && igAverageWatchSeconds
 	        ? Math.min((igAverageWatchSeconds / igDurationSeconds) * 100, 999)
 	        : null;
       const averageViewPercentage = values.ytViews && ytAverageViewPercentage !== null && values.igViews && igAverageViewPercentage !== null
-        ? ((ytAverageViewPercentage * values.ytViews) + (igAverageViewPercentage * values.igViews)) / totalViews
+        ? ((ytAverageViewPercentage * values.ytViews) + (igAverageViewPercentage * values.igViews)) / watchMetricViews
         : ytAverageViewPercentage ?? igAverageViewPercentage;
 	      const ytEngagedViews = ytRow ? Number(ytRow.engagedViews ?? 0) : null;
 	      const ytStayed = ytRow && Number(ytRow.views ?? 0) ? (Number(ytRow.engagedViews ?? 0) / Number(ytRow.views ?? 0)) * 100 : null;
@@ -4477,26 +4898,27 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 	      const engagedValues = [ytEngagedViews, igEngagedViews].filter((value): value is number => value !== null);
 	      const engagedViews = engagedValues.length ? engagedValues.reduce((sum, value) => sum + value, 0) : null;
 	      const stayedToWatch = values.ytViews && ytStayed !== null && values.igViews && igStayed !== null
-	        ? ((ytStayed * values.ytViews) + (igStayed * values.igViews)) / totalViews
+	        ? ((ytStayed * values.ytViews) + (igStayed * values.igViews)) / watchMetricViews
 	        : ytStayed ?? igStayed;
 
       return {
 	        averageViewPercentage,
 	        color: ["#3b82f6", "#84cc16", "#eab308", "#a855f7", "#f43f5e"][values.index % 5],
-	        duration: values.ytVideo?.duration ?? (igAverageWatchSeconds ? formatDurationSeconds(igAverageWatchSeconds) : "-"),
+	        duration: values.ytVideo?.duration ?? values.ttVideo?.duration ?? (igAverageWatchSeconds ? formatDurationSeconds(igAverageWatchSeconds) : "-"),
 	        engagedViews,
-	        id: values.ytVideo && values.igPost ? `${values.ytVideo.id}-${values.igPost.id}` : values.ytVideo?.id ?? values.igPost?.id ?? String(values.index),
-		        imageUrl: values.ytVideo?.imageUrl ?? values.igPost?.imageUrl ?? "https://images.unsplash.com/photo-1516979187457-637abb4f9353?w=600",
+	        id: [values.ytVideo?.id, values.igPost?.id, values.ttVideo?.id].filter(Boolean).join("-") || String(values.index),
+		        imageUrl: values.ytVideo?.imageUrl ?? values.igPost?.imageUrl ?? values.ttVideo?.imageUrl ?? "https://images.unsplash.com/photo-1516979187457-637abb4f9353?w=600",
 		        igCaption: values.igPost?.caption ?? null,
 		        igAverageViewPercentage,
 		        igEngagedViews,
 		        igPost: values.igPost,
 		        platform: values.platform,
-	        publishedAt: values.ytVideo?.publishedAt ?? values.igPost?.publishedAt,
+	        publishedAt: values.ytVideo?.publishedAt ?? values.igPost?.publishedAt ?? values.ttVideo?.publishedAt,
 	        stayedToWatch,
+	        ttVideo: values.ttVideo,
 	        ytStayedToWatch: ytStayed,
 	        igStayedToWatch: igStayed,
-	        title: values.ytVideo?.title ?? values.igPost?.caption ?? "Instagram media",
+	        title: values.ytVideo?.title ?? values.igPost?.caption ?? values.ttVideo?.title ?? "Social video",
         totalViews,
 	        watchHours,
 	        watchTimeShare: totalWatchHours ? (watchHours / totalWatchHours) * 100 : 0,
@@ -4504,34 +4926,42 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 	        ytAverageViewPercentage,
 	        ytEngagedViews,
         ytViews: values.ytViews,
-        igViews: values.igViews
+        igViews: values.igViews,
+        ttViews: values.ttViews
       };
     };
 
     // 7.1 Map YouTube videos and see if they are linked
     ytVideos.forEach((ytVideo, index) => {
       const linkedIg = igPosts.find((post) => links[post.id] === ytVideo.id);
+      const linkedTt = ttVideos.find((video) => ttLinks[video.id] === ytVideo.id);
       const ytViewsNum = parseViews(ytVideo.views);
 
-      if (linkedIg) {
-        processedIgIds.add(linkedIg.id);
-        const igViewsNum = parseViews(linkedIg.views ?? 0);
+      if (linkedIg || linkedTt) {
+        if (linkedTt) processedTtIds.add(linkedTt.id);
+        if (linkedIg) processedIgIds.add(linkedIg.id);
+        const ttViewsNum = linkedTt ? Number(linkedTt.views ?? 0) : 0;
+        const igViewsNum = linkedIg ? parseViews(linkedIg.views ?? 0) : 0;
         entries.push(rowFrom({
           index,
           ytVideo,
-          igPost: linkedIg,
+          igPost: linkedIg ?? null,
+          ttVideo: linkedTt ?? null,
           platform: "both",
           ytViews: ytViewsNum,
-          igViews: igViewsNum
+          igViews: igViewsNum,
+          ttViews: ttViewsNum
         }));
       } else {
         entries.push(rowFrom({
           index,
           ytVideo,
           igPost: null,
+          ttVideo: null,
           platform: "youtube",
           ytViews: ytViewsNum,
-          igViews: 0
+          igViews: 0,
+          ttViews: 0
         }));
       }
     });
@@ -4544,15 +4974,33 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
           index: ytVideos.length + index,
           ytVideo: null,
           igPost,
+          ttVideo: null,
           platform: "instagram",
           ytViews: 0,
-          igViews: igViewsNum
+          igViews: igViewsNum,
+          ttViews: 0
+        }));
+      }
+    });
+
+    // 7.3 Map remaining TikTok videos
+    ttVideos.forEach((ttVideo, index) => {
+      if (!processedTtIds.has(ttVideo.id)) {
+        entries.push(rowFrom({
+          index: ytVideos.length + igPosts.length + index,
+          ytVideo: null,
+          igPost: null,
+          ttVideo,
+          platform: "tiktok",
+          ytViews: 0,
+          igViews: 0,
+          ttViews: Number(ttVideo.views ?? 0)
         }));
       }
     });
 
     return entries.sort((a, b) => b.totalViews - a.totalViews);
-	  }, [formatDurationSeconds, igPosts, igVideoDurations, links, parseDurationSeconds, parseViews, ytAnalytics, ytVideos]);
+	  }, [formatDurationSeconds, igPosts, igVideoDurations, links, parseDurationSeconds, parseViews, ttLinks, ttVideos, ytAnalytics, ytVideos]);
 
   const sortedCombinedEntries = useMemo(() => {
     if (!combinedPerformanceSort) return combinedEntries;
@@ -4640,6 +5088,8 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 	    const totalViews = combinedEntries.reduce((sum, entry) => sum + entry.totalViews, 0);
 	    const ytViews = combinedEntries.reduce((sum, entry) => sum + entry.ytViews, 0);
 	    const igViews = combinedEntries.reduce((sum, entry) => sum + entry.igViews, 0);
+	    const ttViews = combinedEntries.reduce((sum, entry) => sum + entry.ttViews, 0);
+	    const watchMetricViews = ytViews + igViews;
 	    const watchHours = combinedEntries.reduce((sum, entry) => sum + entry.watchHours, 0);
 		    const engagedViews = combinedEntries.reduce((sum, entry) => sum + Number(entry.engagedViews ?? 0), 0);
 		    const ytEngagedViews = combinedEntries.reduce((sum, entry) => sum + Number(entry.ytEngagedViews ?? 0), 0);
@@ -4650,8 +5100,8 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 		    const stayedRows = combinedEntries.filter((entry) => entry.stayedToWatch !== null);
 		    const ytStayedRows = combinedEntries.filter((entry) => entry.ytStayedToWatch !== null && entry.ytViews > 0);
 		    const igStayedRows = combinedEntries.filter((entry) => entry.igStayedToWatch !== null && entry.igViews > 0);
-	    const averageViewPercentage = averageViewRows.length && totalViews
-	      ? averageViewRows.reduce((sum, entry) => sum + Number(entry.averageViewPercentage ?? 0) * entry.totalViews, 0) / totalViews
+	    const averageViewPercentage = averageViewRows.length && watchMetricViews
+	      ? averageViewRows.reduce((sum, entry) => sum + Number(entry.averageViewPercentage ?? 0) * (entry.ytViews + entry.igViews), 0) / watchMetricViews
 	      : null;
 	    const ytAverageViewPercentage = ytAverageRows.length && ytViews
 	      ? ytAverageRows.reduce((sum, entry) => sum + Number(entry.ytAverageViewPercentage ?? 0) * entry.ytViews, 0) / ytViews
@@ -4659,8 +5109,8 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 	    const igAverageViewPercentage = igAverageRows.length && igViews
 	      ? igAverageRows.reduce((sum, entry) => sum + Number(entry.igAverageViewPercentage ?? 0) * entry.igViews, 0) / igViews
 	      : null;
-		    const stayedToWatch = stayedRows.length && totalViews
-		      ? stayedRows.reduce((sum, entry) => sum + Number(entry.stayedToWatch ?? 0) * entry.totalViews, 0) / totalViews
+		    const stayedToWatch = stayedRows.length && watchMetricViews
+		      ? stayedRows.reduce((sum, entry) => sum + Number(entry.stayedToWatch ?? 0) * (entry.ytViews + entry.igViews), 0) / watchMetricViews
 		      : null;
 		    const ytStayedToWatch = ytStayedRows.length && ytViews
 		      ? ytStayedRows.reduce((sum, entry) => sum + Number(entry.ytStayedToWatch ?? 0) * entry.ytViews, 0) / ytViews
@@ -4669,7 +5119,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 		      ? igStayedRows.reduce((sum, entry) => sum + Number(entry.igStayedToWatch ?? 0) * entry.igViews, 0) / igViews
 		      : null;
 
-		    return { averageViewPercentage, engagedViews, igAverageViewPercentage, igEngagedViews, igStayedToWatch, igViews, stayedToWatch, totalViews, watchHours, ytAverageViewPercentage, ytEngagedViews, ytStayedToWatch, ytViews };
+		    return { averageViewPercentage, engagedViews, igAverageViewPercentage, igEngagedViews, igStayedToWatch, igViews, stayedToWatch, totalViews, ttViews, watchHours, ytAverageViewPercentage, ytEngagedViews, ytStayedToWatch, ytViews };
 		  }, [combinedEntries]);
 
   return (
@@ -4679,7 +5129,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
         <div className="weekly-views-block-header">
           <h2>Weekly Views Trend (Combined Platforms)</h2>
           <p>
-            Displays combined views over time for linked YouTube videos and Instagram Reels.
+            Displays combined views over time for YouTube videos, Instagram Reels, and TikTok videos.
             {weeklyViewsDateRange ? ` Date range: ${weeklyViewsDateRange}.` : ""}
           </p>
         </div>
@@ -4729,6 +5179,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                     <div className="weekly-views-legend" aria-hidden="true">
                       <span><i className="youtube" />YouTube</span>
                       <span><i className="instagram" />Instagram</span>
+                      <span><i className="tiktok" />TikTok</span>
                     </div>
                     <svg
                       viewBox={`0 0 ${svgWidth} ${svgHeight}`}
@@ -4839,6 +5290,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                           <div className="tooltip-sub-details" style={{ fontSize: '0.7rem', color: '#cbd5e1', marginTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
                             <span>YouTube: {formatAnalyticsNumber(activeP.week.ytViews)}</span>
                             <span>Instagram: {formatAnalyticsNumber(activeP.week.igViews)}</span>
+                            <span>TikTok: {formatAnalyticsNumber(activeP.week.ttViews)}</span>
                           </div>
                           <div className="tooltip-dates" style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: 4, marginTop: 4 }}>
                             {formatShortWeeklyDate(activeP.week.startDate)} - {formatShortWeeklyDate(activeP.week.endDate)}
@@ -4858,6 +5310,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                     <th>Date</th>
                     <th>YT Views</th>
                     <th>IG Views</th>
+                    <th>TikTok Views</th>
                     <th>Views</th>
                     <th>Videos</th>
                     <th>Avg / Video</th>
@@ -4870,6 +5323,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                       <td>{formatShortWeeklyDate(week.startDate)}</td>
                       <td>{formatAnalyticsNumber(week.ytViews)}</td>
                       <td>{formatAnalyticsNumber(week.igViews)}</td>
+                      <td>{formatAnalyticsNumber(week.ttViews)}</td>
                       <td><strong>{formatAnalyticsNumber(week.totalViews)}</strong></td>
                       <td>{formatAnalyticsNumber(week.releasedVideoCount)}</td>
                       <td>{week.averageViewsPerReleasedVideo === null ? "-" : formatAnalyticsNumber(week.averageViewsPerReleasedVideo)}</td>
@@ -4886,6 +5340,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                     <th>Total</th>
                     <th>{formatAnalyticsNumber(weeklyViewsTotals.ytViews)}</th>
                     <th>{formatAnalyticsNumber(weeklyViewsTotals.igViews)}</th>
+                    <th>{formatAnalyticsNumber(weeklyViewsTotals.ttViews)}</th>
                     <th>{formatAnalyticsNumber(weeklyViewsTotals.totalViews)}</th>
                     <th>{formatAnalyticsNumber(weeklyViewsTotals.releasedVideoCount)}</th>
                     <th>{weeklyViewsTotals.averageViewsPerReleasedVideo === null ? "-" : formatAnalyticsNumber(weeklyViewsTotals.averageViewsPerReleasedVideo)}</th>
@@ -4909,7 +5364,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
         <div className="weekly-views-block-header">
           <h2>All Videos & Reels Performance</h2>
           <p>
-            Displays connected YouTube videos and Instagram Reels with linked items consolidated into one performance row.
+            Displays connected YouTube videos, Instagram Reels, and TikTok videos with linked items consolidated into one performance row.
           </p>
         </div>
 
@@ -4919,14 +5374,14 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
               <thead>
                 <tr>
                   <th className="content-column metric-help sortable-heading" data-definition="Content duration, publish date, platform, thumbnail, and title." tabIndex={0}>{combinedVideoSortControls()}</th>
-                  <th className="metric-help sortable-heading" data-definition="Combined YouTube and Instagram views for this row. Linked YouTube and Instagram items are merged." tabIndex={0}>
+                  <th className="metric-help sortable-heading" data-definition="Combined YouTube, Instagram, and TikTok views for this row. Linked items are merged." tabIndex={0}>
                     <span className="expandable-metric-heading">
                       {combinedSortButton("totalViews", "Views")}
                       <button
                         aria-label={platformViewsExpanded ? "Hide platform view split" : "Show platform view split"}
                         className="metric-expand-toggle"
                         onClick={() => setPlatformViewsExpanded((expanded) => !expanded)}
-                        title={platformViewsExpanded ? "Hide YouTube and Instagram views" : "Show YouTube and Instagram views"}
+                        title={platformViewsExpanded ? "Hide YouTube, Instagram, and TikTok views" : "Show YouTube, Instagram, and TikTok views"}
                         type="button"
                       >
                         {platformViewsExpanded ? <Minus size={12} aria-hidden="true" /> : <Plus size={12} aria-hidden="true" />}
@@ -4937,6 +5392,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 	                    <>
 	                      <th className="expanded-metric-column expanded-metric-column-start metric-help sortable-heading" data-definition="YouTube views for this row." tabIndex={0}>{combinedSortButton("ytViews", "YouTube views")}</th>
 	                      <th className="expanded-metric-column metric-help sortable-heading" data-definition="Instagram views for this row." tabIndex={0}>{combinedSortButton("igViews", "Instagram views")}</th>
+	                      <th className="expanded-metric-column metric-help sortable-heading" data-definition="TikTok views for this row. TikTok does not affect average duration watched or stayed-to-watch." tabIndex={0}>{combinedSortButton("ttViews", "TikTok views")}</th>
 	                    </>
 	                  )}
 		                  <th className="metric-help sortable-heading" data-definition="Combined average percentage viewed. YouTube uses Analytics average percentage viewed; Instagram is estimated from average watch time divided by reel duration." tabIndex={0}>
@@ -4994,9 +5450,10 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                             <span className="analytics-duration-pill">{entry.duration}</span>
                             <span>{formatPublishDate(entry.publishedAt)}</span>
                             {entry.platform === "both" && (
-                              <span className="platform-badge both" aria-label="YouTube and Instagram">
+                              <span className="platform-badge both" aria-label="Linked social content">
                                 <YouTubeIcon />
-                                <InstagramIcon />
+                                {entry.igPost && <InstagramIcon />}
+                                {entry.ttVideo && <TikTokIcon />}
                               </span>
                             )}
                             {entry.platform === "youtube" && (
@@ -5007,6 +5464,11 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                             {entry.platform === "instagram" && (
                               <span className="platform-badge instagram" aria-label="Instagram">
                                 <InstagramIcon />
+                              </span>
+                            )}
+                            {entry.platform === "tiktok" && (
+                              <span className="platform-badge tiktok" aria-label="TikTok">
+                                <TikTokIcon />
                               </span>
                             )}
                           </div>
@@ -5020,6 +5482,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 	                      <>
 	                        <td className="expanded-metric-column expanded-metric-column-start">{entry.ytViews > 0 ? formatAnalyticsNumber(entry.ytViews) : "-"}</td>
 	                        <td className="expanded-metric-column">{entry.igViews > 0 ? formatAnalyticsNumber(entry.igViews) : "-"}</td>
+	                        <td className="expanded-metric-column">{entry.ttViews > 0 ? formatAnalyticsNumber(entry.ttViews) : "-"}</td>
 	                      </>
 		                    )}
 		                    <td>{formatAnalyticsPercent(entry.averageViewPercentage)}</td>
@@ -5047,6 +5510,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 	                    <>
 	                      <th className="expanded-metric-column expanded-metric-column-start">{formatAnalyticsNumber(combinedPerformanceTotals.ytViews)}</th>
 	                      <th className="expanded-metric-column">{formatAnalyticsNumber(combinedPerformanceTotals.igViews)}</th>
+	                      <th className="expanded-metric-column">{formatAnalyticsNumber(combinedPerformanceTotals.ttViews)}</th>
 	                    </>
 		                  )}
 		                  <th>{formatAnalyticsPercent(combinedPerformanceTotals.averageViewPercentage)}</th>
@@ -5105,9 +5569,9 @@ function ReaderDashboard({
   onSignOut: () => void;
   selectedUserId: string | null;
   session: Session | null;
-  activeTab: "users" | "weekly_views" | "content" | "instagram";
+  activeTab: DashboardTab;
   contentRefreshSignal: number;
-  setActiveTab: (tab: "users" | "weekly_views" | "content" | "instagram") => void;
+  setActiveTab: (tab: DashboardTab) => void;
 }) {
   const email = session?.user.email ?? "";
   const isOwner = email.toLowerCase() === "r.lobo2003@gmail.com";
@@ -5364,6 +5828,14 @@ function ReaderDashboard({
           <InstagramIcon />
           <span>Instagram Sync</span>
         </button>
+        <button
+          className={`dashboard-tab-btn ${activeTab === "tiktok" ? "active" : ""}`}
+          onClick={() => setActiveTab("tiktok")}
+          type="button"
+        >
+          <TikTokIcon />
+          <span>TikTok Sync</span>
+        </button>
       </div>
 
       <div style={{ display: activeTab === "users" ? "block" : "none" }}>
@@ -5442,6 +5914,10 @@ function ReaderDashboard({
 
       <div style={{ display: activeTab === "instagram" ? "block" : "none" }}>
         <InstagramIntegrationSection refreshSignal={contentRefreshSignal} onLinksChanged={() => setLinksVersion((v) => v + 1)} />
+      </div>
+
+      <div style={{ display: activeTab === "tiktok" ? "block" : "none" }}>
+        <TikTokIntegrationSection refreshSignal={contentRefreshSignal} onLinksChanged={() => setLinksVersion((v) => v + 1)} />
       </div>
     </main>
   );
@@ -5988,10 +6464,11 @@ function App() {
   const [dashboardError, setDashboardError] = useState("");
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [dashboardPath, setDashboardPath] = useState(() => window.location.pathname);
-  const [dashboardTab, setDashboardTab] = useState<"users" | "weekly_views" | "content" | "instagram">(() => {
+  const [dashboardTab, setDashboardTab] = useState<DashboardTab>(() => {
     const tab = new URL(window.location.href).searchParams.get("tab");
     if (tab === "content") return "content";
     if (tab === "instagram") return "instagram";
+    if (tab === "tiktok") return "tiktok";
     if (tab === "weekly_views") return "weekly_views";
     return "users";
   });
@@ -6204,6 +6681,47 @@ function App() {
 
       void exchangeToken();
     }
+
+    if (window.location.pathname === "/auth/tiktok/callback" && code) {
+      const exchangeToken = async () => {
+        try {
+          const clientKey = localStorage.getItem("reader-tt-client-key") || TIKTOK_DEFAULT_CLIENT_KEY;
+          const redirectUri = localStorage.getItem("reader-tt-redirect-uri") || `${window.location.origin}/auth/tiktok/callback`;
+
+          const { data, error } = await supabase.functions.invoke("tiktok-token-exchange", {
+            body: { code, redirectUri, clientKey }
+          });
+
+          if (error) throw new Error(await edgeFunctionErrorMessage(error));
+          if (!data?.access_token) throw new Error("No TikTok access token returned from exchange.");
+
+          localStorage.setItem("reader-tt-status", "connected");
+          const { data: sessionData } = await supabase.auth.getSession();
+          const { error: storeError } = await supabase.functions.invoke("tiktok-feed", {
+            body: {
+              action: "store",
+              accessToken: data.access_token,
+              expiresIn: data.expires_in,
+              openId: data.open_id,
+              refreshExpiresIn: data.refresh_expires_in,
+              refreshToken: data.refresh_token
+            },
+            headers: sessionData.session?.access_token
+              ? { Authorization: `Bearer ${sessionData.session.access_token}` }
+              : undefined
+          });
+          if (storeError) throw new Error(await edgeFunctionErrorMessage(storeError));
+          alert("Successfully connected your TikTok account!");
+        } catch (err) {
+          console.error("TikTok authentication failed:", err);
+          alert("Failed to connect TikTok account: " + (err instanceof Error ? err.message : String(err)));
+        } finally {
+          window.location.href = `${window.location.origin}/dashboard?tab=tiktok`;
+        }
+      };
+
+      void exchangeToken();
+    }
   }, []);
 
   useEffect(() => {
@@ -6215,7 +6733,8 @@ function App() {
 
     window.history.replaceState({}, "", redirectPath);
     setDashboardPath(window.location.pathname);
-    setDashboardTab(new URL(window.location.href).searchParams.get("tab") === "content" ? "content" : "users");
+    const tab = new URL(window.location.href).searchParams.get("tab");
+    setDashboardTab(tab === "content" || tab === "instagram" || tab === "tiktok" || tab === "weekly_views" ? tab : "users");
   }, [session?.user?.id]);
 
   useEffect(() => {
