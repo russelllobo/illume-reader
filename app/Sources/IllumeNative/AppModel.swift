@@ -45,6 +45,7 @@ private let narrationSpeechMultiPeriodReplacements: [(pattern: String, replaceme
     (#"\bU\.K\."#, "UK"),
     (#"\bU\.S\."#, "US")
 ]
+private let parsedReaderBookCacheSchemaVersion = 2
 
 @MainActor
 final class IllumeAppModel: NSObject, ObservableObject {
@@ -3912,7 +3913,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
         guard FileManager.default.fileExists(atPath: url.path),
               let data = try? Data(contentsOf: url),
               let cached = try? IllumeJSON.decoder().decode(CachedReaderBook.self, from: data),
-              cached.schemaVersion == 1,
+              cached.schemaVersion == parsedReaderBookCacheSchemaVersion,
               cached.bookID == row.id,
               cached.documentType == row.documentType,
               cached.storagePath == row.storagePath,
@@ -3929,7 +3930,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
     nonisolated private static func storeParsedReaderBook(_ book: ReaderBook, for row: BookRow) {
         guard !book.paragraphs.isEmpty else { return }
         let cached = CachedReaderBook(
-            schemaVersion: 1,
+            schemaVersion: parsedReaderBookCacheSchemaVersion,
             bookID: row.id,
             documentType: row.documentType,
             storagePath: row.storagePath,

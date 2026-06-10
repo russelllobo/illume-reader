@@ -661,10 +661,22 @@ struct ReaderView: View {
                 }
                 .frame(height: 0)
 
-                ForEach(Array(book.paragraphs.enumerated()), id: \.element.id) { index, paragraph in
+                let narrationParagraphID = app.narration.paragraphID
+                let narrationWordRange = app.narration.wordRange
+                let activeParagraphIndex = narrationParagraphID.flatMap { paragraphID in
+                    book.paragraphs.firstIndex { $0.id == paragraphID }
+                }
+
+                ForEach(book.paragraphs.indices, id: \.self) { index in
+                    let paragraph = book.paragraphs[index]
+                    let isNarrationParagraph = narrationParagraphID == paragraph.id
                     ParagraphView(
                         paragraph: paragraph,
                         index: index,
+                        readerSettings: app.readerSettings,
+                        activeRange: isNarrationParagraph ? narrationWordRange : nil,
+                        isNarrationParagraph: isNarrationParagraph,
+                        isFutureParagraph: activeParagraphIndex.map { index > $0 } ?? false,
                         textColor: onImageBackground ? .white : ReaderDefaultStyle.foreground,
                         futureTextOpacity: onImageBackground ? 0.46 : 0.22,
                         speakingHighlightColor: onImageBackground ? nil : Color(red: 0.918, green: 0.961, blue: 1.0),
@@ -680,6 +692,7 @@ struct ReaderView: View {
                             onImageBackground: onImageBackground
                         )
                     }
+                    .equatable()
                     .shadow(
                         color: onImageBackground ? .black.opacity(0.82) : .clear,
                         radius: onImageBackground ? 11 : 0,
@@ -1849,10 +1862,13 @@ struct TableOfContentsRow: View {
     }
 }
 
-struct ParagraphView: View {
-    @EnvironmentObject private var app: IllumeAppModel
+struct ParagraphView: View, Equatable {
     let paragraph: ReaderParagraph
     let index: Int
+    let readerSettings: ReaderSettings
+    let activeRange: NSRange?
+    let isNarrationParagraph: Bool
+    let isFutureParagraph: Bool
     var textColor = ReaderDefaultStyle.foreground
     var futureTextOpacity: Double = 0.22
     var speakingHighlightColor: Color? = Color(red: 0.918, green: 0.961, blue: 1.0)
@@ -1861,18 +1877,13 @@ struct ParagraphView: View {
     let selectWord: (Int) -> Void
 
     var body: some View {
-        let isNarrationParagraph = app.narration.paragraphID == paragraph.id
-        let activeParagraphIndex = app.narration.paragraphID.flatMap { paragraphID in
-            app.activeBook?.paragraphs.firstIndex { $0.id == paragraphID }
-        }
-        let isFutureParagraph = activeParagraphIndex.map { index > $0 } ?? false
-
         ReaderAttributedText(
             text: paragraph.text,
+            inlineStyles: paragraph.inlineStyles,
             font: uiFont,
             textColor: UIColor(textColor.opacity(isFutureParagraph ? futureTextOpacity : 1)),
             lineSpacing: paragraphLineSpacing,
-            activeRange: isNarrationParagraph ? app.narration.wordRange : nil,
+            activeRange: activeRange,
             activeHighlightColor: .clear,
             scrollsActiveRange: scrollsActiveRange
         ) {
@@ -1893,25 +1904,37 @@ struct ParagraphView: View {
     }
 
     private var uiFont: UIFont {
-        let scale = min(app.readerSettings.textScale, 1.25)
+        let scale = min(readerSettings.textScale, 1.25)
         let size = 18.5 * scale
         switch paragraph.kind {
         case .heading:
-            return UIFont.readerFont(ofSize: 24 * scale, weight: .bold, family: app.readerSettings.fontFamily)
+            return UIFont.readerFont(ofSize: 24 * scale, weight: .bold, family: readerSettings.fontFamily)
         case .quote:
-            let font = UIFont.readerFont(ofSize: size, weight: .medium, family: app.readerSettings.fontFamily)
+            let font = UIFont.readerFont(ofSize: size, weight: .medium, family: readerSettings.fontFamily)
             let descriptor = font.fontDescriptor.withSymbolicTraits(.traitItalic) ?? font.fontDescriptor
             return UIFont(descriptor: descriptor, size: size)
         default:
-            return UIFont.readerFont(ofSize: size, weight: .regular, family: app.readerSettings.fontFamily)
+            return UIFont.readerFont(ofSize: size, weight: .regular, family: readerSettings.fontFamily)
         }
     }
 
     private var paragraphLineSpacing: CGFloat {
-        let lineHeight = min(max(app.readerSettings.lineHeight, 1.0), 1.65)
+        let lineHeight = min(max(readerSettings.lineHeight, 1.0), 1.65)
         return 3.8 + CGFloat(lineHeight - 1.0) * 8.2
     }
 
+    nonisolated static func == (lhs: ParagraphView, rhs: ParagraphView) -> Bool {
+        lhs.paragraph == rhs.paragraph
+            && lhs.index == rhs.index
+            && lhs.readerSettings == rhs.readerSettings
+            && lhs.activeRange == rhs.activeRange
+            && lhs.isNarrationParagraph == rhs.isNarrationParagraph
+            && lhs.isFutureParagraph == rhs.isFutureParagraph
+            && lhs.textColor == rhs.textColor
+            && lhs.futureTextOpacity == rhs.futureTextOpacity
+            && lhs.speakingHighlightColor == rhs.speakingHighlightColor
+            && lhs.scrollsActiveRange == rhs.scrollsActiveRange
+    }
 }
 
 private struct ReaderNarrationPreviewPanel: View {
@@ -1986,6 +2009,7 @@ private struct ReaderNarrationPreviewPanel: View {
 
 struct ReaderAttributedText: UIViewRepresentable {
     let text: String
+    var inlineStyles: [ReaderInlineStyle] = []
     let font: UIFont
     let textColor: UIColor
     let lineSpacing: CGFloat
@@ -2031,6 +2055,7 @@ struct ReaderAttributedText: UIViewRepresentable {
 
         let renderKey = RenderKey(
             text: text,
+            inlineStyles: inlineStyles,
             fontName: font.fontName,
             fontSize: font.pointSize,
             textColor: textColor,
@@ -2052,20 +2077,23 @@ struct ReaderAttributedText: UIViewRepresentable {
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
         let width = proposal.width ?? UIScreen.main.bounds.width
-        let measuringTextView = UITextView()
-        measuringTextView.isScrollEnabled = false
-        measuringTextView.textContainerInset = .zero
-        measuringTextView.textContainer.lineFragmentPadding = 0
-        measuringTextView.attributedText = baseAttributedString
-        let size = measuringTextView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
-        return CGSize(width: width, height: size.height)
+        let textStorage = NSTextStorage(attributedString: baseAttributedString)
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
+        textContainer.lineFragmentPadding = 0
+        textContainer.widthTracksTextView = true
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+        layoutManager.ensureLayout(for: textContainer)
+        let rect = layoutManager.usedRect(for: textContainer)
+        return CGSize(width: width, height: ceil(rect.height))
     }
 
     private var baseAttributedString: NSAttributedString {
         let paragraphStyle = NSMutableParagraphStyle()
         paragraphStyle.lineSpacing = lineSpacing
 
-        return NSAttributedString(
+        let attributed = NSMutableAttributedString(
             string: text,
             attributes: [
                 .font: font,
@@ -2073,6 +2101,8 @@ struct ReaderAttributedText: UIViewRepresentable {
                 .paragraphStyle: paragraphStyle
             ]
         )
+        applyInlineStyles(to: attributed)
+        return attributed
     }
 
     private var attributedString: NSAttributedString {
@@ -2108,6 +2138,67 @@ struct ReaderAttributedText: UIViewRepresentable {
         }
 
         return attributed
+    }
+
+    private func applyInlineStyles(to attributed: NSMutableAttributedString) {
+        let nsText = text as NSString
+        guard nsText.length > 0 else { return }
+
+        for inlineStyle in inlineStyles {
+            let range = NSRange(location: inlineStyle.location, length: inlineStyle.length)
+            guard range.location >= 0, range.length > 0, NSMaxRange(range) <= nsText.length else {
+                continue
+            }
+
+            attributed.addAttributes(attributes(for: inlineStyle), range: range)
+        }
+    }
+
+    private func attributes(for style: ReaderInlineStyle) -> [NSAttributedString.Key: Any] {
+        var attributes: [NSAttributedString.Key: Any] = [:]
+        let styledFont = font(for: style)
+        attributes[.font] = styledFont
+
+        if style.underline {
+            attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
+        }
+        if style.strikethrough {
+            attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+        }
+        if style.superscript {
+            attributes[.baselineOffset] = styledFont.pointSize * 0.34
+        } else if style.isSubscript {
+            attributes[.baselineOffset] = -styledFont.pointSize * 0.18
+        }
+        if style.highlighted {
+            attributes[.backgroundColor] = textColor.withAlphaComponent(0.16)
+        }
+        if style.smallCaps {
+            attributes[.kern] = 0.2
+        }
+
+        return attributes
+    }
+
+    private func font(for style: ReaderInlineStyle) -> UIFont {
+        let size = (style.superscript || style.isSubscript || style.smallCaps) ? font.pointSize * 0.82 : font.pointSize
+        if style.monospace {
+            return UIFont.monospacedSystemFont(ofSize: size, weight: style.bold ? .semibold : .regular)
+        }
+
+        var traits = font.fontDescriptor.symbolicTraits
+        if style.bold {
+            traits.insert(.traitBold)
+        }
+        if style.italic {
+            traits.insert(.traitItalic)
+        }
+
+        guard !traits.isEmpty,
+              let descriptor = font.fontDescriptor.withSymbolicTraits(traits) else {
+            return size == font.pointSize ? font : UIFont(descriptor: font.fontDescriptor, size: size)
+        }
+        return UIFont(descriptor: descriptor, size: size)
     }
 
     final class Coordinator: NSObject, UITextViewDelegate {
@@ -2233,6 +2324,7 @@ struct ReaderAttributedText: UIViewRepresentable {
 
     struct RenderKey: Equatable {
         let text: String
+        let inlineStyles: [ReaderInlineStyle]
         let fontName: String
         let fontSize: CGFloat
         let textColor: UIColor
@@ -2245,6 +2337,7 @@ struct ReaderAttributedText: UIViewRepresentable {
 
         static func == (lhs: RenderKey, rhs: RenderKey) -> Bool {
             lhs.text == rhs.text
+                && lhs.inlineStyles == rhs.inlineStyles
                 && lhs.fontName == rhs.fontName
                 && lhs.fontSize == rhs.fontSize
                 && lhs.textColor.isEqual(rhs.textColor)

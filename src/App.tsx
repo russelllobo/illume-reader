@@ -2579,6 +2579,8 @@ type InstagramPostPreview = {
   totalInteractions?: number;
   totalViewTime?: number;
 };
+
+const WEEKLY_DASHBOARD_START_DATE = "2026-05-18";
 type SortDirection = "asc" | "desc";
 type YouTubePerformanceSortKey =
   | "duration"
@@ -4107,6 +4109,21 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
     }
   }, [refreshSignal]);
 
+  const igDailyViews = useMemo((): Array<{ day: string; views: number }> => {
+    try {
+      const rows = JSON.parse(localStorage.getItem("reader-ig-user-insights-cache") || "[]");
+      return Array.isArray(rows)
+        ? rows
+          .filter((row): row is { day: string; views: number } =>
+            typeof row?.day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(row.day)
+          )
+          .map((row) => ({ day: row.day, views: Number(row.views ?? 0) || 0 }))
+        : [];
+    } catch {
+      return [];
+    }
+  }, [refreshSignal]);
+
   // 4. Read links mapping
   const links = useMemo((): Record<string, string> => {
     try {
@@ -4182,18 +4199,49 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
     return new Date(Date.UTC(year, month - 1, day));
   }, []);
 
+  const isoDateFromDate = useCallback((date: Date) => date.toISOString().slice(0, 10), []);
+
+  const addUtcDays = useCallback((date: Date, days: number) => {
+    const next = new Date(date);
+    next.setUTCDate(next.getUTCDate() + days);
+    return next;
+  }, []);
+
+  const mondayOfWeek = useCallback((date: Date) => {
+    const monday = new Date(date);
+    const daysSinceMonday = (monday.getUTCDay() + 6) % 7;
+    monday.setUTCDate(monday.getUTCDate() - daysSinceMonday);
+    return monday;
+  }, []);
+
+  const weekBucketsBetween = useCallback((startDate: string, endDate: string) => {
+    const start = dateFromIsoDate(startDate);
+    const end = dateFromIsoDate(endDate);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) return [];
+
+    const buckets: YouTubeWeeklyViews[] = [];
+    for (let cursor = mondayOfWeek(start); cursor <= end; cursor = addUtcDays(cursor, 7)) {
+      const weekStart = new Date(cursor);
+      const weekEnd = new Date(Math.min(addUtcDays(weekStart, 6).getTime(), end.getTime()));
+      buckets.push({
+        endDate: isoDateFromDate(weekEnd),
+        startDate: isoDateFromDate(weekStart),
+        views: 0
+      });
+    }
+
+    return buckets;
+  }, [addUtcDays, dateFromIsoDate, isoDateFromDate, mondayOfWeek]);
+
   // 4.1 Get account-level views from user-level daily insights cache
   const getIgAccountViewsForWeek = useCallback((startDateStr: string, endDateStr: string): number => {
     try {
-      const cachedInsightsRaw = localStorage.getItem("reader-ig-user-insights-cache");
-      if (!cachedInsightsRaw) return -1;
-      const dailyViews: Array<{ day: string; views: number }> = JSON.parse(cachedInsightsRaw);
-      if (!dailyViews.length) return -1;
+      if (!igDailyViews.length) return -1;
 
       const startTime = dateFromIsoDate(startDateStr).getTime();
       const endTime = dateFromIsoDate(endDateStr).getTime() + 24 * 60 * 60 * 1000 - 1;
 
-      const viewsSum = dailyViews
+      const viewsSum = igDailyViews
         .filter((item) => {
           const dayTime = dateFromIsoDate(item.day).getTime();
           return dayTime >= startTime && dayTime <= endTime;
@@ -4204,7 +4252,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
     } catch {
       return -1;
     }
-  }, [dateFromIsoDate]);
+  }, [dateFromIsoDate, igDailyViews]);
 
   // 5. Aggregate Instagram weekly views from account-level daily insights.
   const getIgViewsForWeek = useCallback((startDateStr: string, endDateStr: string): number => {
@@ -4248,15 +4296,60 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
     }).length;
   }, [dateFromIsoDate, releasedVideoDates]);
 
+  const getPublishedYtViewsForWeek = useCallback((startDateStr: string, endDateStr: string) => {
+    const startTime = dateFromIsoDate(startDateStr).getTime();
+    const endTime = dateFromIsoDate(endDateStr).getTime() + 24 * 60 * 60 * 1000 - 1;
+
+    return ytVideos.reduce((total, video) => {
+      if (!video.publishedAt) return total;
+      const publishedTime = new Date(video.publishedAt).getTime();
+      return Number.isFinite(publishedTime) && publishedTime >= startTime && publishedTime <= endTime
+        ? total + parseViews(video.views)
+        : total;
+    }, 0);
+  }, [dateFromIsoDate, parseViews, ytVideos]);
+
   // 6. Compute weekly combined analytics
   const weeklyViewsData = useMemo(() => {
-    const rows = weeklyViews.map((week) => {
-      const ytViews = Number(week.views ?? 0);
+    const bucketsByStartDate = new Map<string, YouTubeWeeklyViews>();
+    const addBucket = (week: YouTubeWeeklyViews) => {
+      const existing = bucketsByStartDate.get(week.startDate);
+      bucketsByStartDate.set(week.startDate, {
+        endDate: existing?.endDate && existing.endDate > week.endDate ? existing.endDate : week.endDate,
+        startDate: week.startDate,
+        views: Number(existing?.views ?? 0) + Number(week.views ?? 0)
+      });
+    };
+
+    weeklyViews.forEach(addBucket);
+
+    const rangeEndDate = youtubeRange?.availableEndDate || youtubeRange?.endDate;
+    if (youtubeRange?.startDate && rangeEndDate) {
+      const startDate = youtubeRange.startDate < WEEKLY_DASHBOARD_START_DATE ? WEEKLY_DASHBOARD_START_DATE : youtubeRange.startDate;
+      weekBucketsBetween(startDate, rangeEndDate).forEach(addBucket);
+    }
+
+    if (igDailyViews.length) {
+      const sortedDays = [...igDailyViews].sort((left, right) => left.day.localeCompare(right.day));
+      const startDate = sortedDays[0].day < WEEKLY_DASHBOARD_START_DATE ? WEEKLY_DASHBOARD_START_DATE : sortedDays[0].day;
+      weekBucketsBetween(startDate, sortedDays[sortedDays.length - 1].day).forEach(addBucket);
+    }
+
+    const sourceRows = [...bucketsByStartDate.values()]
+      .filter((week) => week.startDate >= WEEKLY_DASHBOARD_START_DATE)
+      .sort((left, right) => left.startDate.localeCompare(right.startDate));
+
+    const rows = sourceRows.map((week) => {
+      const youtubeWeek = weeklyViews.find((row) => row.startDate === week.startDate);
+      const analyticsYtViews = Number(week.views ?? 0);
+      const publishedYtViews = getPublishedYtViewsForWeek(week.startDate, week.endDate);
+      const ytViews = analyticsYtViews || publishedYtViews;
       const igViews = getIgViewsForWeek(week.startDate, week.endDate);
       const totalViews = ytViews + igViews;
       const releasedVideoCount = getReleasedVideoCountForWeek(week.startDate, week.endDate);
       return {
         ...week,
+        views: Number(youtubeWeek?.views ?? week.views ?? 0) || publishedYtViews,
         ytViews,
         igViews,
         totalViews,
@@ -4279,7 +4372,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
         weeklyChangePercent
       };
     });
-  }, [weeklyViews, getIgViewsForWeek, getReleasedVideoCountForWeek]);
+  }, [igDailyViews, weeklyViews, youtubeRange, weekBucketsBetween, getIgViewsForWeek, getPublishedYtViewsForWeek, getReleasedVideoCountForWeek]);
 
   const weeklyViewsDateRange = useMemo(() => {
     if (!weeklyViewsData.length) return "";

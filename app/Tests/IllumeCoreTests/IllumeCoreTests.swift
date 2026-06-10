@@ -139,6 +139,28 @@ import Testing
     #expect(paragraphs[2].kind == .quote)
 }
 
+@Test func epubParagraphExtractionPreservesInlineFormatting() {
+    let html = """
+    <html><body>
+      <p>This paragraph keeps <strong>bold words</strong>, <em>italic words</em>, H<sub>2</sub>O, E=mc<sup>2</sup>, and <code>code text</code> for rendering.</p>
+      <li>A list item with enough words to be preserved and displayed with a marker.</li>
+    </body></html>
+    """
+
+    let paragraphs = EpubMetadataExtractor.paragraphs(fromHTML: html, chapterTitle: "Formatting")
+
+    #expect(paragraphs.count == 2)
+    #expect(paragraphs[0].text.contains("bold words"))
+    #expect(paragraphs[0].text.contains("italic words"))
+    #expect(paragraphs[0].inlineStyles.contains { $0.bold && (paragraphs[0].text as NSString).substring(with: NSRange(location: $0.location, length: $0.length)) == "bold words" })
+    #expect(paragraphs[0].inlineStyles.contains { $0.italic && (paragraphs[0].text as NSString).substring(with: NSRange(location: $0.location, length: $0.length)) == "italic words" })
+    #expect(paragraphs[0].inlineStyles.contains { $0.isSubscript && (paragraphs[0].text as NSString).substring(with: NSRange(location: $0.location, length: $0.length)) == "2" })
+    #expect(paragraphs[0].inlineStyles.contains { $0.superscript && (paragraphs[0].text as NSString).substring(with: NSRange(location: $0.location, length: $0.length)) == "2" })
+    #expect(paragraphs[0].inlineStyles.contains { $0.monospace && (paragraphs[0].text as NSString).substring(with: NSRange(location: $0.location, length: $0.length)) == "code text" })
+    #expect(paragraphs[1].kind == .list)
+    #expect(paragraphs[1].text.hasPrefix("• "))
+}
+
 @Test func pdfTocMappingBuildsReaderParagraphs() {
     let bookId = UUID()
     let userId = UUID()

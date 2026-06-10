@@ -343,6 +343,17 @@ public struct ReaderParagraph: Codable, Equatable, Identifiable, Sendable {
     public var kind: Kind
     public var pageNumber: Int?
     public var text: String
+    public var inlineStyles: [ReaderInlineStyle]
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case chapterIndex
+        case chapterTitle
+        case kind
+        case pageNumber
+        case text
+        case inlineStyles
+    }
 
     public init(
         id: String,
@@ -350,7 +361,8 @@ public struct ReaderParagraph: Codable, Equatable, Identifiable, Sendable {
         chapterTitle: String,
         kind: Kind = .paragraph,
         pageNumber: Int? = nil,
-        text: String
+        text: String,
+        inlineStyles: [ReaderInlineStyle] = []
     ) {
         self.id = id
         self.chapterIndex = chapterIndex
@@ -358,6 +370,58 @@ public struct ReaderParagraph: Codable, Equatable, Identifiable, Sendable {
         self.kind = kind
         self.pageNumber = pageNumber
         self.text = text
+        self.inlineStyles = inlineStyles
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        chapterIndex = try container.decodeIfPresent(Int.self, forKey: .chapterIndex) ?? 0
+        chapterTitle = try container.decodeIfPresent(String.self, forKey: .chapterTitle) ?? ""
+        kind = try container.decodeIfPresent(Kind.self, forKey: .kind) ?? .paragraph
+        pageNumber = try container.decodeIfPresent(Int.self, forKey: .pageNumber)
+        text = try container.decode(String.self, forKey: .text)
+        inlineStyles = try container.decodeIfPresent([ReaderInlineStyle].self, forKey: .inlineStyles) ?? []
+    }
+}
+
+public struct ReaderInlineStyle: Codable, Equatable, Sendable {
+    public var location: Int
+    public var length: Int
+    public var bold: Bool
+    public var italic: Bool
+    public var underline: Bool
+    public var strikethrough: Bool
+    public var monospace: Bool
+    public var superscript: Bool
+    public var isSubscript: Bool
+    public var smallCaps: Bool
+    public var highlighted: Bool
+
+    public init(
+        location: Int,
+        length: Int,
+        bold: Bool = false,
+        italic: Bool = false,
+        underline: Bool = false,
+        strikethrough: Bool = false,
+        monospace: Bool = false,
+        superscript: Bool = false,
+        isSubscript: Bool = false,
+        smallCaps: Bool = false,
+        highlighted: Bool = false
+    ) {
+        self.location = location
+        self.length = length
+        self.bold = bold
+        self.italic = italic
+        self.underline = underline
+        self.strikethrough = strikethrough
+        self.monospace = monospace
+        self.superscript = superscript
+        self.isSubscript = isSubscript
+        self.smallCaps = smallCaps
+        self.highlighted = highlighted
     }
 }
 
