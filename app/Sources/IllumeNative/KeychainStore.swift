@@ -4,7 +4,7 @@ import IllumeCore
 import Security
 
 enum KeychainStore {
-    private static let service = "com.illumereader.ios.auth"
+    private static let service = "com.russellsystems.illume.auth"
     private static let account = "supabase-session"
 
     static func loadSession() -> AuthSession? {

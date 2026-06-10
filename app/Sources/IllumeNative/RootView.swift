@@ -1,6 +1,7 @@
 #if os(iOS)
 import AuthenticationServices
 import IllumeCore
+import StoreKit
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
@@ -2160,6 +2161,7 @@ struct CoverArtwork: View {
 struct ProfileSheet: View {
     @EnvironmentObject private var app: IllumeAppModel
     @Environment(\.dismiss) private var dismiss
+    @State private var isShowingDeleteAccountConfirmation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
@@ -2210,16 +2212,67 @@ struct ProfileSheet: View {
             }
             .illumeNativeGlassButton(tint: IllumeTheme.coral, isProminent: true, fallback: PillButtonStyle(tint: IllumeTheme.coral))
 
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Account")
+                    .font(.system(.caption, design: .rounded, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+
+                Button(role: .destructive) {
+                    isShowingDeleteAccountConfirmation = true
+                } label: {
+                    HStack {
+                        if app.isDeletingAccount {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(app.isDeletingAccount ? "Deleting account..." : "Delete account")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .disabled(app.isDeletingAccount)
+                .illumeNativeGlassButton(tint: IllumeTheme.coral, isProminent: false, fallback: PillButtonStyle(tint: IllumeTheme.coral))
+            }
+
             Spacer()
         }
         .padding(24)
         .background(IllumeTheme.paper)
+        .alert("Delete account?", isPresented: $isShowingDeleteAccountConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete account", role: .destructive) {
+                Task {
+                    await app.deleteAccount()
+                    if app.session == nil {
+                        dismiss()
+                    }
+                }
+            }
+        } message: {
+            Text(deleteAccountConfirmationMessage)
+        }
+    }
+
+    private var deleteAccountConfirmationMessage: String {
+        var message = "This permanently deletes your Illume account, cloud library, uploaded books, generated images, and reading data. Local session, keychain, and cached reader files will be cleared from this device."
+        if hasSubscriptionWarning {
+            message += " Deleting your account does not cancel an active subscription. Manage App Store subscriptions in your Apple ID settings, or Stripe subscriptions from the billing portal before deleting."
+        }
+        return message
+    }
+
+    private var hasSubscriptionWarning: Bool {
+        app.isPro
+            || app.billingProfile?.stripeSubscriptionId != nil
+            || app.billingProfile?.appleOriginalTransactionId != nil
     }
 }
 
 struct ProUpgradeSheet: View {
     @EnvironmentObject private var app: IllumeAppModel
     @Environment(\.dismiss) private var dismiss
+    @State private var proProduct: Product?
+    @State private var productMessage = ""
     let prompt: ProUpgradePrompt
 
     var body: some View {
@@ -2237,7 +2290,7 @@ struct ProUpgradeSheet: View {
                             Spacer(minLength: max(44, proxy.size.height * 0.09))
 
                             VStack(alignment: .leading, spacing: 10) {
-                                Text(prompt.isPro ? "Monthly visuals used" : "Read without limits")
+                                Text(prompt.isPro ? "Monthly visuals used" : "Read with Pro")
                                     .font(IllumeTypography.sans(40, weight: .heavy))
                                     .foregroundStyle(.white)
                                     .lineSpacing(1)
@@ -2260,13 +2313,20 @@ struct ProUpgradeSheet: View {
                             Spacer(minLength: 44)
 
                             VStack(spacing: 4) {
-                                Text(prompt.isPro ? "\(prompt.used) / \(prompt.limit) visuals used" : "Only $14.98 /year")
+                                Text(prompt.isPro ? "\(prompt.used) / \(prompt.limit) visuals used" : priceSummary)
                                     .font(IllumeTypography.sans(13, weight: .bold))
                                     .foregroundStyle(.white)
 
-                                Text(prompt.isPro ? "Restore purchases or check back next month." : "Cancel anytime.")
+                                Text(prompt.isPro ? "Restore purchases or check back next month." : subscriptionSummary)
                                     .font(IllumeTypography.sans(11, weight: .medium))
                                     .foregroundStyle(.white.opacity(0.58))
+
+                                if !prompt.isPro, proProduct == nil, !productMessage.isEmpty {
+                                    Text(productMessage)
+                                        .font(IllumeTypography.sans(11, weight: .semibold))
+                                        .foregroundStyle(.white.opacity(0.72))
+                                        .multilineTextAlignment(.center)
+                                }
                             }
                             .frame(maxWidth: .infinity)
 
@@ -2277,7 +2337,7 @@ struct ProUpgradeSheet: View {
                                 .background(.white.opacity(0.18))
                                 .padding(.top, 18)
 
-                            ProPlanOptions()
+                            ProPlanOptions(product: proProduct)
                                 .padding(.top, 18)
                                 .padding(.bottom, max(28, proxy.safeAreaInsets.bottom + 12))
                         }
@@ -2290,29 +2350,52 @@ struct ProUpgradeSheet: View {
         .preferredColorScheme(.dark)
         .onAppear {
             app.pauseNarration()
+            proProduct = app.billing.proProduct
+            productMessage = app.billing.message
+            Task {
+                await app.billing.loadProducts()
+                proProduct = app.billing.proProduct
+                productMessage = app.billing.message
+            }
         }
+    }
+
+    private var priceSummary: String {
+        guard let proProduct else { return "Monthly subscription" }
+        return "\(proProduct.displayPrice) \(proProduct.subscriptionDisplaySuffix)"
+    }
+
+    private var subscriptionSummary: String {
+        guard let proProduct else { return "Cancel anytime." }
+        return "\(proProduct.renewalSummary). Cancel anytime."
     }
 
     private var featureTitles: [String] {
         if prompt.isPro {
-            [
+            var titles = [
                 "Restore your active subscription",
                 "Keep every premium reader feature",
                 "Cloud sync and visual history",
-                "Natural narration and word tracking",
-                "Family sharing support"
+                "Natural narration and word tracking"
             ]
+            if proProduct?.isFamilyShareable == true {
+                titles.append("Family sharing support")
+            }
+            return titles
         } else {
-            [
-                "Unlimited AI illustrations",
+            var titles = [
+                "\(IllumeLimits.proReaderImageMonthlyLimit.formatted()) AI illustrations per month",
                 "Natural narration",
                 "Live word tracking",
                 "EPUB and PDF support",
                 "Cloud library sync",
                 "More storage for your books",
-                "Priority reading tools",
-                "Family sharing included"
+                "Priority reading tools"
             ]
+            if proProduct?.isFamilyShareable == true {
+                titles.append("Family sharing included")
+            }
+            return titles
         }
     }
 
@@ -2337,9 +2420,10 @@ struct ProUpgradeSheet: View {
                     }
                 }
             } label: {
-                ProPrimaryButtonLabel(title: "Continue", systemName: "arrow.right")
+                ProPrimaryButtonLabel(title: proProduct == nil ? "Loading price" : "Continue", systemName: "arrow.right")
             }
             .buttonStyle(LiquidLiftButtonStyle())
+            .disabled(proProduct == nil)
         }
     }
 }
@@ -2467,21 +2551,15 @@ private struct ProPrimaryButtonLabel: View {
 }
 
 private struct ProPlanOptions: View {
+    let product: Product?
+
     var body: some View {
         VStack(spacing: 10) {
             ProPlanCard(
-                title: "Monthly Illume+",
-                price: "$5.98/month",
-                detail: "Unlock premium features with a flexible monthly plan.",
+                title: product?.displayName ?? "Monthly Illume Pro",
+                price: product.map { "\($0.displayPrice) \($0.subscriptionDisplaySuffix)" } ?? "Loading StoreKit price",
+                detail: product.map { "\($0.renewalSummary). Includes \(IllumeLimits.proReaderImageMonthlyLimit.formatted()) AI illustrations per month." } ?? "Fetching the App Store subscription details.",
                 badge: "Your Plan",
-                isSelected: false
-            )
-
-            ProPlanCard(
-                title: "Change Plan to Annual Illume+",
-                price: "$39.98/year",
-                detail: "Unlock Illume+ features and save with an annual plan.",
-                badge: nil,
                 isSelected: true
             )
         }
@@ -2558,6 +2636,66 @@ private struct ProPlanCard: View {
             Circle()
                 .strokeBorder(Color.black.opacity(0.26), lineWidth: 1.4)
                 .frame(width: 19, height: 19)
+        }
+    }
+}
+
+private extension Product {
+    var subscriptionDisplaySuffix: String {
+        guard let subscription else { return "" }
+        return subscription.subscriptionPeriod.displaySuffix
+    }
+
+    var renewalSummary: String {
+        guard let subscription else { return "Renews automatically" }
+        return "Renews \(subscription.subscriptionPeriod.displayName.lowercased())"
+    }
+}
+
+private extension Product.SubscriptionPeriod {
+    var displaySuffix: String {
+        if value == 1 {
+            return "/\(unit.singularName)"
+        }
+        return "every \(value) \(unit.pluralName)"
+    }
+
+    var displayName: String {
+        if value == 1 {
+            return unit.adverbName
+        }
+        return "every \(value) \(unit.pluralName)"
+    }
+}
+
+private extension Product.SubscriptionPeriod.Unit {
+    var singularName: String {
+        switch self {
+        case .day: "day"
+        case .week: "week"
+        case .month: "month"
+        case .year: "year"
+        @unknown default: "period"
+        }
+    }
+
+    var pluralName: String {
+        switch self {
+        case .day: "days"
+        case .week: "weeks"
+        case .month: "months"
+        case .year: "years"
+        @unknown default: "periods"
+        }
+    }
+
+    var adverbName: String {
+        switch self {
+        case .day: "daily"
+        case .week: "weekly"
+        case .month: "monthly"
+        case .year: "yearly"
+        @unknown default: "automatically"
         }
     }
 }

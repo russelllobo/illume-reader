@@ -2,3 +2,4 @@ version: 1
 bundleID: com.illumereader.ios
 infoPath: Info.plist
 iconPath: Resources/AppIcon.png
+entitlementsPath: Entitlements.plist

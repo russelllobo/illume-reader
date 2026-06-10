@@ -53,14 +53,6 @@ const parseISO8601Duration = (duration: string) => {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 };
 
-const formatViews = (views: string | number | undefined) => {
-  const count = Number(views);
-  if (Number.isNaN(count) || count <= 0) return "No views";
-  if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M views`;
-  if (count >= 1000) return `${(count / 1000).toFixed(1)}K views`;
-  return `${count} views`;
-};
-
 const formatTimeAgo = (dateStr: string | undefined) => {
   if (!dateStr) return "";
   const date = new Date(dateStr);
@@ -171,14 +163,14 @@ Deno.serve(async (req) => {
           comments: video.statistics?.commentCount ?? "0",
           duration: parseISO8601Duration(video.contentDetails?.duration),
           likes: video.statistics?.likeCount ?? "0",
-          views: formatViews(video.statistics?.viewCount)
+          views: video.statistics?.viewCount ?? "0"
         });
       });
     }
 
     const videos = items.map((item: any) => {
       const videoId = item.contentDetails?.videoId;
-      const stats = statsMap.get(videoId) ?? { comments: "0", duration: "10:00", likes: "0", views: "No views" };
+      const stats = statsMap.get(videoId) ?? { comments: "0", duration: "10:00", likes: "0", views: "0" };
 
       return {
         comments: stats.comments,

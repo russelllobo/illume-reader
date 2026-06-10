@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>illume</string>
+	<string>illume reader</string>
 	<key>CFBundleName</key>
-	<string>illume</string>
+	<string>illume reader</string>
 	<key>CFBundleIconName</key>
 	<string>AppIcon</string>
 	<key>UIDesignRequiresCompatibility</key>

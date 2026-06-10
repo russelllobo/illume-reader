@@ -37,7 +37,20 @@ Google sign-in uses Supabase hosted OAuth with an iOS callback scheme. Enable Go
 </array>
 ```
 
-The same callback URL, `com.illumereader.ios://auth-callback`, must be allowed in Supabase Auth redirect URLs.
+The same callback URL, `com.illumereader.ios://auth-callback`, must be allowed in Supabase Auth redirect URLs. The production Site URL can remain `https://illumereader.com`; the native callback still needs to be present in the additional redirect allow list so Supabase does not fall back to the web app after Google sign-in.
+
+## Apple Sign-In
+
+Apple sign-in uses the native iOS Authentication Services flow, then exchanges Apple's ID token with Supabase using the `id_token` grant. The app is signed with `Entitlements.plist`, which enables:
+
+```xml
+<key>com.apple.developer.applesignin</key>
+<array>
+  <string>Default</string>
+</array>
+```
+
+In Apple Developer, create or update the App ID for `com.illumereader.ios` and enable the Sign in with Apple capability. In Supabase Auth, enable the Apple provider and include the app bundle ID as an Apple client ID for native sign-in.
 
 ## Local Checks
 
@@ -60,3 +73,5 @@ supabase secrets set \
 ```
 
 For sandbox-only local testing, `APPLE_DISABLE_SIGNATURE_VERIFICATION=true` bypasses JWS certificate verification. Do not use that bypass in production.
+
+Account deletion uses the shared Supabase `delete-account` edge function. Deploy it with the other reader functions before App Review testing.

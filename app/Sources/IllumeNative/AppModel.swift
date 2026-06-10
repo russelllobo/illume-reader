@@ -6,6 +6,7 @@ import Foundation
 import IllumeCore
 import MediaPlayer
 import Security
+import Supabase
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
@@ -64,6 +65,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
     @Published var isLibraryLoaded = false
     @Published var isLoading = false
     @Published var isImporting = false
+    @Published var isDeletingAccount = false
     @Published var importingClassicID: String?
     @Published var authMode: AuthMode = .signIn
     @Published var notice = ""
@@ -121,7 +123,6 @@ final class IllumeAppModel: NSObject, ObservableObject {
     private var narrationRateSnapshot = 1.0
     private var progressTask: Task<Void, Never>?
     private var appleContinuation: CheckedContinuation<AuthSession, Error>?
-    private var googleWebAuthSession: ASWebAuthenticationSession?
     private var appleNonce = ""
     private var bookTransitionFrames: [UUID: CGRect] = [:]
     private var continueBookTransitionFrame: CGRect?
@@ -297,8 +298,10 @@ final class IllumeAppModel: NSObject, ObservableObject {
             apply(session: next)
             isLibraryLoaded = false
             await reload()
-        } catch {
+        } catch let error as ASAuthorizationError where error.code == .canceled {
             notice = "Apple sign in was cancelled."
+        } catch {
+            notice = error.localizedDescription
         }
     }
 
@@ -314,9 +317,26 @@ final class IllumeAppModel: NSObject, ObservableObject {
     }
 
     func signOut() {
+        clearLocalAccountState(removePersistentCaches: false)
+    }
+
+    func deleteAccount() async {
+        guard let accessToken = session?.accessToken, !isDeletingAccount else { return }
+        isDeletingAccount = true
+        notice = ""
+        do {
+            try await backend.deleteAccount(accessToken: accessToken)
+            clearLocalAccountState(removePersistentCaches: true)
+        } catch {
+            notice = error.localizedDescription
+        }
+        isDeletingAccount = false
+    }
+
+    private func clearLocalAccountState(removePersistentCaches: Bool) {
         stopSpeaking()
-        googleWebAuthSession?.cancel()
-        googleWebAuthSession = nil
+        voicePreviewTask?.cancel()
+        voicePreviewTask = nil
         readerImageGenerationTask?.cancel()
         readerImageGenerationTask = nil
         KeychainStore.deleteSession()
@@ -332,6 +352,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
         billingProfile = nil
         readerImageUsage = nil
         readerImageRowCount = 0
+        clearPrefetchedNarration()
         cancelReaderImagePrefetchTasks()
         readerImageResponse = nil
         readerImageChunkIndex = nil
@@ -343,6 +364,10 @@ final class IllumeAppModel: NSObject, ObservableObject {
         importingClassicID = nil
         uploadedBookNoticeTask?.cancel()
         uploadedBookNoticeTask = nil
+        clearNarrationAudioCache()
+        if removePersistentCaches {
+            clearPersistentAccountCaches()
+        }
     }
 
     func reload() async {
@@ -2202,6 +2227,18 @@ final class IllumeAppModel: NSObject, ObservableObject {
         }
     }
 
+    private func clearPersistentAccountCaches() {
+        let fileManager = FileManager.default
+        [
+            Self.persistentNarrationAudioCacheDirectory(),
+            Self.parsedReaderBookCacheDirectory(),
+        ].forEach { url in
+            try? fileManager.removeItem(at: url)
+        }
+        UserDefaults.standard.removeObject(forKey: narrationResumePointsDefaultsKey)
+        URLCache.shared.removeAllCachedResponses()
+    }
+
     private func stopPlayback(keepNarrationState: Bool) {
         if let audioTimeObserver {
             audioPlayer?.removeTimeObserver(audioTimeObserver)
@@ -3988,7 +4025,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
         return try await withCheckedThrowingContinuation { continuation in
             appleContinuation = continuation
             let request = ASAuthorizationAppleIDProvider().createRequest()
-            request.requestedScopes = [.email]
+            request.requestedScopes = [.fullName, .email]
             request.nonce = sha256(nonce)
             let controller = ASAuthorizationController(authorizationRequests: [request])
             controller.delegate = self
@@ -3998,66 +4035,19 @@ final class IllumeAppModel: NSObject, ObservableObject {
     }
 
     private func performGoogleSignIn() async throws -> AuthSession {
-        let callbackScheme = "com.illumereader.ios"
-        let callbackURL = "\(callbackScheme)://auth-callback"
-        guard var components = URLComponents(url: SupabaseConfig().url.appending(path: "/auth/v1/authorize"), resolvingAgainstBaseURL: false) else {
-            throw AuthSetupError.googleAuthorizeURLInvalid
-        }
-        components.queryItems = [
-            URLQueryItem(name: "provider", value: "google"),
-            URLQueryItem(name: "redirect_to", value: callbackURL)
-        ]
-        guard let authorizeURL = components.url else {
-            throw AuthSetupError.googleAuthorizeURLInvalid
-        }
-
-        let callback: URL = try await withCheckedThrowingContinuation { continuation in
-            let session = ASWebAuthenticationSession(url: authorizeURL, callbackURLScheme: callbackScheme) { url, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                    return
-                }
-                guard let url else {
-                    continuation.resume(throwing: AuthSetupError.googleCallbackMissing)
-                    return
-                }
-                continuation.resume(returning: url)
-            }
+        let supabaseSession = try await backend.client.auth.signInWithOAuth(
+            provider: .google,
+            redirectTo: SupabaseConfig().oauthRedirectURL
+        ) { [weak self] session in
             session.presentationContextProvider = self
-            googleWebAuthSession = session
-            if !session.start() {
-                continuation.resume(throwing: AuthSetupError.googleSessionStartFailed)
-            }
         }
-        googleWebAuthSession = nil
-
-        let params = oauthParameters(from: callback)
-        if let errorDescription = params["error_description"] ?? params["error"] {
-            throw AuthSetupError.googleOAuthFailed(errorDescription)
-        }
-        guard let accessToken = params["access_token"] else {
-            throw AuthSetupError.googleAccessTokenMissing
-        }
-        let user = try await backend.loadUser(accessToken: accessToken)
         return AuthSession(
-            accessToken: accessToken,
-            refreshToken: params["refresh_token"],
-            expiresIn: params["expires_in"].flatMap(Int.init),
-            tokenType: params["token_type"],
-            user: user
+            accessToken: supabaseSession.accessToken,
+            refreshToken: supabaseSession.refreshToken,
+            expiresIn: Int(supabaseSession.expiresIn),
+            tokenType: supabaseSession.tokenType,
+            user: AuthUser(id: supabaseSession.user.id, email: supabaseSession.user.email)
         )
-    }
-
-    private func oauthParameters(from url: URL) -> [String: String] {
-        var params: [String: String] = [:]
-        URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.forEach {
-            params[$0.name] = $0.value
-        }
-        if let fragment = url.fragment,
-           let fragmentItems = URLComponents(string: "?\(fragment)")?.queryItems {
-            fragmentItems.forEach { params[$0.name] = $0.value }
-        }
-        return params
     }
 
     private func randomNonce(length: Int = 32) -> String {
@@ -4082,29 +4072,6 @@ final class IllumeAppModel: NSObject, ObservableObject {
     }
 }
 
-private enum AuthSetupError: LocalizedError {
-    case googleAccessTokenMissing
-    case googleAuthorizeURLInvalid
-    case googleCallbackMissing
-    case googleOAuthFailed(String)
-    case googleSessionStartFailed
-
-    var errorDescription: String? {
-        switch self {
-        case .googleAccessTokenMissing:
-            return "Google sign in did not return an access token."
-        case .googleAuthorizeURLInvalid:
-            return "Google sign in could not build the Supabase authorization URL."
-        case .googleCallbackMissing:
-            return "Google sign in did not return to the app."
-        case .googleOAuthFailed(let message):
-            return message
-        case .googleSessionStartFailed:
-            return "Google sign in could not start."
-        }
-    }
-}
-
 extension IllumeAppModel: ASAuthorizationControllerDelegate {
     nonisolated func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
         Task { @MainActor in
@@ -4121,6 +4088,7 @@ extension IllumeAppModel: ASAuthorizationControllerDelegate {
             } catch {
                 appleContinuation?.resume(throwing: error)
             }
+            appleNonce = ""
             appleContinuation = nil
         }
     }
@@ -4128,6 +4096,7 @@ extension IllumeAppModel: ASAuthorizationControllerDelegate {
     nonisolated func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
         Task { @MainActor in
             appleContinuation?.resume(throwing: error)
+            appleNonce = ""
             appleContinuation = nil
         }
     }

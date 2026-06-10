@@ -14,6 +14,10 @@ final class BillingService: ObservableObject {
     private let productIds = [BillingAccess.appleProductId]
     private var updatesTask: Task<Void, Never>?
 
+    var proProduct: Product? {
+        products.first { $0.id == BillingAccess.appleProductId }
+    }
+
     init(backend: SupabaseBackend) {
         self.backend = backend
         updatesTask = listenForTransactions()
@@ -26,15 +30,16 @@ final class BillingService: ObservableObject {
     func loadProducts() async {
         do {
             products = try await Product.products(for: productIds)
+            message = proProduct == nil ? "Illume Pro is not available in this storefront yet." : ""
         } catch {
             message = "Could not load Pro."
         }
     }
 
     func purchase(accessToken: String) async throws {
-        guard let product = products.first else {
+        guard let product = proProduct else {
             await loadProducts()
-            guard let product = products.first else { throw StoreKitError.notAvailableInStorefront }
+            guard let product = proProduct else { throw StoreKitError.notAvailableInStorefront }
             try await purchase(product: product, accessToken: accessToken)
             return
         }

@@ -140,6 +140,14 @@ const weeklyViewTallies = (rows: Array<Record<string, any>>, startDate: string, 
   return tallies;
 };
 
+const chunks = <T,>(items: T[], size: number) => {
+  const groups: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    groups.push(items.slice(index, index + size));
+  }
+  return groups;
+};
+
 const refreshAccessToken = async (refreshToken: string) => {
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
@@ -179,7 +187,6 @@ Deno.serve(async (req) => {
     const requestedVideoIds = Array.isArray(payload.videoIds)
       ? payload.videoIds
         .filter((id: unknown): id is string => typeof id === "string" && /^[\w-]+$/.test(id))
-        .slice(0, 50)
       : [];
 
     if (payload.action === "store") {
@@ -219,23 +226,32 @@ Deno.serve(async (req) => {
     const dailyRows = (dailyReport.rows ?? []).map((row: unknown[]) => rowObject(dailyReport.columnHeaders ?? [], row));
     const availableEndDate = latestRowDate(dailyRows, common.endDate);
 
-    const videoReportQuery: Record<string, string> = {
-      ...common,
-      dimensions: "video",
-      maxResults: String(Math.max(5, requestedVideoIds.length)),
-      metrics: "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,subscribersLost,engagedViews",
-      sort: "-views"
-    };
-    if (requestedVideoIds.length) {
-      videoReportQuery.filters = `video==${requestedVideoIds.join(",")}`;
-    }
+    const videoMetrics = "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,subscribersLost,engagedViews";
+    const loadVideoRows = async (ids: string[]) => {
+      const videoReportQuery: Record<string, string> = {
+        ...common,
+        dimensions: "video",
+        maxResults: String(Math.max(5, ids.length || 200)),
+        metrics: videoMetrics,
+        sort: "-views"
+      };
+      if (ids.length) {
+        videoReportQuery.filters = `video==${ids.join(",")}`;
+      }
 
-    const topVideosReport = await analyticsRequest(accessToken, videoReportQuery);
-    const topVideos = (topVideosReport.rows ?? []).map((row: unknown[]) => ({
-      ...rowObject(topVideosReport.columnHeaders ?? [], row),
-      impressions: null,
-      impressionsClickThroughRate: null
-    }));
+      const report = await analyticsRequest(accessToken, videoReportQuery);
+      return (report.rows ?? []).map((row: unknown[]) => ({
+        ...rowObject(report.columnHeaders ?? [], row),
+        impressions: null,
+        impressionsClickThroughRate: null
+      }));
+    };
+
+    const topVideos = requestedVideoIds.length
+      ? (await Promise.all(chunks(requestedVideoIds, 50).map(loadVideoRows)))
+        .flat()
+        .sort((left, right) => Number(right.views ?? 0) - Number(left.views ?? 0))
+      : await loadVideoRows([]);
 
     return jsonResponse({
       channel: connection?.channel_handle || channelHandle,

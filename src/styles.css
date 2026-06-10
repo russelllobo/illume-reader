@@ -10667,6 +10667,27 @@ html[data-color-scheme] .library-upgrade-button {
   border-left: 2px solid #38bdf8;
 }
 
+.expanded-view-metric {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 118px;
+}
+
+.expanded-view-likes {
+  color: #9fb7cf;
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.expanded-view-views {
+  color: inherit;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .combined-performance-content-cell {
   min-width: 340px;
   max-width: 460px;

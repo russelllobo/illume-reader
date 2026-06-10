@@ -8,6 +8,7 @@ import Supabase
 struct SupabaseConfig: Sendable {
     let url = URL(string: "https://mduemjbplprditrqolcp.supabase.co")!
     let publishableKey = "sb_publishable_rvlRgP3T8YCdMHlgh6-cbA_vNS7hJOT"
+    let oauthRedirectURL = URL(string: "com.illumereader.ios://auth-callback")!
     let storageQuotaBytes = IllumeLimits.defaultUserStorageQuotaBytes
 }
 
@@ -99,7 +100,11 @@ final class SupabaseBackend: @unchecked Sendable {
         self.config = config
         self.session = session
         #if os(iOS)
-        self.client = SupabaseClient(supabaseURL: config.url, supabaseKey: config.publishableKey)
+        self.client = SupabaseClient(
+            supabaseURL: config.url,
+            supabaseKey: config.publishableKey,
+            options: .init(auth: .init(redirectToURL: config.oauthRedirectURL))
+        )
         #endif
     }
 
@@ -274,6 +279,14 @@ final class SupabaseBackend: @unchecked Sendable {
         )
     }
 
+    func deleteAccount(accessToken: String) async throws {
+        let _: EmptyResponse = try await invoke(
+            function: "delete-account",
+            accessToken: accessToken,
+            body: EmptyRequest()
+        )
+    }
+
     func queuePdfProcessing(bookId: UUID, accessToken: String) async throws {
         let _: EmptyResponse = try await invoke(
             function: "process-reader-document",
@@ -402,6 +415,8 @@ final class SupabaseBackend: @unchecked Sendable {
 }
 
 struct EmptyResponse: Codable {}
+
+struct EmptyRequest: Codable {}
 
 private struct BookTitlePayload: Encodable {
     let title: String

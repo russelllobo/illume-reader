@@ -41,6 +41,7 @@ supabase functions deploy reader-dashboard
 supabase functions deploy youtube-token-exchange --no-verify-jwt
 supabase functions deploy youtube-feed
 supabase functions deploy youtube-analytics
+supabase functions deploy instagram-token-exchange
 supabase functions deploy instagram-feed
 ```
 
@@ -98,6 +99,7 @@ Deploy the functions:
 ```bash
 supabase functions deploy create-checkout-session
 supabase functions deploy create-billing-portal
+supabase functions deploy delete-account
 supabase functions deploy stripe-webhook --no-verify-jwt
 ```
 
