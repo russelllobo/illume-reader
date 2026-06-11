@@ -9,11 +9,13 @@
 /* Begin PBXBuildFile section */
 		4D666B96ED12A32D9AF2F4FD /* empty.c in Sources */ = {isa = PBXBuildFile; fileRef = 8EC6D33443714F79D89EDB98 /* empty.c */; };
 		7B7979A507AF4AE2B1033FA4 /* IllumeNative in Frameworks */ = {isa = PBXBuildFile; productRef = 8F8C1E084A66315B72500D8B /* IllumeNative */; };
+		9E1111111111111111111111 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 9E1111111111111111111110 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		6D031DC66BEE70F7E66CC5FF /* IllumeNative-App.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "IllumeNative-App.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		8EC6D33443714F79D89EDB98 /* empty.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = empty.c; sourceTree = "<group>"; };
+		9E1111111111111111111110 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -40,6 +42,7 @@
 			isa = PBXGroup;
 			children = (
 				8EC6D33443714F79D89EDB98 /* empty.c */,
+				9E1111111111111111111110 /* Assets.xcassets */,
 			);
 			path = IllumeNative;
 			sourceTree = "<group>";
@@ -61,6 +64,7 @@
 			buildPhases = (
 				54DBE69F0D2A267DE7858ECA /* Sources */,
 				F0842581C7B20D56D2D04742 /* Frameworks */,
+				9E2222222222222222222222 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -107,6 +111,17 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXResourcesBuildPhase section */
+		9E2222222222222222222222 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9E1111111111111111111111 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		54DBE69F0D2A267DE7858ECA /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -124,7 +139,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = ../../Entitlements.plist;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_IDENTITY = "Apple Distribution";
 				INFOPLIST_FILE = IllumeNative/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -142,7 +157,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = ../../Entitlements.plist;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_IDENTITY = "Apple Development";
 				INFOPLIST_FILE = IllumeNative/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (

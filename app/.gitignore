@@ -7,6 +7,9 @@ Package.pins
 
 # Xcode
 DerivedData/
+.derivedData/
+.xcode-source-packages/
+build/
 *.xcuserstate
 xcuserdata/
 *.xcscmblueprint
@@ -19,3 +22,4 @@ xtool/*.ipa
 # Local environment files
 .env
 .env.*
+AuthKey_*.p8
