@@ -300,6 +300,8 @@ final class IllumeAppModel: NSObject, ObservableObject {
             await reload()
         } catch let error as ASAuthorizationError where error.code == .canceled {
             notice = "Apple sign in was cancelled."
+        } catch let error as ASAuthorizationError {
+            notice = appleSignInNotice(for: error)
         } catch {
             notice = error.localizedDescription
         }
@@ -4031,6 +4033,35 @@ final class IllumeAppModel: NSObject, ObservableObject {
             controller.delegate = self
             controller.presentationContextProvider = self
             controller.performRequests()
+        }
+    }
+
+    private func appleSignInNotice(for error: ASAuthorizationError) -> String {
+        switch error.code {
+        case .unknown:
+            return "Apple sign in failed because iOS could not authorize this app. Check that the signed provisioning profile includes the Sign in with Apple entitlement."
+        case .canceled:
+            return "Apple sign in was cancelled."
+        case .failed:
+            return "Apple sign in failed. Check that Sign in with Apple is enabled for this app identifier in Apple Developer."
+        case .invalidResponse:
+            return "Apple sign in returned an invalid response."
+        case .notHandled:
+            return "Apple sign in was not handled by the system."
+        case .notInteractive:
+            return "Apple sign in cannot be shown right now."
+        case .matchedExcludedCredential:
+            return "Apple sign in matched an excluded credential."
+        case .credentialImport:
+            return "Apple sign in could not import the credential."
+        case .credentialExport:
+            return "Apple sign in could not export the credential."
+        case .preferSignInWithApple:
+            return "Apple sign in should be used for this account."
+        case .deviceNotConfiguredForPasskeyCreation:
+            return "This device is not configured for passkey creation."
+        @unknown default:
+            return error.localizedDescription
         }
     }
 

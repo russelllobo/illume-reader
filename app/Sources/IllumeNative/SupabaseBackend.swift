@@ -9,7 +9,7 @@ struct SupabaseConfig: Sendable {
     let url = URL(string: "https://mduemjbplprditrqolcp.supabase.co")!
     let publishableKey = "sb_publishable_rvlRgP3T8YCdMHlgh6-cbA_vNS7hJOT"
     let oauthBridgeRedirectURL = URL(string: "https://illumereader.com/auth/native-callback")!
-    let oauthRedirectURL = URL(string: "com.illumereader.ios://auth-callback")!
+    let oauthRedirectURL = URL(string: "com.russellsystems.illume://auth-callback")!
     let storageQuotaBytes = IllumeLimits.defaultUserStorageQuotaBytes
 }
 

@@ -1,5 +1,5 @@
 version: 1
-bundleID: com.illumereader.ios
+bundleID: com.russellsystems.illume
 infoPath: Info.plist
 iconPath: Resources/AppIcon.png
 entitlementsPath: Entitlements.plist

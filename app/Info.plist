@@ -19,7 +19,7 @@
 		<dict>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>com.illumereader.ios</string>
+				<string>com.russellsystems.illume</string>
 			</array>
 		</dict>
 	</array>

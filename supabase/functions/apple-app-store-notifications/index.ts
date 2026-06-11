@@ -63,7 +63,7 @@ const environmentFor = (value?: string) =>
   value === "Production" ? Environment.PRODUCTION : Environment.SANDBOX;
 
 const verifierFor = (environment?: string) => {
-  const bundleId = optionalEnv("APPLE_BUNDLE_ID") || "com.illumereader.ios";
+  const bundleId = optionalEnv("APPLE_BUNDLE_ID") || "com.russellsystems.illume";
   const appAppleId = Number(optionalEnv("APPLE_APP_APPLE_ID") || "0") ||
     undefined;
   const roots = certBytesFromEnv();

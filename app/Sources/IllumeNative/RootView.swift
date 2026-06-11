@@ -2272,6 +2272,8 @@ struct ProUpgradeSheet: View {
     @EnvironmentObject private var app: IllumeAppModel
     @Environment(\.dismiss) private var dismiss
     @State private var proProduct: Product?
+    @State private var isLoadingProduct = false
+    @State private var hasLoadedProduct = false
     @State private var productMessage = ""
     let prompt: ProUpgradePrompt
 
@@ -2337,7 +2339,7 @@ struct ProUpgradeSheet: View {
                                 .background(.white.opacity(0.18))
                                 .padding(.top, 18)
 
-                            ProPlanOptions(product: proProduct)
+                            ProPlanOptions(product: proProduct, isLoading: isLoadingProduct, hasLoaded: hasLoadedProduct)
                                 .padding(.top, 18)
                                 .padding(.bottom, max(28, proxy.safeAreaInsets.bottom + 12))
                         }
@@ -2350,12 +2352,8 @@ struct ProUpgradeSheet: View {
         .preferredColorScheme(.dark)
         .onAppear {
             app.pauseNarration()
-            proProduct = app.billing.proProduct
-            productMessage = app.billing.message
             Task {
-                await app.billing.loadProducts()
-                proProduct = app.billing.proProduct
-                productMessage = app.billing.message
+                await refreshProProduct()
             }
         }
     }
@@ -2399,6 +2397,21 @@ struct ProUpgradeSheet: View {
         }
     }
 
+    private func syncProductState() {
+        proProduct = app.billing.proProduct
+        productMessage = app.billing.message
+        hasLoadedProduct = app.billing.hasLoadedProducts
+        isLoadingProduct = app.billing.isLoadingProducts
+    }
+
+    private func refreshProProduct() async {
+        syncProductState()
+        guard proProduct == nil else { return }
+        isLoadingProduct = true
+        await app.billing.loadProducts()
+        syncProductState()
+    }
+
     @ViewBuilder
     private var primaryAction: some View {
         if prompt.isPro {
@@ -2414,17 +2427,32 @@ struct ProUpgradeSheet: View {
         } else {
             Button {
                 Task {
-                    await app.purchasePro()
-                    if app.isPro {
-                        dismiss()
+                    if proProduct == nil {
+                        await refreshProProduct()
+                    } else {
+                        await app.purchasePro()
+                        syncProductState()
+                        if app.isPro {
+                            dismiss()
+                        }
                     }
                 }
             } label: {
-                ProPrimaryButtonLabel(title: proProduct == nil ? "Loading price" : "Continue", systemName: "arrow.right")
+                ProPrimaryButtonLabel(title: primaryActionTitle, systemName: primaryActionIcon)
             }
             .buttonStyle(LiquidLiftButtonStyle())
-            .disabled(proProduct == nil)
+            .disabled(isLoadingProduct)
         }
+    }
+
+    private var primaryActionTitle: String {
+        if proProduct != nil { return "Continue" }
+        return isLoadingProduct ? "Loading price" : "Retry"
+    }
+
+    private var primaryActionIcon: String {
+        if proProduct != nil { return "arrow.right" }
+        return isLoadingProduct ? "hourglass" : "arrow.clockwise"
     }
 }
 
@@ -2552,17 +2580,35 @@ private struct ProPrimaryButtonLabel: View {
 
 private struct ProPlanOptions: View {
     let product: Product?
+    let isLoading: Bool
+    let hasLoaded: Bool
 
     var body: some View {
         VStack(spacing: 10) {
             ProPlanCard(
                 title: product?.displayName ?? "Monthly Illume Pro",
-                price: product.map { "\($0.displayPrice) \($0.subscriptionDisplaySuffix)" } ?? "Loading StoreKit price",
-                detail: product.map { "\($0.renewalSummary). Includes \(IllumeLimits.proReaderImageMonthlyLimit.formatted()) AI illustrations per month." } ?? "Fetching the App Store subscription details.",
+                price: price,
+                detail: detail,
                 badge: "Your Plan",
                 isSelected: true
             )
         }
+    }
+
+    private var price: String {
+        if let product {
+            return "\(product.displayPrice) \(product.subscriptionDisplaySuffix)"
+        }
+        return isLoading || !hasLoaded ? "Loading StoreKit price" : "App Store price unavailable"
+    }
+
+    private var detail: String {
+        if let product {
+            return "\(product.renewalSummary). Includes \(IllumeLimits.proReaderImageMonthlyLimit.formatted()) AI illustrations per month."
+        }
+        return isLoading || !hasLoaded
+            ? "Fetching the App Store subscription details."
+            : "Check the App Store Connect subscription setup, then retry."
     }
 }
 

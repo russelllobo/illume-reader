@@ -71,7 +71,7 @@ const verifyTransaction = async (signedTransactionInfo: string) => {
   const decoded = decodeJwsPayload<AppleTransactionPayload>(
     signedTransactionInfo,
   );
-  const bundleId = optionalEnv("APPLE_BUNDLE_ID") || "com.illumereader.ios";
+  const bundleId = optionalEnv("APPLE_BUNDLE_ID") || "com.russellsystems.illume";
   const appAppleId = Number(optionalEnv("APPLE_APP_APPLE_ID") || "0") ||
     undefined;
   const rootCertificates = certBytesFromEnv();

@@ -2,7 +2,7 @@
 
 const REDIRECT_HOSTS = new Set(["illume.russell.systems", "russell.systems"]);
 const CANONICAL_ORIGIN = "https://illumereader.com";
-const IOS_AUTH_CALLBACK = "com.illumereader.ios://auth-callback";
+const IOS_AUTH_CALLBACK = "com.russellsystems.illume://auth-callback";
 
 export async function onRequest(context) {
   const url = new URL(context.request.url);

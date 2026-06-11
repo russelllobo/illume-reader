@@ -6,6 +6,8 @@ import StoreKit
 @MainActor
 final class BillingService: ObservableObject {
     @Published var products: [Product] = []
+    @Published var isLoadingProducts = false
+    @Published var hasLoadedProducts = false
     @Published var isPurchasing = false
     @Published var message = ""
     @Published var hasActiveProEntitlement = false
@@ -28,11 +30,20 @@ final class BillingService: ObservableObject {
     }
 
     func loadProducts() async {
+        isLoadingProducts = true
+        defer {
+            isLoadingProducts = false
+            hasLoadedProducts = true
+        }
+
         do {
             products = try await Product.products(for: productIds)
-            message = proProduct == nil ? "Illume Pro is not available in this storefront yet." : ""
+            message = proProduct == nil
+                ? "Illume Pro is not available from the App Store for this build yet."
+                : ""
         } catch {
-            message = "Could not load Pro."
+            products = []
+            message = "Could not load Illume Pro from the App Store. Check your connection and try again."
         }
     }
 

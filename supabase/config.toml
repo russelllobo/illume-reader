@@ -76,7 +76,7 @@ additional_redirect_urls = [
   "http://localhost:5173/**",
   "https://illumereader.com",
   "https://illumereader.com/auth/native-callback",
-  "com.illumereader.ios://auth-callback"
+  "com.russellsystems.illume://auth-callback"
 ]
 jwt_expiry = 3600
 enable_refresh_token_rotation = true
@@ -128,7 +128,7 @@ verify_enabled = false
 
 [auth.external.apple]
 enabled = true
-client_id = "com.illumereader.ios"
+client_id = "com.russellsystems.illume"
 secret = "env(SUPABASE_AUTH_EXTERNAL_APPLE_SECRET)"
 redirect_uri = ""
 url = ""

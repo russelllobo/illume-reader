@@ -31,13 +31,13 @@ Google sign-in uses Supabase hosted OAuth with an iOS callback scheme. Enable Go
   <dict>
     <key>CFBundleURLSchemes</key>
     <array>
-      <string>com.illumereader.ios</string>
+      <string>com.russellsystems.illume</string>
     </array>
   </dict>
 </array>
 ```
 
-Google OAuth asks Supabase to return through the HTTPS bridge `https://illumereader.com/auth/native-callback`, which immediately redirects into the native callback URL `com.illumereader.ios://auth-callback`. Both URLs must be allowed in Supabase Auth redirect URLs. The production Site URL can remain `https://illumereader.com`.
+Google OAuth asks Supabase to return through the HTTPS bridge `https://illumereader.com/auth/native-callback`, which immediately redirects into the native callback URL `com.russellsystems.illume://auth-callback`. Both URLs must be allowed in Supabase Auth redirect URLs. The production Site URL can remain `https://illumereader.com`.
 
 ## Apple Sign-In
 
@@ -50,7 +50,7 @@ Apple sign-in uses the native iOS Authentication Services flow, then exchanges A
 </array>
 ```
 
-In Apple Developer, create or update the App ID for `com.illumereader.ios` and enable the Sign in with Apple capability. In Supabase Auth, enable the Apple provider and include the app bundle ID as an Apple client ID for native sign-in.
+In Apple Developer, create or update the App ID for `com.russellsystems.illume` and enable the Sign in with Apple capability. In Supabase Auth, enable the Apple provider and include the app bundle ID as an Apple client ID for native sign-in.
 
 ## Local Checks
 
@@ -67,7 +67,7 @@ Deploy the new Supabase functions with these secrets configured:
 
 ```bash
 supabase secrets set \
-  APPLE_BUNDLE_ID=com.illumereader.ios \
+  APPLE_BUNDLE_ID=com.russellsystems.illume \
   APPLE_APP_APPLE_ID=<numeric-app-id> \
   APPLE_ROOT_CERTIFICATES_BASE64=<comma-separated-base64-der-certs>
 ```
