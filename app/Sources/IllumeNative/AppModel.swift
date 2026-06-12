@@ -11,7 +11,9 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-private let readerImageRequestChunkWords = 100
+private let readerImageRequestDefaultChunkWords = 100
+private let readerImageRequestMinimumChunkWords = 35
+private let readerImageRequestMaximumChunkWords = 180
 private let narrationChunkMinimumCharacters = 80
 private let narrationChunkMaximumCharacters = 220
 private let narrationChunkHardMaximumCharacters = 420
@@ -74,6 +76,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
     @Published var deletingBookIDs: Set<UUID> = []
     @Published var readerSettings = ReaderSettings()
     @Published var readerImageResponse: ReaderImageFunctionResponse?
+    @Published var readerImage: UIImage?
     @Published var readerImageChunkIndex: Int?
     @Published var readerImageStyle: ReaderImageStyle?
     @Published var readerImagePhase: ReaderImagePhase = .idle
@@ -91,6 +94,8 @@ final class IllumeAppModel: NSObject, ObservableObject {
     private var audioTimeTimer: Timer?
     private var narrationAudioURL: URL?
     private var voicePreviewPlayer: AVPlayer?
+    private let readerImageCache = NSCache<NSString, UIImage>()
+    private var readerImageDownloads: [String: Task<Data?, Never>] = [:]
     private var voicePreviewAudioURL: URL?
     private var voicePreviewEndObserver: NSObjectProtocol?
     private var voicePreviewFailedObserver: NSObjectProtocol?
@@ -357,6 +362,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
         clearPrefetchedNarration()
         cancelReaderImagePrefetchTasks()
         readerImageResponse = nil
+        readerImage = nil
         readerImageChunkIndex = nil
         readerImageStyle = nil
         readerImagePhase = .idle
@@ -592,7 +598,11 @@ final class IllumeAppModel: NSObject, ObservableObject {
                 try? await backend.queuePdfProcessing(bookId: inserted.id, accessToken: session.accessToken)
             }
 
-            if let chunk = Self.readerImageChunk(in: importedBook, currentIndex: inserted.currentIndex) {
+            if let chunk = Self.readerImageChunk(
+                in: importedBook,
+                currentIndex: inserted.currentIndex,
+                chunkWords: readerSettings.imageChunkWordCount
+            ) {
                 updatePendingImport(id: pendingImportID, progress: 94, statusText: "Generating visuals")
                 do {
                     try await preGenerateReaderImage(for: inserted, book: importedBook, chunk: chunk, accessToken: session.accessToken)
@@ -637,6 +647,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
             readerImageGenerationTask = nil
             cancelReaderImagePrefetchTasks()
             readerImageResponse = nil
+            readerImage = nil
             readerImageChunkIndex = nil
             readerImageStyle = nil
             readerImagePhase = .idle
@@ -739,6 +750,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
         isReaderPresented = false
         openingBook = nil
         readerImageResponse = nil
+        readerImage = nil
         readerImageChunkIndex = nil
         readerImageStyle = nil
         readerImagePhase = .idle
@@ -3251,6 +3263,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
             readerImageChunkIndex = chunkIndex
             readerImageStyle = style
             readerImageResponse = nil
+            readerImage = nil
             readerImagePhase = .generating
             let prefetchedResponse = await prefetchTask.value
             readerImagePrefetchTasks[prefetchKey] = nil
@@ -3262,7 +3275,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
                 readerImageResponse = prefetchedResponse
                 applyReaderImageCount(prefetchedResponse.imageCount, plan: prefetchedResponse.plan)
                 if prefetchedResponse.imageUrl != nil {
-                    await preloadReaderImageIfNeeded(prefetchedResponse.imageUrl)
+                    readerImage = await preparedReaderImageIfNeeded(prefetchedResponse.imageUrl)
                     readerImagePhase = .ready
                 } else if prefetchedResponse.limitReached == true {
                     handleReaderImageLimitReached(prefetchedResponse)
@@ -3275,6 +3288,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
         await runReaderImageTask { [self] in
             readerImageChunkIndex = chunkIndex
             readerImageStyle = style
+            readerImage = nil
             readerImagePhase = .checking
             let checkResponse = try await backend.invokeReaderImage(
                 ReaderImageFunctionRequest(
@@ -3295,7 +3309,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
             applyReaderImageCount(checkResponse.imageCount, plan: checkResponse.plan)
             if checkResponse.imageUrl != nil {
                 readerImageResponse = checkResponse
-                await preloadReaderImageIfNeeded(checkResponse.imageUrl)
+                readerImage = await preparedReaderImageIfNeeded(checkResponse.imageUrl)
                 readerImagePhase = .ready
                 return
             }
@@ -3325,7 +3339,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
             readerImageStyle = style
             applyReaderImageCount(generationResponse.imageCount, plan: generationResponse.plan)
             if generationResponse.imageUrl != nil {
-                await preloadReaderImageIfNeeded(generationResponse.imageUrl)
+                readerImage = await preparedReaderImageIfNeeded(generationResponse.imageUrl)
                 readerImagePhase = .ready
             } else if generationResponse.limitReached == true {
                 readerImagePhase = .error
@@ -3375,7 +3389,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
             }
             guard let response else { return }
             self.applyReaderImageCount(response.imageCount, plan: response.plan)
-            await self.preloadReaderImageIfNeeded(response.imageUrl)
+            await self.preparedReaderImageIfNeeded(response.imageUrl)
             if response.imageCount == nil,
                let usage = try? await self.backend.loadReaderImageUsage(accessToken: accessToken) {
                 self.readerImageUsage = usage
@@ -3397,7 +3411,11 @@ final class IllumeAppModel: NSObject, ObservableObject {
         row: BookRow,
         accessToken: String
     ) async -> PendingReaderImageGeneration? {
-        guard let chunk = Self.readerImageChunk(in: book, currentIndex: row.currentIndex) else { return nil }
+        guard let chunk = Self.readerImageChunk(
+            in: book,
+            currentIndex: row.currentIndex,
+            chunkWords: readerSettings.imageChunkWordCount
+        ) else { return nil }
         let style = readerSettings.imageStyle
         let request = ReaderImageFunctionRequest(
             author: book.author,
@@ -3416,12 +3434,14 @@ final class IllumeAppModel: NSObject, ObservableObject {
         await runReaderImageTask { [self] in
             readerImageChunkIndex = chunk.index
             readerImageStyle = style
+            readerImage = nil
             readerImagePhase = .checking
             let checkResponse = try await backend.invokeReaderImage(request, accessToken: accessToken)
             applyReaderImageCount(checkResponse.imageCount, plan: checkResponse.plan)
 
             if checkResponse.imageUrl != nil {
                 readerImageResponse = checkResponse
+                readerImage = await preparedReaderImageIfNeeded(checkResponse.imageUrl)
                 readerImagePhase = .ready
                 return
             }
@@ -3431,6 +3451,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
             }
 
             readerImageResponse = nil
+            readerImage = nil
             readerImagePhase = .generating
             pendingGeneration = PendingReaderImageGeneration(chunk: chunk, style: style)
         }
@@ -3492,6 +3513,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
             readerImageResponse = generationResponse
             applyReaderImageCount(generationResponse.imageCount, plan: generationResponse.plan)
             if generationResponse.imageUrl != nil {
+                readerImage = await preparedReaderImageIfNeeded(generationResponse.imageUrl)
                 readerImagePhase = .ready
             } else if generationResponse.limitReached == true {
                 readerImagePhase = .error
@@ -3504,14 +3526,56 @@ final class IllumeAppModel: NSObject, ObservableObject {
         }
     }
 
-    private func preloadReaderImageIfNeeded(_ imageUrl: String?) async {
-        guard let imageUrl,
-              !imageUrl.lowercased().hasPrefix("data:image/"),
-              let url = URL(string: imageUrl) else { return }
+    @discardableResult
+    private func preparedReaderImageIfNeeded(_ imageUrl: String?) async -> UIImage? {
+        guard let imageUrl else { return nil }
+        let key = imageUrl as NSString
+        if let cached = readerImageCache.object(forKey: key) {
+            return cached
+        }
 
-        _ = try? await withThrowingTaskGroup(of: Data?.self) { group in
+        let image: UIImage?
+        if imageUrl.lowercased().hasPrefix("data:image/") {
+            image = Self.dataURLImage(from: imageUrl)
+        } else {
+            image = await downloadedReaderImage(for: imageUrl)
+        }
+
+        if let image {
+            readerImageCache.setObject(image, forKey: key)
+        }
+        return image
+    }
+
+    private func downloadedReaderImage(for imageUrl: String) async -> UIImage? {
+        guard let url = URL(string: imageUrl) else { return nil }
+
+        let download: Task<Data?, Never>
+        if let inFlight = readerImageDownloads[imageUrl] {
+            download = inFlight
+        } else {
+            download = Task {
+                await Self.downloadReaderImageData(from: url)
+            }
+            readerImageDownloads[imageUrl] = download
+        }
+
+        guard let data = await download.value else {
+            readerImageDownloads[imageUrl] = nil
+            return nil
+        }
+        readerImageDownloads[imageUrl] = nil
+        return UIImage(data: data)
+    }
+
+    nonisolated private static func downloadReaderImageData(from url: URL) async -> Data? {
+        try? await withThrowingTaskGroup(of: Data?.self) { group in
             group.addTask {
-                let (data, _) = try await URLSession.shared.data(from: url)
+                let (data, response) = try await URLSession.shared.data(from: url)
+                guard let http = response as? HTTPURLResponse,
+                      (200..<300).contains(http.statusCode) else {
+                    return nil
+                }
                 return data
             }
             group.addTask {
@@ -3634,9 +3698,17 @@ final class IllumeAppModel: NSObject, ObservableObject {
         resolveMeaningfulStart(in: book, requestedIndex: 0, savedIndex: 0, savedPage: 1).index
     }
 
-    nonisolated private static func readerImageChunk(in book: ReaderBook, currentIndex: Int) -> ReaderImageRequestChunk? {
+    nonisolated private static func readerImageChunk(
+        in book: ReaderBook,
+        currentIndex: Int,
+        chunkWords requestedChunkWords: Int
+    ) -> ReaderImageRequestChunk? {
         guard !book.paragraphs.isEmpty else { return nil }
 
+        let chunkWordsLimit = min(
+            readerImageRequestMaximumChunkWords,
+            max(readerImageRequestMinimumChunkWords, requestedChunkWords)
+        )
         var chunks: [ReaderImageRequestChunk] = []
         var chunkWords: [String] = []
         var chunkStartWord = 1
@@ -3658,7 +3730,7 @@ final class IllumeAppModel: NSObject, ObservableObject {
                 continue
             }
             for word in words {
-                if chunkWords.count == readerImageRequestChunkWords {
+                if chunkWords.count == chunkWordsLimit {
                     let chunkIndex = chunks.count
                     chunks.append(
                         ReaderImageRequestChunk(
@@ -4162,6 +4234,22 @@ struct ReaderSettings: Equatable {
     var narrationRate: Double = 1.0
     var narrationVoice: String = KokoroNarrationVoice.bella.id
     var imageStyle: ReaderImageStyle = .cartoon
+    var imageChunkWords: Double = Double(readerImageRequestDefaultChunkWords)
+
+    var imageChunkWordCount: Int {
+        min(
+            readerImageRequestMaximumChunkWords,
+            max(readerImageRequestMinimumChunkWords, Int(imageChunkWords.rounded()))
+        )
+    }
+
+    var imageFrequencyLabel: String {
+        let words = imageChunkWordCount
+        if words <= readerImageRequestMinimumChunkWords + 5 {
+            return "Every screen"
+        }
+        return "\(words) words"
+    }
 }
 
 enum ReaderFontFamily: String, CaseIterable, Identifiable, Sendable {

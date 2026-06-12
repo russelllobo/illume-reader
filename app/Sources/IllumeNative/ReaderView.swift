@@ -3,7 +3,9 @@ import IllumeCore
 import SwiftUI
 import UIKit
 
-private let readerImageChunkWords = 100
+private let readerImageDefaultChunkWords = 100
+private let readerImageMinimumChunkWords = 35
+private let readerImageMaximumChunkWords = 180
 private let readerTypographyPanelLift: CGFloat = 190
 private let readerScrollSpaceName = "readerScroll"
 private let readerNarrationActiveWordTopBand: CGFloat = 0.30
@@ -88,6 +90,7 @@ private struct ReaderNarrationPreviewAnchor: Equatable {
 
 private struct ReaderImageChunkCache {
     let bookID: UUID?
+    let chunkWords: Int
     let firstParagraphID: String?
     let lastParagraphID: String?
     let paragraphCount: Int
@@ -96,6 +99,7 @@ private struct ReaderImageChunkCache {
 
     static let empty = ReaderImageChunkCache(
         bookID: nil,
+        chunkWords: readerImageDefaultChunkWords,
         firstParagraphID: nil,
         lastParagraphID: nil,
         paragraphCount: 0,
@@ -103,14 +107,19 @@ private struct ReaderImageChunkCache {
         chunks: []
     )
 
-    func matches(bookID: UUID?, book: ReaderBook) -> Bool {
+    func matches(bookID: UUID?, book: ReaderBook, chunkWords: Int) -> Bool {
         self.bookID == bookID
+            && self.chunkWords == chunkWords
             && paragraphCount == book.paragraphs.count
             && firstParagraphID == book.paragraphs.first?.id
             && lastParagraphID == book.paragraphs.last?.id
     }
 
-    static func build(bookID: UUID?, book: ReaderBook) -> ReaderImageChunkCache {
+    static func build(bookID: UUID?, book: ReaderBook, chunkWords requestedChunkWords: Int) -> ReaderImageChunkCache {
+        let chunkWordsLimit = min(
+            readerImageMaximumChunkWords,
+            max(readerImageMinimumChunkWords, requestedChunkWords)
+        )
         var paragraphWordStarts = Array(repeating: 0, count: book.paragraphs.count)
         var chunks: [ReaderImageChunk] = []
         var chunkWords: [String] = []
@@ -129,7 +138,7 @@ private struct ReaderImageChunkCache {
                 continue
             }
             for word in words {
-                if chunkWords.count == readerImageChunkWords {
+                if chunkWords.count == chunkWordsLimit {
                     let chunkIndex = chunks.count
                     chunks.append(
                         ReaderImageChunk(
@@ -161,6 +170,7 @@ private struct ReaderImageChunkCache {
 
         return ReaderImageChunkCache(
             bookID: bookID,
+            chunkWords: chunkWordsLimit,
             firstParagraphID: book.paragraphs.first?.id,
             lastParagraphID: book.paragraphs.last?.id,
             paragraphCount: book.paragraphs.count,
@@ -277,6 +287,7 @@ struct ReaderView: View {
                         ZStack(alignment: .top) {
                             ReaderImageTopPanel(
                                 urlString: app.readerImageResponse?.imageUrl,
+                                preparedImage: app.readerImage,
                                 phase: app.readerImagePhase,
                                 fillsReadingView: true,
                                 fullTextModeEnabled: imageReaderTextExpanded
@@ -528,6 +539,16 @@ struct ReaderView: View {
             scheduledImageChunkIndex = nil
             scheduleImageGeneration(for: book, delay: .zero)
         }
+        .onChange(of: app.readerSettings.imageChunkWords) {
+            guard imageModeEnabled, let book = app.activeBook else { return }
+            app.cancelReaderImagePrefetching()
+            imageChunkCache = .empty
+            scheduledImageChunkIndex = nil
+            app.readerImageResponse = nil
+            app.readerImage = nil
+            app.readerImagePhase = .idle
+            scheduleImageGeneration(for: book)
+        }
         .onChange(of: app.readerImagePhase) {
             guard app.readerImagePhase == .ready,
                   imageModeEnabled,
@@ -777,6 +798,7 @@ struct ReaderView: View {
             imageNarrationPreviewAnchor = nil
             revealReaderButtons()
             app.readerImageResponse = nil
+            app.readerImage = nil
             app.readerImagePhase = .idle
             app.readerImageStyle = nil
             app.cancelReaderImagePrefetching()
@@ -1469,8 +1491,9 @@ struct ReaderView: View {
     private func imageChunk(in book: ReaderBook) -> ReaderImageChunk? {
         guard !book.paragraphs.isEmpty else { return nil }
         let bookID = app.activeBookRow?.id
-        if !imageChunkCache.matches(bookID: bookID, book: book) {
-            imageChunkCache = ReaderImageChunkCache.build(bookID: bookID, book: book)
+        let chunkWords = app.readerSettings.imageChunkWordCount
+        if !imageChunkCache.matches(bookID: bookID, book: book, chunkWords: chunkWords) {
+            imageChunkCache = ReaderImageChunkCache.build(bookID: bookID, book: book, chunkWords: chunkWords)
         }
 
         let target = min(max(currentIndex, 0), book.paragraphs.count - 1)
@@ -1483,8 +1506,9 @@ struct ReaderView: View {
 
     private func nextImageChunk(after chunk: ReaderImageChunk, in book: ReaderBook) -> ReaderImageChunk? {
         let bookID = app.activeBookRow?.id
-        if !imageChunkCache.matches(bookID: bookID, book: book) {
-            imageChunkCache = ReaderImageChunkCache.build(bookID: bookID, book: book)
+        let chunkWords = app.readerSettings.imageChunkWordCount
+        if !imageChunkCache.matches(bookID: bookID, book: book, chunkWords: chunkWords) {
+            imageChunkCache = ReaderImageChunkCache.build(bookID: bookID, book: book, chunkWords: chunkWords)
         }
 
         let nextIndex = chunk.index + 1
@@ -3244,17 +3268,34 @@ struct ReaderImageStyleSheet: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(ReaderImageStyle.allCases, id: \.self) { style in
-                    Button {
-                        app.readerSettings.imageStyle = style
-                    } label: {
-                        ReaderImageStyleOption(
-                            style: style,
-                            isSelected: app.readerSettings.imageStyle == style
-                        )
+            VStack(alignment: .leading, spacing: 14) {
+                SliderRow(
+                    label: "Image Frequency",
+                    value: $app.readerSettings.imageChunkWords,
+                    range: Double(readerImageMinimumChunkWords)...Double(readerImageMaximumChunkWords),
+                    valueText: app.readerSettings.imageFrequencyLabel
+                )
+                .padding(.horizontal, 18)
+                .accessibilityHint("Lower values generate a new image more often. The minimum targets each short text screen.")
+
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Style")
+                        .font(IllumeTypography.sans(13, weight: .heavy))
+                        .foregroundStyle(TableOfContentsStyle.ink.opacity(0.58))
+                        .padding(.horizontal, 28)
+                        .padding(.bottom, 4)
+
+                    ForEach(ReaderImageStyle.allCases, id: \.self) { style in
+                        Button {
+                            app.readerSettings.imageStyle = style
+                        } label: {
+                            ReaderImageStyleOption(
+                                style: style,
+                                isSelected: app.readerSettings.imageStyle == style
+                            )
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
             }
             .padding(.top, 18)
@@ -3470,6 +3511,7 @@ private extension View {
 
 struct ReaderImageTopPanel: View {
     let urlString: String?
+    let preparedImage: UIImage?
     let phase: ReaderImagePhase
     var fillsReadingView = false
     var fullTextModeEnabled = false
@@ -3526,6 +3568,14 @@ struct ReaderImageTopPanel: View {
                 )
             } else if phase == .limitReached {
                 ReaderImageLimitView()
+            } else if let preparedImage {
+                ReaderDisplayedImage(
+                    image: Image(uiImage: preparedImage),
+                    contentMode: imageContentMode,
+                    addsBottomBlur: fillsReadingView,
+                    blurRadius: displayedImageBlurRadius
+                )
+                .blurLoadIn(radius: phase == .ready ? 13 : 0)
             } else if let urlString, Self.isDataImageURL(urlString) {
                 ReaderImageDataURLView(
                     dataURL: urlString,

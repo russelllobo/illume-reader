@@ -2589,6 +2589,7 @@ type TikTokVideoPreview = {
   comments?: number;
   duration: string;
   durationSeconds?: number;
+  embedUrl?: string;
   id: string;
   imageUrl: string;
   likes?: number;
@@ -2598,6 +2599,14 @@ type TikTokVideoPreview = {
   title: string;
   url?: string;
   views: number;
+};
+type DashboardVideoPlayer = {
+  duration?: string;
+  embedUrl?: string;
+  imageUrl?: string;
+  platform: "youtube" | "instagram" | "tiktok";
+  title: string;
+  url?: string;
 };
 
 const WEEKLY_DASHBOARD_START_DATE = "2026-05-18";
@@ -2624,6 +2633,59 @@ const parseViewCount = (views: string | number | null | undefined): number => {
   const parsed = Number(numericText);
   return Number.isFinite(parsed) ? Math.round(parsed * multiplier) : 0;
 };
+
+function VideoPlayerModal({ player, onClose }: { player: DashboardVideoPlayer; onClose: () => void }) {
+  useEffect(() => {
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  const iframeTitle = `${player.title} video player`;
+  const canEmbed = Boolean(player.embedUrl);
+  const canPlayDirect = player.platform === "instagram" && Boolean(player.url);
+
+  return (
+    <div className="video-player-backdrop" onClick={onClose} role="presentation">
+      <div className="video-player-dialog" aria-modal="true" role="dialog" aria-label={iframeTitle} onClick={(event) => event.stopPropagation()}>
+        <div className="video-player-header">
+          <div>
+            <span className={`video-player-platform ${player.platform}`}>{player.platform}</span>
+            <h3>{player.title}</h3>
+          </div>
+          <button className="video-player-close" onClick={onClose} type="button" aria-label="Close video player">
+            <X size={18} aria-hidden="true" />
+          </button>
+        </div>
+        <div className="video-player-frame">
+          {canEmbed ? (
+            <iframe
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              allowFullScreen
+              src={player.embedUrl}
+              title={iframeTitle}
+            />
+          ) : canPlayDirect ? (
+            <video controls autoPlay playsInline poster={player.imageUrl} src={player.url} />
+          ) : (
+            <div className="video-player-fallback">
+              {player.imageUrl && <img src={player.imageUrl} alt="" />}
+              <p>This platform did not provide an embeddable video URL.</p>
+              {player.url && (
+                <a href={player.url} target="_blank" rel="noreferrer">
+                  Open video
+                </a>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const parseAnalyticsCount = (value: string | number | null | undefined): number => {
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;
@@ -2677,6 +2739,9 @@ type CombinedPerformanceSortKey =
   | "igViews"
   | "ttViews"
   | "likedPercentage"
+  | "ytLikes"
+  | "igLikes"
+  | "ttLikes"
   | "averageViewPercentage"
   | "ytAverageViewPercentage"
   | "igAverageViewPercentage"
@@ -2879,6 +2944,7 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
   const [activeFeedTab, setActiveFeedTab] = useState<"youtube" | "weekly" | "instagram">("youtube");
   const [feedLoading, setFeedLoading] = useState(false);
   const [feedFetched, setFeedFetched] = useState(false);
+  const [videoPlayer, setVideoPlayer] = useState<DashboardVideoPlayer | null>(null);
 
   const copyToClipboard = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -3599,7 +3665,22 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
                   {displayedYouTubeVideos.map((video) => (
                     <article className="youtube-video-card" key={video.id}>
                       <div className="video-thumbnail-container">
-                        <img src={video.imageUrl} alt={video.title} />
+                        <button
+                          className="video-thumbnail-button"
+                          onClick={() => setVideoPlayer({
+                            duration: video.duration,
+                            embedUrl: `https://www.youtube.com/embed/${encodeURIComponent(video.id)}?autoplay=1&rel=0`,
+                            imageUrl: video.imageUrl,
+                            platform: "youtube",
+                            title: video.title,
+                            url: `https://www.youtube.com/watch?v=${encodeURIComponent(video.id)}`
+                          })}
+                          type="button"
+                          aria-label={`Play ${video.title}`}
+                        >
+                          <img src={video.imageUrl} alt="" />
+                          <span className="video-thumbnail-play" aria-hidden="true"><Play size={16} fill="currentColor" /></span>
+                        </button>
                         <span className="video-duration">{video.duration}</span>
                       </div>
                       <div className="video-details">
@@ -3740,6 +3821,7 @@ function InstagramIntegrationSection({ refreshSignal, onLinksChanged }: { refres
   // Simulated Content Feed States
   const [feedLoading, setFeedLoading] = useState(false);
   const [feedFetched, setFeedFetched] = useState(false);
+  const [videoPlayer, setVideoPlayer] = useState<DashboardVideoPlayer | null>(null);
 
   // Instagram-to-YouTube Video Linking States
   const [links, setLinks] = useState<Record<string, string>>(() => {
@@ -4061,7 +4143,20 @@ function InstagramIntegrationSection({ refreshSignal, onLinksChanged }: { refres
               return (
                 <article className="youtube-video-card instagram-post-card" key={post.id}>
                   <div className="video-thumbnail-container instagram-image-container">
-                    <img src={post.imageUrl} alt={post.caption} />
+                    <button
+                      className="video-thumbnail-button"
+                      onClick={() => setVideoPlayer({
+                        imageUrl: post.imageUrl,
+                        platform: "instagram",
+                        title: post.caption || "Instagram media",
+                        url: post.mediaUrl || post.permalink
+                      })}
+                      type="button"
+                      aria-label={`Play ${post.caption || "Instagram media"}`}
+                    >
+                      <img src={post.imageUrl} alt="" />
+                      <span className="video-thumbnail-play" aria-hidden="true"><Play size={16} fill="currentColor" /></span>
+                    </button>
                     {linkedYtVideo && (
                       <span className="youtube-linked-badge-icon" title="Linked to YouTube video">
                         <YouTubeIcon />
@@ -4122,6 +4217,8 @@ function InstagramIntegrationSection({ refreshSignal, onLinksChanged }: { refres
           </div>
         )}
       </div>
+
+      {videoPlayer && <VideoPlayerModal player={videoPlayer} onClose={() => setVideoPlayer(null)} />}
 
       {/* SIMULATED OAUTH MODAL BACKDROP */}
       {authModalOpen && (
@@ -4304,6 +4401,7 @@ function TikTokIntegrationSection({ refreshSignal, onLinksChanged }: { refreshSi
   });
   const [manualLinkVideo, setManualLinkVideo] = useState<TikTokVideoPreview | null>(null);
   const [selectedYtVideoId, setSelectedYtVideoId] = useState("");
+  const [videoPlayer, setVideoPlayer] = useState<DashboardVideoPlayer | null>(null);
 
   const cachedYtVideos: YouTubeVideoPreview[] = useMemo(() => {
     try {
@@ -4402,6 +4500,7 @@ function TikTokIntegrationSection({ refreshSignal, onLinksChanged }: { refreshSi
           comments: Number(item.comment_count ?? 0),
           duration: formatTikTokDuration(durationSeconds),
           durationSeconds,
+          embedUrl: item.embed_link,
           id: String(item.id),
           imageUrl: item.cover_image_url ?? "",
           likes: Number(item.like_count ?? 0),
@@ -4496,7 +4595,22 @@ function TikTokIntegrationSection({ refreshSignal, onLinksChanged }: { refreshSi
               return (
                 <article className="youtube-video-card tiktok-video-card" key={video.id}>
                   <div className="video-thumbnail-container instagram-image-container">
-                    {video.imageUrl ? <img src={video.imageUrl} alt={video.title} /> : <div className="dashboard-image-missing"><TikTokIcon /></div>}
+                    <button
+                      className="video-thumbnail-button"
+                      onClick={() => setVideoPlayer({
+                        duration: video.duration,
+                        embedUrl: video.embedUrl,
+                        imageUrl: video.imageUrl,
+                        platform: "tiktok",
+                        title: video.title || "TikTok video",
+                        url: video.url
+                      })}
+                      type="button"
+                      aria-label={`Play ${video.title || "TikTok video"}`}
+                    >
+                      {video.imageUrl ? <img src={video.imageUrl} alt="" /> : <div className="dashboard-image-missing"><TikTokIcon /></div>}
+                      <span className="video-thumbnail-play" aria-hidden="true"><Play size={16} fill="currentColor" /></span>
+                    </button>
                     <span className="video-duration">{video.duration}</span>
                     {linkedYtVideo && (
                       <span className="youtube-linked-badge-icon" title="Linked to YouTube video">
@@ -4552,6 +4666,8 @@ function TikTokIntegrationSection({ refreshSignal, onLinksChanged }: { refreshSi
           </div>
         )}
       </div>
+
+      {videoPlayer && <VideoPlayerModal player={videoPlayer} onClose={() => setVideoPlayer(null)} />}
 
       {manualLinkVideo && (
         <div className="auth-modal-backdrop" onClick={() => setManualLinkVideo(null)}>
@@ -4618,8 +4734,10 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
   const [hoveredWeekIndex, setHoveredWeekIndex] = useState<number | null>(null);
   const [averageViewExpanded, setAverageViewExpanded] = useState(false);
   const [igVideoDurations, setIgVideoDurations] = useState<Record<string, number>>({});
+  const [likedByPlatformExpanded, setLikedByPlatformExpanded] = useState(false);
   const [platformViewsExpanded, setPlatformViewsExpanded] = useState(false);
   const [stayedToWatchExpanded, setStayedToWatchExpanded] = useState(false);
+  const [videoPlayer, setVideoPlayer] = useState<DashboardVideoPlayer | null>(null);
   const [combinedPerformanceSort, setCombinedPerformanceSort] = useState<{
     direction: SortDirection;
     key: CombinedPerformanceSortKey;
@@ -4957,18 +5075,23 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
       };
     });
 
+    const percentChange = (current: number | null, previous: number | null) => {
+      if (previous === null || current === null) return null;
+      if (previous === 0) return current > 0 ? 100 : 0;
+      return ((current - previous) / previous) * 100;
+    };
+
     return rows.map((week, index) => {
-      const previousWeek = rows[index - 1];
-      const previousTotalViews = previousWeek?.totalViews ?? null;
-      const weeklyChangePercent = previousTotalViews === null
-        ? null
-        : previousTotalViews === 0
-          ? week.totalViews > 0 ? 100 : 0
-          : ((week.totalViews - previousTotalViews) / previousTotalViews) * 100;
+      const previousWeek = [...rows.slice(0, index)].reverse().find((row) => row.totalViews > 0) ?? null;
 
       return {
         ...week,
-        weeklyChangePercent
+        averageViewsChangePercent: percentChange(week.averageViewsPerReleasedVideo, previousWeek?.averageViewsPerReleasedVideo ?? null),
+        igViewsChangePercent: percentChange(week.igViews, previousWeek?.igViews ?? null),
+        releasedVideoCountChangePercent: percentChange(week.releasedVideoCount, previousWeek?.releasedVideoCount ?? null),
+        totalViewsChangePercent: percentChange(week.totalViews, previousWeek?.totalViews ?? null),
+        ttViewsChangePercent: percentChange(week.ttViews, previousWeek?.ttViews ?? null),
+        ytViewsChangePercent: percentChange(week.ytViews, previousWeek?.ytViews ?? null)
       };
     });
   }, [igDailyViews, releasedVideoDates, ttVideos, weeklyViews, youtubeRange, weekBucketsBetween, getPublishedIgViewsForWeek, getPublishedTtViewsForWeek, getPublishedYtViewsForWeek, getReleasedVideoCountForWeek]);
@@ -5367,6 +5490,17 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
     return value > 0 ? "green" : "red";
   };
 
+  const weeklyMetricCell = (value: ReactNode, changePercent: number | null, strong = false) => (
+    <span className="weekly-metric-cell">
+      <span className="weekly-metric-value">{strong ? <strong>{value}</strong> : value}</span>
+      {changePercent !== null && (
+        <span className={`weekly-metric-change ${weeklyChangeTone(changePercent)}`}>
+          {formatWeeklyChange(changePercent)}
+        </span>
+      )}
+    </span>
+  );
+
   const performanceScoreTone = (score: number | null) => {
     if (score === null) return "muted";
     if (score >= 85) return "excellent";
@@ -5435,6 +5569,11 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
     </span>
   );
 
+  const platformLikedMetric = (likes: number, views: number) => {
+    if (likes <= 0 && views <= 0) return "-";
+    return likedMetric(views ? (likes / views) * 100 : null, likes);
+  };
+
   return (
     <div className="weekly-views-layout-container">
       {/* 1. WEEKLY VIEWS GRAPH & SUMMARY TABLE */}
@@ -5466,6 +5605,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                   const x = paddingLeft + ratio * chartWidth;
                   const baseline = paddingTop + chartHeight;
                   const yInstagram = baseline - (week.igViews / weeklyViewsMax) * chartHeight;
+                  const yTikTok = baseline - ((week.igViews + week.ttViews) / weeklyViewsMax) * chartHeight;
                   const yTotal = baseline - (week.totalViews / weeklyViewsMax) * chartHeight;
                   return {
                     baseline,
@@ -5473,18 +5613,23 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                     week,
                     x,
                     yInstagram,
+                    yTikTok,
                     yTotal,
                   };
                 });
 
                 const steps = [0, 0.25, 0.5, 0.75, 1];
                 const instagramLineD = points.map((p, index) => `${index === 0 ? "M" : "L"} ${p.x.toFixed(2)} ${p.yInstagram.toFixed(2)}`).join(" ");
+                const tiktokLineD = points.map((p, index) => `${index === 0 ? "M" : "L"} ${p.x.toFixed(2)} ${p.yTikTok.toFixed(2)}`).join(" ");
                 const totalLineD = points.map((p, index) => `${index === 0 ? "M" : "L"} ${p.x.toFixed(2)} ${p.yTotal.toFixed(2)}`).join(" ");
                 const instagramAreaD = points.length
                   ? `${instagramLineD} L ${points[points.length - 1].x.toFixed(2)} ${(paddingTop + chartHeight).toFixed(2)} L ${points[0].x.toFixed(2)} ${(paddingTop + chartHeight).toFixed(2)} Z`
                   : "";
+                const tiktokAreaD = points.length
+                  ? `${tiktokLineD} L ${[...points].reverse().map((p) => `${p.x.toFixed(2)} ${p.yInstagram.toFixed(2)}`).join(" L ")} Z`
+                  : "";
                 const youtubeAreaD = points.length
-                  ? `${totalLineD} L ${[...points].reverse().map((p) => `${p.x.toFixed(2)} ${p.yInstagram.toFixed(2)}`).join(" L ")} Z`
+                  ? `${totalLineD} L ${[...points].reverse().map((p) => `${p.x.toFixed(2)} ${p.yTikTok.toFixed(2)}`).join(" L ")} Z`
                   : "";
 
                 return (
@@ -5538,8 +5683,10 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                       })}
 
                       {instagramAreaD && <path d={instagramAreaD} className="weekly-views-area-instagram" />}
+                      {tiktokAreaD && <path d={tiktokAreaD} className="weekly-views-area-tiktok" />}
                       {youtubeAreaD && <path d={youtubeAreaD} className="weekly-views-area-youtube" />}
                       {instagramLineD && <path d={instagramLineD} className="weekly-views-line-instagram" />}
+                      {tiktokLineD && <path d={tiktokLineD} className="weekly-views-line-tiktok" />}
                       {totalLineD && <path d={totalLineD} className="weekly-views-line-total" />}
 
                       {hoveredWeekIndex !== null && points[hoveredWeekIndex] && (
@@ -5627,24 +5774,18 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                     <th>Views</th>
                     <th>Videos</th>
                     <th>Avg / Video</th>
-                    <th>Change</th>
                   </tr>
                 </thead>
                 <tbody>
                   {weeklyViewsData.map((week) => (
                     <tr key={week.startDate}>
                       <td>{formatShortWeeklyDate(week.startDate)}</td>
-                      <td>{formatAnalyticsNumber(week.ytViews)}</td>
-                      <td>{formatAnalyticsNumber(week.igViews)}</td>
-                      <td>{formatAnalyticsNumber(week.ttViews)}</td>
-                      <td><strong>{formatAnalyticsNumber(week.totalViews)}</strong></td>
-                      <td>{formatAnalyticsNumber(week.releasedVideoCount)}</td>
-                      <td>{week.averageViewsPerReleasedVideo === null ? "-" : formatAnalyticsNumber(week.averageViewsPerReleasedVideo)}</td>
-                      <td>
-                        <span className={`weekly-change-pill ${weeklyChangeTone(week.weeklyChangePercent)}`}>
-                          {formatWeeklyChange(week.weeklyChangePercent)}
-                        </span>
-                      </td>
+                      <td>{weeklyMetricCell(formatAnalyticsNumber(week.ytViews), week.ytViewsChangePercent)}</td>
+                      <td>{weeklyMetricCell(formatAnalyticsNumber(week.igViews), week.igViewsChangePercent)}</td>
+                      <td>{weeklyMetricCell(formatAnalyticsNumber(week.ttViews), week.ttViewsChangePercent)}</td>
+                      <td>{weeklyMetricCell(formatAnalyticsNumber(week.totalViews), week.totalViewsChangePercent, true)}</td>
+                      <td>{weeklyMetricCell(formatAnalyticsNumber(week.releasedVideoCount), week.releasedVideoCountChangePercent)}</td>
+                      <td>{weeklyMetricCell(week.averageViewsPerReleasedVideo === null ? "-" : formatAnalyticsNumber(week.averageViewsPerReleasedVideo), week.averageViewsChangePercent)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -5657,7 +5798,6 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                     <th>{formatAnalyticsNumber(weeklyViewsTotals.totalViews)}</th>
                     <th>{formatAnalyticsNumber(weeklyViewsTotals.releasedVideoCount)}</th>
                     <th>{weeklyViewsTotals.averageViewsPerReleasedVideo === null ? "-" : formatAnalyticsNumber(weeklyViewsTotals.averageViewsPerReleasedVideo)}</th>
-                    <th>-</th>
                   </tr>
                 </tfoot>
               </table>
@@ -5709,8 +5849,26 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 	                    </>
 	                  )}
                   <th className="metric-help sortable-heading" data-definition="Total likes divided by total views for this row, shown as a percentage." tabIndex={0}>
-                    {combinedSortButton("likedPercentage", "Percentage liked")}
+                    <span className="expandable-metric-heading">
+                      {combinedSortButton("likedPercentage", "Percentage liked")}
+                      <button
+                        aria-label={likedByPlatformExpanded ? "Hide platform like split" : "Show platform like split"}
+                        className="metric-expand-toggle"
+                        onClick={() => setLikedByPlatformExpanded((expanded) => !expanded)}
+                        title={likedByPlatformExpanded ? "Hide YouTube, Instagram, and TikTok likes" : "Show YouTube, Instagram, and TikTok likes"}
+                        type="button"
+                      >
+                        {likedByPlatformExpanded ? <Minus size={12} aria-hidden="true" /> : <Plus size={12} aria-hidden="true" />}
+                      </button>
+                    </span>
                   </th>
+                  {likedByPlatformExpanded && (
+                    <>
+                      <th className="expanded-metric-column expanded-metric-column-start metric-help sortable-heading" data-definition="YouTube likes for this row, with likes divided by YouTube views when available." tabIndex={0}>{combinedSortButton("ytLikes", "YouTube likes")}</th>
+                      <th className="expanded-metric-column metric-help sortable-heading" data-definition="Instagram likes for this row, with likes divided by Instagram views when available." tabIndex={0}>{combinedSortButton("igLikes", "Instagram likes")}</th>
+                      <th className="expanded-metric-column metric-help sortable-heading" data-definition="TikTok likes for this row, with likes divided by TikTok views when available." tabIndex={0}>{combinedSortButton("ttLikes", "TikTok likes")}</th>
+                    </>
+                  )}
 		                  <th className="metric-help sortable-heading" data-definition="Combined average percentage viewed. YouTube uses Analytics average percentage viewed; Instagram is estimated from average watch time divided by reel duration." tabIndex={0}>
 	                    <span className="expandable-metric-heading">
 	                      {combinedSortButton("averageViewPercentage", "Average duration watched")}
@@ -5759,7 +5917,44 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                     <td className="analytics-content-cell combined-performance-content-cell">
                       <span className="analytics-row-accent" style={{ background: entry.color }} />
                       <div className="combined-video-cell">
-                        <img src={entry.imageUrl} alt="" />
+                        <button
+                          className="combined-video-thumb-button"
+                          onClick={() => {
+                            const player = entry.ytVideo
+                              ? {
+                                duration: entry.ytVideo.duration,
+                                embedUrl: `https://www.youtube.com/embed/${encodeURIComponent(entry.ytVideo.id)}?autoplay=1&rel=0`,
+                                imageUrl: entry.ytVideo.imageUrl,
+                                platform: "youtube" as const,
+                                title: entry.ytVideo.title,
+                                url: `https://www.youtube.com/watch?v=${encodeURIComponent(entry.ytVideo.id)}`
+                              }
+                              : entry.igPost
+                                ? {
+                                  imageUrl: entry.igPost.imageUrl,
+                                  platform: "instagram" as const,
+                                  title: entry.igPost.caption || "Instagram media",
+                                  url: entry.igPost.mediaUrl || entry.igPost.permalink
+                                }
+                                : entry.ttVideo
+                                  ? {
+                                    duration: entry.ttVideo.duration,
+                                    embedUrl: entry.ttVideo.embedUrl,
+                                    imageUrl: entry.ttVideo.imageUrl,
+                                    platform: "tiktok" as const,
+                                    title: entry.ttVideo.title || "TikTok video",
+                                    url: entry.ttVideo.url
+                                  }
+                                  : null;
+
+                            if (player) setVideoPlayer(player);
+                          }}
+                          type="button"
+                          aria-label={`Play ${entry.title}`}
+                        >
+                          <img src={entry.imageUrl} alt="" />
+                          <span className="video-thumbnail-play" aria-hidden="true"><Play size={12} fill="currentColor" /></span>
+                        </button>
                         <div className="combined-video-copy">
                           <span className="combined-video-title-row">
                             <span className="combined-video-title" title={entry.title}>{entry.title}</span>
@@ -5810,6 +6005,13 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 	                      </>
 		                    )}
 		                    <td>{likedMetric(entry.likedPercentage, entry.totalLikes)}</td>
+		                    {likedByPlatformExpanded && (
+		                      <>
+		                        <td className="expanded-metric-column expanded-metric-column-start">{platformLikedMetric(entry.ytLikes, entry.ytViews)}</td>
+		                        <td className="expanded-metric-column">{platformLikedMetric(entry.igLikes, entry.igViews)}</td>
+		                        <td className="expanded-metric-column">{platformLikedMetric(entry.ttLikes, entry.ttViews)}</td>
+		                      </>
+		                    )}
 		                    <td>{formatAnalyticsPercent(entry.averageViewPercentage)}</td>
 		                    {averageViewExpanded && (
 		                      <>
@@ -5839,6 +6041,13 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 	                    </>
 		                  )}
 		                  <th>{likedMetric(combinedPerformanceTotals.likedPercentage, combinedPerformanceTotals.totalLikes)}</th>
+		                  {likedByPlatformExpanded && (
+		                    <>
+		                      <th className="expanded-metric-column expanded-metric-column-start">{platformLikedMetric(combinedPerformanceTotals.ytLikes, combinedPerformanceTotals.ytViews)}</th>
+		                      <th className="expanded-metric-column">{platformLikedMetric(combinedPerformanceTotals.igLikes, combinedPerformanceTotals.igViews)}</th>
+		                      <th className="expanded-metric-column">{platformLikedMetric(combinedPerformanceTotals.ttLikes, combinedPerformanceTotals.ttViews)}</th>
+		                    </>
+		                  )}
 		                  <th>{formatAnalyticsPercent(combinedPerformanceTotals.averageViewPercentage)}</th>
 		                  {averageViewExpanded && (
 		                    <>
@@ -5865,6 +6074,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
           </div>
         )}
       </div>
+      {videoPlayer && <VideoPlayerModal player={videoPlayer} onClose={() => setVideoPlayer(null)} />}
     </div>
   );
 }
