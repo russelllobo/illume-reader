@@ -10668,23 +10668,35 @@ html[data-color-scheme] .library-upgrade-button {
 }
 
 .expanded-view-metric {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-width: 118px;
-}
-
-.expanded-view-likes {
-  color: #9fb7cf;
-  font-size: 0.78rem;
-  font-weight: 700;
-  white-space: nowrap;
+  min-width: 72px;
 }
 
 .expanded-view-views {
   color: inherit;
   font-weight: 800;
+  white-space: nowrap;
+}
+
+.liked-percentage-metric {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 72px;
+}
+
+.liked-percentage-value {
+  color: inherit;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.liked-percentage-likes {
+  color: #9fb7cf;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.1;
   white-space: nowrap;
 }
 
@@ -10715,10 +10727,67 @@ html[data-color-scheme] .library-upgrade-button {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  width: 100%;
   min-width: 0;
 }
 
+.combined-video-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.video-performance-score-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 18px;
+  margin-left: auto;
+  flex: 0 0 28px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 5px;
+  background: rgba(15, 23, 42, 0.68);
+  overflow: hidden;
+  color: #cbd5e1;
+  font-size: 0.62rem;
+  font-weight: 900;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.video-performance-score-badge.excellent {
+  border-color: rgba(34, 197, 94, 0.44);
+  background: rgba(20, 83, 45, 0.34);
+  color: #bbf7d0;
+}
+
+.video-performance-score-badge.good {
+  border-color: rgba(56, 189, 248, 0.4);
+  background: rgba(12, 74, 110, 0.34);
+  color: #bae6fd;
+}
+
+.video-performance-score-badge.average {
+  border-color: rgba(245, 158, 11, 0.42);
+  background: rgba(120, 53, 15, 0.32);
+  color: #fde68a;
+}
+
+.video-performance-score-badge.weak {
+  border-color: rgba(248, 113, 113, 0.4);
+  background: rgba(127, 29, 29, 0.32);
+  color: #fecaca;
+}
+
 .combined-video-title {
+  display: block;
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   color: #38bdf8;

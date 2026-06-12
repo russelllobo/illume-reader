@@ -2652,6 +2652,11 @@ const formatExactViewCount = (views: string | number | null | undefined) => {
   return `${new Intl.NumberFormat("en-GB", { maximumFractionDigits: 0 }).format(count)} views`;
 };
 
+const formatExactCount = (value: string | number | null | undefined) => {
+  const count = typeof value === "number" ? value : parseAnalyticsCount(value);
+  return new Intl.NumberFormat("en-GB", { maximumFractionDigits: 0 }).format(Math.round(Number(count) || 0));
+};
+
 type YouTubePerformanceSortKey =
   | "duration"
   | "publishedAt"
@@ -2666,6 +2671,7 @@ type CombinedPerformanceSortKey =
   | "duration"
   | "publishedAt"
   | "title"
+  | "performanceScore"
   | "totalViews"
   | "ytViews"
   | "igViews"
@@ -2678,6 +2684,65 @@ type CombinedPerformanceSortKey =
   | "ytStayedToWatch"
   | "igStayedToWatch";
 
+const clampScoreMetric = (value: number) => Math.max(0, Math.min(value, 100));
+
+const percentileScore = (values: number[], value: number | null | undefined) => {
+  if (value === null || value === undefined || !Number.isFinite(value)) return null;
+  const sorted = values.filter(Number.isFinite).sort((left, right) => left - right);
+  if (!sorted.length) return null;
+  if (sorted.length === 1) return 100;
+
+  const below = sorted.filter((item) => item < value).length;
+  const equal = sorted.filter((item) => item === value).length;
+  return ((below + equal / 2) / sorted.length) * 100;
+};
+
+const calculateVideoPerformanceScore = (values: {
+  averageViewPercentiles: number[];
+  likedPercentiles: number[];
+  likedPercentage: number | null;
+  stayedPercentiles: number[];
+  averageViewPercentage: number | null;
+  stayedToWatch: number | null;
+  totalViews: number;
+  viewPercentiles: number[];
+}) => {
+  if (values.totalViews <= 0) return null;
+
+  const metrics = [
+    {
+      score: percentileScore(values.viewPercentiles, Math.log1p(values.totalViews)),
+      weight: 0.55
+    },
+    {
+      score: percentileScore(values.likedPercentiles, values.likedPercentage),
+      weight: 0.2
+    },
+    {
+      score: percentileScore(values.averageViewPercentiles, values.averageViewPercentage),
+      weight: 0.15
+    },
+    {
+      score: percentileScore(values.stayedPercentiles, values.stayedToWatch),
+      weight: 0.1
+    }
+  ].filter((metric): metric is { score: number; weight: number } => metric.score !== null);
+  const totalWeight = metrics.reduce((sum, metric) => sum + metric.weight, 0);
+
+  return totalWeight > 0
+    ? Math.round(clampScoreMetric(metrics.reduce((sum, metric) => sum + metric.score * metric.weight, 0) / totalWeight))
+    : null;
+};
+
+const videoPerformanceLabel = (score: number | null, rank: number, total: number) => {
+  if (score === null) return "Not enough data";
+  const topQuartileCutoff = Math.max(1, Math.ceil(total * 0.25));
+  if (rank === 1) return "Best performer";
+  if (rank <= topQuartileCutoff || score >= 75) return "Doing well";
+  if (score >= 50) return "Middle pack";
+  return "Needs attention";
+};
+
 const compareText = (left: string, right: string) =>
   left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
 
@@ -2688,6 +2753,19 @@ const compareNullableNumber = (left: number | null | undefined, right: number | 
   if (leftMissing) return 1;
   if (rightMissing) return -1;
   return left - right;
+};
+
+const compareNullableNumberForSort = (
+  left: number | null | undefined,
+  right: number | null | undefined,
+  direction: SortDirection
+) => {
+  const leftMissing = left === null || left === undefined || Number.isNaN(left);
+  const rightMissing = right === null || right === undefined || Number.isNaN(right);
+  if (leftMissing && rightMissing) return 0;
+  if (leftMissing) return 1;
+  if (rightMissing) return -1;
+  return (left - right) * numericSortDirectionFor(direction);
 };
 
 const timestampFromDate = (value?: string) => {
@@ -2854,7 +2932,23 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
       ? youtubeAnalytics.subscribersGained - youtubeAnalytics.subscribersLost
       : 0;
 
-    return youtubeTopVideos.map((row, index) => {
+    const analyticsByVideoId = new Map(youtubeTopVideos.map((row) => [row.video, row]));
+    const rows = youtubeVideos.length
+      ? youtubeVideos.map((video) => analyticsByVideoId.get(video.id) ?? {
+        averageViewDuration: 0,
+        averageViewPercentage: 0,
+        engagedViews: 0,
+        estimatedMinutesWatched: 0,
+        impressions: null,
+        impressionsClickThroughRate: null,
+        subscribersGained: 0,
+        subscribersLost: 0,
+        video: video.id,
+        views: parseViewCount(video.views)
+      })
+      : youtubeTopVideos;
+
+    return rows.map((row, index) => {
       const details = videoDetailsById.get(row.video);
       const netSubscribers = Number(row.subscribersGained ?? 0) - Number(row.subscribersLost ?? 0);
 
@@ -2877,7 +2971,7 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
         watchTimeShare: totalWatchMinutes ? (Number(row.estimatedMinutesWatched ?? 0) / totalWatchMinutes) * 100 : 0
       };
     });
-  }, [formatDurationSeconds, videoDetailsById, youtubeAnalytics, youtubeTopVideos]);
+  }, [formatDurationSeconds, videoDetailsById, youtubeAnalytics, youtubeTopVideos, youtubeVideos]);
 
   const sortedYoutubeAnalyticsRows = useMemo(() => {
     if (!youtubePerformanceSort) return youtubeAnalyticsRows;
@@ -3517,11 +3611,11 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
                         <div className="video-engagement-stats">
                           <span>
                             <ThumbsUp size={13} aria-hidden="true" />
-                            {formatAnalyticsNumber(Number(video.likes ?? 0))}
+                            {formatExactCount(video.likes)}
                           </span>
                           <span>
                             <MessageCircle size={13} aria-hidden="true" />
-                            {formatAnalyticsNumber(Number(video.comments ?? 0))}
+                            {formatExactCount(video.comments)}
                           </span>
                         </div>
                       </div>
@@ -4925,6 +5019,10 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 	      igPost: InstagramPostPreview | null;
 	      ttVideo: TikTokVideoPreview | null;
 	      imageUrl: string;
+	      performanceLabel: string;
+	      performanceRank: number | null;
+	      performanceReason: string;
+	      performanceScore: number | null;
 	      publishedAt?: string;
 	      stayedToWatch: number | null;
 	      ytStayedToWatch: number | null;
@@ -5015,6 +5113,10 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 		        igEngagedViews,
 		        igPost: values.igPost,
 		        platform: values.platform,
+		        performanceLabel: "Not scored",
+		        performanceRank: null,
+		        performanceReason: "",
+		        performanceScore: null,
 	        publishedAt: values.ytVideo?.publishedAt ?? values.igPost?.publishedAt ?? values.ttVideo?.publishedAt,
 	        stayedToWatch,
 	        ttVideo: values.ttVideo,
@@ -5121,29 +5223,86 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
       }
     });
 
-    return entries.sort((a, b) => b.totalViews - a.totalViews);
+    const viewPercentiles = entries.map((entry) => Math.log1p(entry.totalViews));
+    const likedPercentiles = entries
+      .map((entry) => entry.likedPercentage)
+      .filter((value): value is number => value !== null && Number.isFinite(value));
+    const averageViewPercentiles = entries
+      .map((entry) => entry.averageViewPercentage)
+      .filter((value): value is number => value !== null && Number.isFinite(value));
+    const stayedPercentiles = entries
+      .map((entry) => entry.stayedToWatch)
+      .filter((value): value is number => value !== null && Number.isFinite(value));
+
+    const scoredEntries = entries
+      .map((entry) => ({
+        ...entry,
+        performanceScore: calculateVideoPerformanceScore({
+          averageViewPercentiles,
+          averageViewPercentage: entry.averageViewPercentage,
+          likedPercentiles,
+          likedPercentage: entry.likedPercentage,
+          stayedPercentiles,
+          stayedToWatch: entry.stayedToWatch,
+          totalViews: entry.totalViews,
+          viewPercentiles
+        })
+      }));
+
+    const rankedEntries = [...scoredEntries].sort((left, right) =>
+      compareNullableNumberForSort(left.performanceScore, right.performanceScore, "desc") ||
+      right.totalViews - left.totalViews ||
+      compareText(left.title, right.title)
+    );
+
+    const rankById = new Map(rankedEntries.map((entry, index) => [entry.id, index + 1]));
+    const formatReasonNumber = (value: number) => formatExactCount(value);
+    const formatReasonPercent = (value: number | null) =>
+      value === null ? null : `${new Intl.NumberFormat("en-GB", { maximumFractionDigits: 1 }).format(value || 0)}%`;
+
+    return scoredEntries
+      .map((entry) => {
+        const rank = rankById.get(entry.id) ?? null;
+        const reasons = [
+          `${formatReasonNumber(entry.totalViews)} views`,
+          entry.likedPercentage !== null ? `${formatReasonPercent(entry.likedPercentage)} liked` : null,
+          entry.averageViewPercentage !== null ? `${formatReasonPercent(entry.averageViewPercentage)} average watched` : null,
+          entry.stayedToWatch !== null ? `${formatReasonPercent(entry.stayedToWatch)} stayed` : null
+        ].filter(Boolean).join(" · ");
+
+        return {
+          ...entry,
+          performanceLabel: videoPerformanceLabel(entry.performanceScore, rank ?? scoredEntries.length, scoredEntries.length),
+          performanceRank: rank,
+          performanceReason: reasons
+        };
+      })
+      .sort((a, b) =>
+        compareNullableNumberForSort(a.performanceScore, b.performanceScore, "desc") ||
+        b.totalViews - a.totalViews ||
+        compareText(a.title, b.title)
+      );
 	  }, [formatDurationSeconds, igPosts, igVideoDurations, links, parseDurationSeconds, parseViews, ttLinks, ttVideos, ytAnalytics, ytVideos]);
 
   const sortedCombinedEntries = useMemo(() => {
     if (!combinedPerformanceSort) return combinedEntries;
 
     const { direction, key } = combinedPerformanceSort;
-    const multiplier = numericSortDirectionFor(direction);
-
     return [...combinedEntries].sort((left, right) => {
       let result = 0;
 
       if (key === "title") {
         result = compareText(left.title, right.title);
+        result = direction === "asc" ? result : result * -1;
       } else if (key === "duration") {
-        result = compareNullableNumber(durationToSeconds(left.duration), durationToSeconds(right.duration));
+        result = compareNullableNumberForSort(durationToSeconds(left.duration), durationToSeconds(right.duration), direction);
       } else if (key === "publishedAt") {
-        result = compareNullableNumber(timestampFromDate(left.publishedAt), timestampFromDate(right.publishedAt));
+        result = compareNullableNumberForSort(timestampFromDate(left.publishedAt), timestampFromDate(right.publishedAt), direction);
       } else {
-        result = compareNullableNumber(left[key], right[key]);
+        result = compareNullableNumberForSort(left[key], right[key], direction);
       }
 
-      return result === 0 ? compareText(left.title, right.title) : result * multiplier;
+      return result === 0 ? compareText(left.title, right.title) : result;
     });
   }, [combinedEntries, combinedPerformanceSort]);
 
@@ -5188,6 +5347,8 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
   const formatAnalyticsNumber = (value: number) =>
     new Intl.NumberFormat("en-GB", { maximumFractionDigits: value >= 100 ? 0 : 1 }).format(value || 0);
 
+  const formatMetricCount = (value: number) => formatExactCount(value);
+
   const formatAnalyticsPercent = (value: number | null) =>
     value === null ? "-" : `${new Intl.NumberFormat("en-GB", { maximumFractionDigits: 1 }).format(value || 0)}%`;
 
@@ -5204,6 +5365,14 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
   const weeklyChangeTone = (value: number | null) => {
     if (value === null || value === 0) return "amber";
     return value > 0 ? "green" : "red";
+  };
+
+  const performanceScoreTone = (score: number | null) => {
+    if (score === null) return "muted";
+    if (score >= 85) return "excellent";
+    if (score >= 70) return "good";
+    if (score >= 50) return "average";
+    return "weak";
   };
 
 	  const combinedPerformanceTotals = useMemo(() => {
@@ -5249,16 +5418,22 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 		    return { averageViewPercentage, engagedViews, igAverageViewPercentage, igEngagedViews, igLikes, igStayedToWatch, igViews, likedPercentage, stayedToWatch, totalLikes, totalViews, ttLikes, ttViews, watchHours, ytAverageViewPercentage, ytEngagedViews, ytLikes, ytStayedToWatch, ytViews };
 		  }, [combinedEntries]);
 
-  const expandedViewMetric = (views: number, likes: number) => {
+  const expandedViewMetric = (views: number) => {
     if (views <= 0) return "-";
 
     return (
       <span className="expanded-view-metric">
-        <span className="expanded-view-likes">{formatAnalyticsNumber(likes)} likes</span>
-        <span className="expanded-view-views">{formatAnalyticsNumber(views)}</span>
+        <span className="expanded-view-views">{formatMetricCount(views)}</span>
       </span>
     );
   };
+
+  const likedMetric = (percentage: number | null, likes: number) => (
+    <span className="liked-percentage-metric">
+      <span className="liked-percentage-value">{formatAnalyticsPercent(percentage)}</span>
+      <span className="liked-percentage-likes">{formatMetricCount(likes)} likes</span>
+    </span>
+  );
 
   return (
     <div className="weekly-views-layout-container">
@@ -5586,7 +5761,15 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                       <div className="combined-video-cell">
                         <img src={entry.imageUrl} alt="" />
                         <div className="combined-video-copy">
-                          <span className="combined-video-title" title={entry.title}>{entry.title}</span>
+                          <span className="combined-video-title-row">
+                            <span className="combined-video-title" title={entry.title}>{entry.title}</span>
+                            <span
+                              className={`video-performance-score-badge ${performanceScoreTone(entry.performanceScore)}`}
+                              title={entry.performanceReason}
+                            >
+                              {entry.performanceScore === null ? "-" : entry.performanceScore}
+                            </span>
+                          </span>
                           <div className="combined-video-meta">
                             <span className="analytics-duration-pill">{entry.duration}</span>
                             <span>{formatPublishDate(entry.publishedAt)}</span>
@@ -5617,16 +5800,16 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                       </div>
                     </td>
 	                    <td>
-	                      {formatAnalyticsNumber(entry.totalViews)}
+	                      {expandedViewMetric(entry.totalViews)}
 	                    </td>
 	                    {platformViewsExpanded && (
 	                      <>
-	                        <td className="expanded-metric-column expanded-metric-column-start">{expandedViewMetric(entry.ytViews, entry.ytLikes)}</td>
-	                        <td className="expanded-metric-column">{expandedViewMetric(entry.igViews, entry.igLikes)}</td>
-	                        <td className="expanded-metric-column">{expandedViewMetric(entry.ttViews, entry.ttLikes)}</td>
+	                        <td className="expanded-metric-column expanded-metric-column-start">{expandedViewMetric(entry.ytViews)}</td>
+	                        <td className="expanded-metric-column">{expandedViewMetric(entry.igViews)}</td>
+	                        <td className="expanded-metric-column">{expandedViewMetric(entry.ttViews)}</td>
 	                      </>
 		                    )}
-		                    <td>{formatAnalyticsPercent(entry.likedPercentage)}</td>
+		                    <td>{likedMetric(entry.likedPercentage, entry.totalLikes)}</td>
 		                    <td>{formatAnalyticsPercent(entry.averageViewPercentage)}</td>
 		                    {averageViewExpanded && (
 		                      <>
@@ -5650,12 +5833,12 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 	                  <th>{formatAnalyticsNumber(combinedPerformanceTotals.totalViews)}</th>
 	                  {platformViewsExpanded && (
 	                    <>
-	                      <th className="expanded-metric-column expanded-metric-column-start">{expandedViewMetric(combinedPerformanceTotals.ytViews, combinedPerformanceTotals.ytLikes)}</th>
-	                      <th className="expanded-metric-column">{expandedViewMetric(combinedPerformanceTotals.igViews, combinedPerformanceTotals.igLikes)}</th>
-	                      <th className="expanded-metric-column">{expandedViewMetric(combinedPerformanceTotals.ttViews, combinedPerformanceTotals.ttLikes)}</th>
+	                      <th className="expanded-metric-column expanded-metric-column-start">{expandedViewMetric(combinedPerformanceTotals.ytViews)}</th>
+	                      <th className="expanded-metric-column">{expandedViewMetric(combinedPerformanceTotals.igViews)}</th>
+	                      <th className="expanded-metric-column">{expandedViewMetric(combinedPerformanceTotals.ttViews)}</th>
 	                    </>
 		                  )}
-		                  <th>{formatAnalyticsPercent(combinedPerformanceTotals.likedPercentage)}</th>
+		                  <th>{likedMetric(combinedPerformanceTotals.likedPercentage, combinedPerformanceTotals.totalLikes)}</th>
 		                  <th>{formatAnalyticsPercent(combinedPerformanceTotals.averageViewPercentage)}</th>
 		                  {averageViewExpanded && (
 		                    <>
