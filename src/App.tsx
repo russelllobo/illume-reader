@@ -5154,9 +5154,12 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 		      igCaption: string | null;
 		      igEngagedViews: number | null;
 		      igAverageViewPercentage: number | null;
+		      igViewsChangePercent: number | null;
 		      platform: "youtube" | "instagram" | "tiktok" | "both";
+		      ttViewsChangePercent: number | null;
 		      ytAverageViewPercentage: number | null;
 		      ytEngagedViews: number | null;
+		      ytViewsChangePercent: number | null;
 	      ytViews: number;
       igViews: number;
       ttViews: number;
@@ -5234,6 +5237,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 		        igCaption: values.igPost?.caption ?? null,
 		        igAverageViewPercentage,
 		        igEngagedViews,
+		        igViewsChangePercent: null,
 		        igPost: values.igPost,
 		        platform: values.platform,
 		        performanceLabel: "Not scored",
@@ -5242,6 +5246,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 		        performanceScore: null,
 	        publishedAt: values.ytVideo?.publishedAt ?? values.igPost?.publishedAt ?? values.ttVideo?.publishedAt,
 	        stayedToWatch,
+	        ttViewsChangePercent: null,
 	        ttVideo: values.ttVideo,
 	        ytStayedToWatch: ytStayed,
 	        igStayedToWatch: igStayed,
@@ -5254,6 +5259,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 	        ytVideo: values.ytVideo,
 	        ytAverageViewPercentage,
 	        ytEngagedViews,
+	        ytViewsChangePercent: null,
         ytViews: values.ytViews,
         igViews: values.igViews,
         ttViews: values.ttViews,
@@ -5346,6 +5352,47 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
       }
     });
 
+    const percentChangeFromAverage = (current: number, previousValues: number[]) => {
+      if (!previousValues.length) return null;
+      const average = previousValues.reduce((sum, value) => sum + value, 0) / previousValues.length;
+      if (average === 0) return current > 0 ? 100 : 0;
+      return ((current - average) / average) * 100;
+    };
+
+    const platformViewChanges = new Map<string, number | null>();
+    const addPlatformViewChanges = (
+      platform: "yt" | "ig" | "tt",
+      rows: Array<{ id: string; publishedAt?: string; views: number }>
+    ) => {
+      rows
+        .filter((row) => row.views > 0)
+        .sort((left, right) => {
+          const rightTime = timestampFromDate(right.publishedAt);
+          const leftTime = timestampFromDate(left.publishedAt);
+          return compareNullableNumberForSort(rightTime, leftTime, "desc") || compareText(left.id, right.id);
+        })
+        .forEach((row, index, sortedRows) => {
+          const previousTenViews = sortedRows.slice(index + 1, index + 11).map((previousRow) => previousRow.views);
+          platformViewChanges.set(`${platform}:${row.id}`, percentChangeFromAverage(row.views, previousTenViews));
+        });
+    };
+
+    addPlatformViewChanges("yt", entries.map((entry) => ({
+      id: entry.id,
+      publishedAt: entry.ytVideo?.publishedAt,
+      views: entry.ytViews
+    })));
+    addPlatformViewChanges("ig", entries.map((entry) => ({
+      id: entry.id,
+      publishedAt: entry.igPost?.publishedAt,
+      views: entry.igViews
+    })));
+    addPlatformViewChanges("tt", entries.map((entry) => ({
+      id: entry.id,
+      publishedAt: entry.ttVideo?.publishedAt,
+      views: entry.ttViews
+    })));
+
     const viewPercentiles = entries.map((entry) => Math.log1p(entry.totalViews));
     const likedPercentiles = entries
       .map((entry) => entry.likedPercentage)
@@ -5360,6 +5407,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
     const scoredEntries = entries
       .map((entry) => ({
         ...entry,
+        igViewsChangePercent: platformViewChanges.get(`ig:${entry.id}`) ?? null,
         performanceScore: calculateVideoPerformanceScore({
           averageViewPercentiles,
           averageViewPercentage: entry.averageViewPercentage,
@@ -5369,7 +5417,9 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
           stayedToWatch: entry.stayedToWatch,
           totalViews: entry.totalViews,
           viewPercentiles
-        })
+        }),
+        ttViewsChangePercent: platformViewChanges.get(`tt:${entry.id}`) ?? null,
+        ytViewsChangePercent: platformViewChanges.get(`yt:${entry.id}`) ?? null
       }));
 
     const rankedEntries = [...scoredEntries].sort((left, right) =>
@@ -5552,12 +5602,17 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 		    return { averageViewPercentage, engagedViews, igAverageViewPercentage, igEngagedViews, igLikes, igStayedToWatch, igViews, likedPercentage, stayedToWatch, totalLikes, totalViews, ttLikes, ttViews, watchHours, ytAverageViewPercentage, ytEngagedViews, ytLikes, ytStayedToWatch, ytViews };
 		  }, [combinedEntries]);
 
-  const expandedViewMetric = (views: number) => {
+  const expandedViewMetric = (views: number, changePercent: number | null = null) => {
     if (views <= 0) return "-";
 
     return (
       <span className="expanded-view-metric">
         <span className="expanded-view-views">{formatMetricCount(views)}</span>
+        {changePercent !== null && (
+          <span className={`weekly-metric-change ${weeklyChangeTone(changePercent)}`}>
+            {formatWeeklyChange(changePercent)}
+          </span>
+        )}
       </span>
     );
   };
@@ -5999,9 +6054,9 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 	                    </td>
 	                    {platformViewsExpanded && (
 	                      <>
-	                        <td className="expanded-metric-column expanded-metric-column-start">{expandedViewMetric(entry.ytViews)}</td>
-	                        <td className="expanded-metric-column">{expandedViewMetric(entry.igViews)}</td>
-	                        <td className="expanded-metric-column">{expandedViewMetric(entry.ttViews)}</td>
+	                        <td className="expanded-metric-column expanded-metric-column-start">{expandedViewMetric(entry.ytViews, entry.ytViewsChangePercent)}</td>
+	                        <td className="expanded-metric-column">{expandedViewMetric(entry.igViews, entry.igViewsChangePercent)}</td>
+	                        <td className="expanded-metric-column">{expandedViewMetric(entry.ttViews, entry.ttViewsChangePercent)}</td>
 	                      </>
 		                    )}
 		                    <td>{likedMetric(entry.likedPercentage, entry.totalLikes)}</td>
