@@ -154,6 +154,7 @@ function ClassicsWall() {
 
 interface LandingPageProps {
   handleAuth: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  joinLaunchWaitlist: (email: string) => Promise<boolean>;
   signInWithGoogle: () => Promise<void>;
   email: string;
   setEmail: (val: string) => void;
@@ -175,6 +176,7 @@ const LANDING_READER_IMAGES = [
 ];
 
 const LANDING_HERO_IMAGE_TIMEOUT_MS = 520;
+const LANDING_WAITLIST_QUERY = "(max-width: 1024px)";
 const prideAndPrejudiceCover =
   "/landing/covers/pride-and-prejudice.jpg";
 
@@ -356,6 +358,7 @@ function GoogleIcon() {
 
 export function LandingPage({
   handleAuth,
+  joinLaunchWaitlist,
   signInWithGoogle,
   email,
   setEmail,
@@ -374,6 +377,12 @@ export function LandingPage({
   const [isHeroReady, setIsHeroReady] = useState(false);
   const [authPane, setAuthPane] = useState<"choice" | "email">("choice");
   const [isHeaderCondensed, setIsHeaderCondensed] = useState(false);
+  const [isLaunchWaitlistOpen, setIsLaunchWaitlistOpen] = useState(false);
+  const [isLaunchWaitlistViewport, setIsLaunchWaitlistViewport] = useState(() =>
+    window.matchMedia(LANDING_WAITLIST_QUERY).matches
+  );
+  const [launchEmail, setLaunchEmail] = useState("");
+  const [launchWaitlistJoined, setLaunchWaitlistJoined] = useState(false);
   const [detailHeadingProgress, setDetailHeadingProgress] = useState(0);
   const detailSectionRef = useRef<HTMLElement | null>(null);
   const detailHeading = "For readers with wandering minds.";
@@ -394,6 +403,15 @@ export function LandingPage({
     updateHeader();
     window.addEventListener("scroll", updateHeader, { passive: true });
     return () => window.removeEventListener("scroll", updateHeader);
+  }, []);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(LANDING_WAITLIST_QUERY);
+    const updateViewport = () => setIsLaunchWaitlistViewport(mediaQuery.matches);
+
+    updateViewport();
+    mediaQuery.addEventListener("change", updateViewport);
+    return () => mediaQuery.removeEventListener("change", updateViewport);
   }, []);
 
   useEffect(() => {
@@ -487,6 +505,12 @@ export function LandingPage({
   }, []);
 
   const handleOpenAuth = (mode: "sign-in" | "sign-up") => {
+    if (isLaunchWaitlistViewport) {
+      setIsLaunchWaitlistOpen(true);
+      setLaunchWaitlistJoined(false);
+      return;
+    }
+
     setAuthMode(mode);
     setAuthPane("choice");
     setIsAuthOpen(true);
@@ -495,6 +519,19 @@ export function LandingPage({
   const handleCloseAuth = () => {
     setAuthPane("choice");
     setIsAuthOpen(false);
+  };
+
+  const handleCloseLaunchWaitlist = () => {
+    setIsLaunchWaitlistOpen(false);
+    setLaunchWaitlistJoined(false);
+  };
+
+  const handleLaunchWaitlistSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const joined = await joinLaunchWaitlist(launchEmail);
+    if (joined) {
+      setLaunchWaitlistJoined(true);
+    }
   };
 
   return (
@@ -742,6 +779,62 @@ export function LandingPage({
                 {authMode === "sign-in" ? "Need an account? Sign up" : "Already have an account? Sign in"}
               </button>
             </div>
+
+            {notice && <div className="auth-notice-toast">{notice}</div>}
+          </div>
+        </div>
+      )}
+
+      {isLaunchWaitlistOpen && (
+        <div className="auth-modal-overlay" onClick={handleCloseLaunchWaitlist}>
+          <div className="auth-modal-card illume-auth-card illume-launch-card" onClick={(e) => e.stopPropagation()}>
+            <button className="auth-modal-close" onClick={handleCloseLaunchWaitlist} title="Close" type="button">
+              <X size={16} />
+            </button>
+
+            <div className="auth-modal-header">
+              <img src="/landing/logo.webp" alt="" className="illume-auth-logo" />
+              <h2>{launchWaitlistJoined ? "You are on the list" : "Illume is coming to your screen soon"}</h2>
+              <p>
+                {launchWaitlistJoined
+                  ? "We will email you as soon as mobile and tablet reading opens."
+                  : "Mobile and tablet reading is not open yet. Join the launch list and we will let you know when it is ready."}
+              </p>
+            </div>
+
+            {!launchWaitlistJoined ? (
+              <form className="auth-modal-form illume-launch-form" onSubmit={(event) => void handleLaunchWaitlistSubmit(event)}>
+                <div className="auth-input-group">
+                  <label htmlFor="launch-email">Email address</label>
+                  <input
+                    id="launch-email"
+                    type="email"
+                    required
+                    placeholder="name@domain.com"
+                    autoComplete="email"
+                    autoFocus
+                    value={launchEmail}
+                    onChange={(event) => setLaunchEmail(event.target.value)}
+                    className="auth-input-field"
+                  />
+                </div>
+
+                <button type="submit" disabled={busy} className="auth-submit-btn">
+                  {busy ? (
+                    <>
+                      <Loader2 className="spin" size={16} />
+                      <span>Joining...</span>
+                    </>
+                  ) : (
+                    <span>Notify me at launch</span>
+                  )}
+                </button>
+              </form>
+            ) : (
+              <button type="button" className="auth-submit-btn illume-launch-done" onClick={handleCloseLaunchWaitlist}>
+                Done
+              </button>
+            )}
 
             {notice && <div className="auth-notice-toast">{notice}</div>}
           </div>

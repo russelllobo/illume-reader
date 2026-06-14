@@ -34,6 +34,7 @@ import {
   Users,
   X,
   Link2,
+  Mail,
   ThumbsUp,
   TrendingUp
 } from "lucide-react";
@@ -209,6 +210,7 @@ const READER_LINE_HEIGHT_MAX = 2;
 const READER_LINE_WIDTH_MIN = 30;
 const READER_LINE_WIDTH_MAX = 60;
 const CHAPTER_SIDEBAR_DESKTOP_QUERY = "(min-width: 981px)";
+const LANDING_WAITLIST_QUERY = "(max-width: 1024px)";
 const PDF_PAGE_SCALE_MIN = 0.75;
 const PDF_PAGE_SCALE_MAX = 1.5;
 const READER_THEMES: Array<{ label: string; value: ReaderTheme }> = [
@@ -508,6 +510,13 @@ type ReaderDashboardTimelinePoint = {
   storageBytes: number;
   usersCount: number;
 };
+type ReaderDashboardWaitlistSignup = {
+  createdAt: string;
+  email: string;
+  id: string;
+  launchContext: Record<string, unknown>;
+  source: string;
+};
 type ReaderDashboardData = {
   generatedAt: string;
   storage: {
@@ -522,6 +531,7 @@ type ReaderDashboardData = {
   };
   timeline?: ReaderDashboardTimelinePoint[];
   users: ReaderDashboardUser[];
+  waitlist?: ReaderDashboardWaitlistSignup[];
 };
 
 const EPUB_BUCKET = "epubs";
@@ -2610,6 +2620,7 @@ type DashboardVideoPlayer = {
 };
 
 const WEEKLY_DASHBOARD_START_DATE = "2026-05-18";
+const WEEKLY_DASHBOARD_SKIPPED_WEEK_START_DATES = new Set(["2026-06-01"]);
 type DashboardTab = "users" | "weekly_views" | "content" | "instagram" | "tiktok";
 type SortDirection = "asc" | "desc";
 
@@ -4925,6 +4936,12 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
     return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", timeZone: "UTC" }).format(date);
   };
 
+  const formatPublishTime = (value: string) => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    return new Intl.DateTimeFormat("en-GB", { hour: "2-digit", hour12: false, minute: "2-digit" }).format(date);
+  };
+
   const releasedVideoDates = useMemo(() => {
     const dates: string[] = [];
     const processedIgIds = new Set<string>();
@@ -5053,6 +5070,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 
     const sourceRows = [...bucketsByStartDate.values()]
       .filter((week) => week.startDate >= WEEKLY_DASHBOARD_START_DATE)
+      .filter((week) => !WEEKLY_DASHBOARD_SKIPPED_WEEK_START_DATES.has(week.startDate))
       .sort((left, right) => left.startDate.localeCompare(right.startDate));
 
     const rows = sourceRows.map((week) => {
@@ -5365,15 +5383,21 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
       rows: Array<{ id: string; publishedAt?: string; views: number }>
     ) => {
       rows
-        .filter((row) => row.views > 0)
+        .filter((row) => row.views > 0 && timestampFromDate(row.publishedAt) !== null)
         .sort((left, right) => {
-          const rightTime = timestampFromDate(right.publishedAt);
           const leftTime = timestampFromDate(left.publishedAt);
-          return compareNullableNumberForSort(rightTime, leftTime, "desc") || compareText(left.id, right.id);
+          const rightTime = timestampFromDate(right.publishedAt);
+          return compareNullableNumberForSort(leftTime, rightTime, "desc") || compareText(left.id, right.id);
         })
         .forEach((row, index, sortedRows) => {
-          const previousTenViews = sortedRows.slice(index + 1, index + 11).map((previousRow) => previousRow.views);
-          platformViewChanges.set(`${platform}:${row.id}`, percentChangeFromAverage(row.views, previousTenViews));
+          const comparisonViews = sortedRows
+            .filter((comparisonRow) => comparisonRow.id !== row.id)
+            .slice(0, 10)
+            .map((comparisonRow) => comparisonRow.views);
+          platformViewChanges.set(
+            `${platform}:${row.id}`,
+            comparisonViews.length ? percentChangeFromAverage(row.views, comparisonViews) : null
+          );
         });
     };
 
@@ -5528,8 +5552,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
   const formatWeeklyChange = (value: number | null) => {
     if (value === null) return "-";
     const formatted = new Intl.NumberFormat("en-GB", {
-      maximumFractionDigits: 1,
-      minimumFractionDigits: 1
+      maximumFractionDigits: 0
     }).format(Math.abs(value));
     const sign = value > 0 ? "+" : value < 0 ? "-" : "";
     return `${sign}${formatted}%`;
@@ -5834,7 +5857,11 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                 <tbody>
                   {weeklyViewsData.map((week) => (
                     <tr key={week.startDate}>
-                      <td>{formatShortWeeklyDate(week.startDate)}</td>
+                      <td>
+                        <span className="weekly-date-cell">
+                          <span className="weekly-date-value">{formatShortWeeklyDate(week.startDate)}</span>
+                        </span>
+                      </td>
                       <td>{weeklyMetricCell(formatAnalyticsNumber(week.ytViews), week.ytViewsChangePercent)}</td>
                       <td>{weeklyMetricCell(formatAnalyticsNumber(week.igViews), week.igViewsChangePercent)}</td>
                       <td>{weeklyMetricCell(formatAnalyticsNumber(week.ttViews), week.ttViewsChangePercent)}</td>
@@ -6023,6 +6050,9 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                           <div className="combined-video-meta">
                             <span className="analytics-duration-pill">{entry.duration}</span>
                             <span>{formatPublishDate(entry.publishedAt)}</span>
+                            {entry.publishedAt && (
+                              <span className="combined-video-time">{formatPublishTime(entry.publishedAt)}</span>
+                            )}
                             {entry.platform === "both" && (
                               <span className="platform-badge both" aria-label="Linked social content">
                                 <YouTubeIcon />
@@ -6168,6 +6198,9 @@ function ReaderDashboard({
   const isOwner = email.toLowerCase() === "r.lobo2003@gmail.com";
   const storageTotal = data?.storage.totalBytes ?? 0;
   const dashboardUsers = data?.users ?? [];
+  const waitlistSignups = data?.waitlist ?? [];
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const waitlistTodayCount = waitlistSignups.filter((item) => item.createdAt.slice(0, 10) === todayKey).length;
   const selectedUser = selectedUserId ? dashboardUsers.find((item) => item.id === selectedUserId) ?? null : null;
   const selectedBooks = selectedUser?.books ?? [];
   const selectedImages = selectedUser?.images ?? [];
@@ -6177,6 +6210,13 @@ function ReaderDashboard({
   const selectedUserTimeline = selectedUser?.timeline?.length ? selectedUser.timeline : buildUserTimelineFromData(selectedUser);
   const timeline = data?.timeline?.length ? data.timeline : buildDashboardTimelineFromUsers(data);
   const [linksVersion, setLinksVersion] = useState(0);
+  const [usersSubtab, setUsersSubtab] = useState<"users" | "waitlist">("users");
+  const formatWaitlistViewport = (signup: ReaderDashboardWaitlistSignup) => {
+    const width = signup.launchContext.viewport_width;
+    const height = signup.launchContext.viewport_height;
+    if (typeof width !== "number" || typeof height !== "number") return "Unknown viewport";
+    return `${width} x ${height}`;
+  };
 
   if (!session) {
     return (
@@ -6460,38 +6500,97 @@ function ReaderDashboard({
         </section>
 
         <section className="dashboard-user-section">
-          <div className="dashboard-section-heading">
+          <div className="dashboard-section-heading dashboard-users-heading">
             <div>
-              <h2>Users</h2>
-              <p>{data ? `Updated ${formatShortDate(data.generatedAt)}` : "Loading project data"}</p>
+              <h2>{usersSubtab === "waitlist" ? "Launch waitlist" : "Users"}</h2>
+              <p>
+                {usersSubtab === "waitlist"
+                  ? `${waitlistSignups.length} signups${waitlistTodayCount ? ` · ${waitlistTodayCount} today` : ""}`
+                  : data ? `Updated ${formatShortDate(data.generatedAt)}` : "Loading project data"}
+              </p>
+            </div>
+            <div className="dashboard-subtabs" role="tablist" aria-label="Users and analytics views">
+              <button
+                aria-selected={usersSubtab === "users"}
+                className={usersSubtab === "users" ? "active" : undefined}
+                onClick={() => setUsersSubtab("users")}
+                role="tab"
+                type="button"
+              >
+                <Users size={15} aria-hidden="true" />
+                <span>Users</span>
+              </button>
+              <button
+                aria-selected={usersSubtab === "waitlist"}
+                className={usersSubtab === "waitlist" ? "active" : undefined}
+                onClick={() => setUsersSubtab("waitlist")}
+                role="tab"
+                type="button"
+              >
+                <Mail size={15} aria-hidden="true" />
+                <span>Waitlist</span>
+              </button>
             </div>
           </div>
 
-          <div className="dashboard-user-list">
-            {dashboardUsers.map((item) => (
-              <button className="dashboard-user-row dashboard-user-button" key={item.id} onClick={() => onNavigate(`/dashboard/users/${item.id}`)} type="button">
-                <div className="dashboard-user-main">
-                  <div className="dashboard-avatar">{item.email[0]?.toUpperCase() ?? "U"}</div>
-                  <div>
-                    <h3>{item.email}</h3>
-                    <p>Joined {formatShortDate(item.createdAt)}</p>
+          {usersSubtab === "users" ? (
+            <div className="dashboard-user-list">
+              {dashboardUsers.map((item) => (
+                <button className="dashboard-user-row dashboard-user-button" key={item.id} onClick={() => onNavigate(`/dashboard/users/${item.id}`)} type="button">
+                  <div className="dashboard-user-main">
+                    <div className="dashboard-avatar">{item.email[0]?.toUpperCase() ?? "U"}</div>
+                    <div>
+                      <h3>{item.email}</h3>
+                      <p>Joined {formatShortDate(item.createdAt)}</p>
+                    </div>
                   </div>
+                  <div className="dashboard-user-stats">
+                    <span>{(item.books ?? []).length} books</span>
+                    <span>{item.imagesGenerated ?? (item.images ?? []).length} images</span>
+                    <span>{formatBytes((item.bookStorageBytes ?? 0) + (item.imageStorageBytes ?? 0))}</span>
+                  </div>
+                  <ChevronRight className="dashboard-row-arrow" size={18} aria-hidden="true" />
+                </button>
+              ))}
+              {!data && !error && (
+                <div className="dashboard-loading">
+                  <Loader2 className="spin" size={22} aria-hidden="true" />
+                  <span>Loading dashboard</span>
                 </div>
-                <div className="dashboard-user-stats">
-                  <span>{(item.books ?? []).length} books</span>
-                  <span>{item.imagesGenerated ?? (item.images ?? []).length} images</span>
-                  <span>{formatBytes((item.bookStorageBytes ?? 0) + (item.imageStorageBytes ?? 0))}</span>
+              )}
+            </div>
+          ) : (
+            <div className="dashboard-waitlist-panel">
+              {waitlistSignups.length ? (
+                <div className="dashboard-waitlist-table-wrap">
+                  <table className="dashboard-waitlist-table">
+                    <thead>
+                      <tr>
+                        <th>Email</th>
+                        <th>Joined</th>
+                        <th>Source</th>
+                        <th>Viewport</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {waitlistSignups.map((signup) => (
+                        <tr key={signup.id}>
+                          <td>
+                            <span className="dashboard-waitlist-email">{signup.email}</span>
+                          </td>
+                          <td>{formatShortDateTime(signup.createdAt)}</td>
+                          <td>{signup.source.replaceAll("_", " ")}</td>
+                          <td>{formatWaitlistViewport(signup)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-                <ChevronRight className="dashboard-row-arrow" size={18} aria-hidden="true" />
-              </button>
-            ))}
-            {!data && !error && (
-              <div className="dashboard-loading">
-                <Loader2 className="spin" size={22} aria-hidden="true" />
-                <span>Loading dashboard</span>
-              </div>
-            )}
-          </div>
+              ) : (
+                <p className="dashboard-empty-detail">No launch waitlist signups yet.</p>
+              )}
+            </div>
+          )}
         </section>
       </div>
 
@@ -6951,6 +7050,9 @@ function App() {
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [pendingDeleteExiting, setPendingDeleteExiting] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [isLandingWaitlistViewport, setIsLandingWaitlistViewport] = useState(() =>
+    window.matchMedia(LANDING_WAITLIST_QUERY).matches
+  );
   const [checkoutResult, setCheckoutResult] = useState<"success" | "canceled" | "">("");
   const [speechHighlight, setSpeechHighlight] = useState<SpeechHighlight | null>(null);
   const [readerImageMode, setReaderImageMode] = useState(false);
@@ -7207,6 +7309,15 @@ function App() {
   const navigateDashboard = useCallback((path: string) => {
     window.history.pushState({}, "", path);
     setDashboardPath(window.location.pathname);
+  }, []);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(LANDING_WAITLIST_QUERY);
+    const updateViewport = () => setIsLandingWaitlistViewport(mediaQuery.matches);
+
+    updateViewport();
+    mediaQuery.addEventListener("change", updateViewport);
+    return () => mediaQuery.removeEventListener("change", updateViewport);
   }, []);
 
   useEffect(() => {
@@ -8571,6 +8682,12 @@ function App() {
     setSpeechHighlight(null);
   };
 
+  useEffect(() => {
+    if (!isLandingWaitlistViewport) return;
+    stopAudio();
+    setPlayback("idle");
+  }, [isLandingWaitlistViewport]);
+
   const adjustReaderTextScale = (delta: number) => {
     setReaderTextScale((scale) => clampReaderTextScale(Number((scale + delta / 16).toFixed(4))));
   };
@@ -8843,6 +8960,44 @@ function App() {
     }
 
     setBusy(false);
+  };
+
+  const joinLaunchWaitlist = async (waitlistEmail: string) => {
+    const trimmedEmail = waitlistEmail.trim().toLowerCase();
+    if (!trimmedEmail) {
+      setNotice("Add your email to join the launch list.");
+      return false;
+    }
+
+    setBusy(true);
+    setNotice("");
+
+    const { error } = await supabase
+      .from("launch_waitlist_signups")
+      .insert({
+        email: trimmedEmail,
+        source: "landing_mobile_tablet",
+        launch_context: {
+          viewport_width: window.innerWidth,
+          viewport_height: window.innerHeight,
+          color_scheme: readerThemeMode
+        }
+      });
+
+    setBusy(false);
+
+    if (!error) {
+      setNotice("");
+      return true;
+    }
+
+    if (error.code === "23505") {
+      setNotice("");
+      return true;
+    }
+
+    setNotice(error.message || "Could not join the launch list. Please try again.");
+    return false;
   };
 
   const signInWithGoogle = async () => {
@@ -10804,10 +10959,11 @@ function App() {
     );
   }
 
-  if (!session) {
+  if (!session || isLandingWaitlistViewport) {
     return (
       <LandingPage
         handleAuth={handleAuth}
+        joinLaunchWaitlist={joinLaunchWaitlist}
         signInWithGoogle={signInWithGoogle}
         email={email}
         setEmail={setEmail}

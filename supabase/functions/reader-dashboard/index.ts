@@ -34,6 +34,14 @@ type ReaderImageRow = {
   user_id: string;
 };
 
+type LaunchWaitlistSignupRow = {
+  created_at: string;
+  email: string;
+  id: string;
+  launch_context: Record<string, unknown> | null;
+  source: string | null;
+};
+
 type StorageObjectRow = {
   metadata: Record<string, unknown> | null;
   name: string;
@@ -306,20 +314,27 @@ Deno.serve(async (req) => {
     const [
       users,
       { data: books, error: booksError },
-      { data: readerImages, error: readerImagesError }
+      { data: readerImages, error: readerImagesError },
+      { data: waitlistSignups, error: waitlistError }
     ] = await Promise.all([
       listAllUsers(adminClient),
       adminClient.from("books").select("created_at, document_type, file_name, file_size, id, storage_path, title, user_id"),
       adminClient
         .from("reader_images")
-        .select("book_id, created_at, end_word, id, prompt, start_word, storage_path, style, user_id")
+        .select("book_id, created_at, end_word, id, prompt, start_word, storage_path, style, user_id"),
+      adminClient
+        .from("launch_waitlist_signups")
+        .select("created_at, email, id, launch_context, source")
+        .order("created_at", { ascending: false })
     ]);
 
     if (booksError) throw booksError;
     if (readerImagesError) throw readerImagesError;
+    if (waitlistError) throw waitlistError;
 
     const bookRows = (books ?? []) as BookRow[];
     const imageRows = (readerImages ?? []) as ReaderImageRow[];
+    const waitlistRows = (waitlistSignups ?? []) as LaunchWaitlistSignupRow[];
     const [bookObjects, imageObjects] = await Promise.all([
       listKnownStorageObjects(
         adminClient,
@@ -423,7 +438,14 @@ Deno.serve(async (req) => {
         const rightCreatedAt = right.createdAt ?? "";
         const leftCreatedAt = left.createdAt ?? "";
         return rightCreatedAt.localeCompare(leftCreatedAt);
-      })
+      }),
+      waitlist: waitlistRows.map((signup) => ({
+        createdAt: signup.created_at,
+        email: signup.email,
+        id: signup.id,
+        launchContext: signup.launch_context ?? {},
+        source: signup.source ?? "landing_mobile_tablet"
+      }))
     });
   } catch (error) {
     return jsonResponse(
