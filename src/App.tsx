@@ -2621,6 +2621,8 @@ type DashboardVideoPlayer = {
 
 const WEEKLY_DASHBOARD_START_DATE = "2026-05-18";
 const WEEKLY_DASHBOARD_SKIPPED_WEEK_START_DATES = new Set(["2026-06-01"]);
+const COMPARISON_YOUTUBE_CHANNEL_URL = "https://www.youtube.com/channel/UC86ucorUenaLgYeo_WhBNxw";
+const COMPARISON_YOUTUBE_CHANNEL_LABEL = "Second YouTube";
 type DashboardTab = "users" | "weekly_views" | "content" | "instagram" | "tiktok";
 type SortDirection = "asc" | "desc";
 
@@ -4742,12 +4744,22 @@ function TikTokIntegrationSection({ refreshSignal, onLinksChanged }: { refreshSi
 }
 
 function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: number; linksVersion?: number }) {
+  const [activePerformanceTab, setActivePerformanceTab] = useState<"connected" | "comparison">("connected");
   const [hoveredWeekIndex, setHoveredWeekIndex] = useState<number | null>(null);
   const [averageViewExpanded, setAverageViewExpanded] = useState(false);
   const [igVideoDurations, setIgVideoDurations] = useState<Record<string, number>>({});
   const [likedByPlatformExpanded, setLikedByPlatformExpanded] = useState(false);
   const [platformViewsExpanded, setPlatformViewsExpanded] = useState(false);
   const [stayedToWatchExpanded, setStayedToWatchExpanded] = useState(false);
+  const [comparisonYouTubeError, setComparisonYouTubeError] = useState("");
+  const [comparisonYouTubeLoading, setComparisonYouTubeLoading] = useState(false);
+  const [comparisonYouTubeVideos, setComparisonYouTubeVideos] = useState<YouTubeVideoPreview[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("reader-comparison-yt-videos-cache") || "[]");
+    } catch {
+      return [];
+    }
+  });
   const [videoPlayer, setVideoPlayer] = useState<DashboardVideoPlayer | null>(null);
   const [combinedPerformanceSort, setCombinedPerformanceSort] = useState<{
     direction: SortDirection;
@@ -4836,6 +4848,41 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
       return {};
     }
   }, [refreshSignal, linksVersion]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadComparisonYouTubeFeed = async () => {
+      setComparisonYouTubeLoading(true);
+      setComparisonYouTubeError("");
+
+      try {
+        const { data, error } = await supabase.functions.invoke("youtube-feed", {
+          body: { channel: COMPARISON_YOUTUBE_CHANNEL_URL }
+        });
+
+        if (error) throw new Error(await edgeFunctionErrorMessage(error));
+        const videos = Array.isArray(data?.videos) ? data.videos as YouTubeVideoPreview[] : [];
+        if (cancelled) return;
+
+        setComparisonYouTubeVideos(videos);
+        localStorage.setItem("reader-comparison-yt-videos-cache", JSON.stringify(videos));
+      } catch (error) {
+        if (!cancelled) {
+          console.info("Comparison YouTube feed unavailable:", error);
+          setComparisonYouTubeError(error instanceof Error ? error.message : "Could not load comparison YouTube videos.");
+        }
+      } finally {
+        if (!cancelled) setComparisonYouTubeLoading(false);
+      }
+    };
+
+    void loadComparisonYouTubeFeed();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshSignal]);
 
   useEffect(() => {
     const videoPosts = igPosts.filter((post) =>
@@ -4971,6 +5018,12 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
     return dates;
   }, [igPosts, links, ttLinks, ttVideos, ytVideos]);
 
+  const comparisonReleasedVideoDates = useMemo(() => {
+    return comparisonYouTubeVideos
+      .map((video) => video.publishedAt)
+      .filter((publishedAt): publishedAt is string => Boolean(publishedAt));
+  }, [comparisonYouTubeVideos]);
+
   const getReleasedVideoCountForWeek = useCallback((startDateStr: string, endDateStr: string) => {
     const startTime = dateFromIsoDate(startDateStr).getTime();
     const endTime = dateFromIsoDate(endDateStr).getTime() + 24 * 60 * 60 * 1000 - 1;
@@ -4981,6 +5034,16 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
     }).length;
   }, [dateFromIsoDate, releasedVideoDates]);
 
+  const getComparisonReleasedVideoCountForWeek = useCallback((startDateStr: string, endDateStr: string) => {
+    const startTime = dateFromIsoDate(startDateStr).getTime();
+    const endTime = dateFromIsoDate(endDateStr).getTime() + 24 * 60 * 60 * 1000 - 1;
+
+    return comparisonReleasedVideoDates.filter((publishedAt) => {
+      const publishedTime = new Date(publishedAt).getTime();
+      return Number.isFinite(publishedTime) && publishedTime >= startTime && publishedTime <= endTime;
+    }).length;
+  }, [comparisonReleasedVideoDates, dateFromIsoDate]);
+
   const getPublishedYtViewsForWeek = useCallback((startDateStr: string, endDateStr: string) => {
     const startTime = dateFromIsoDate(startDateStr).getTime();
     const endTime = dateFromIsoDate(endDateStr).getTime() + 24 * 60 * 60 * 1000 - 1;
@@ -4990,9 +5053,22 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
       const publishedTime = new Date(video.publishedAt).getTime();
       return Number.isFinite(publishedTime) && publishedTime >= startTime && publishedTime <= endTime
         ? total + parseViews(video.views)
-        : total;
+      : total;
     }, 0);
   }, [dateFromIsoDate, parseViews, ytVideos]);
+
+  const getComparisonYtViewsForWeek = useCallback((startDateStr: string, endDateStr: string) => {
+    const startTime = dateFromIsoDate(startDateStr).getTime();
+    const endTime = dateFromIsoDate(endDateStr).getTime() + 24 * 60 * 60 * 1000 - 1;
+
+    return comparisonYouTubeVideos.reduce((total, video) => {
+      if (!video.publishedAt) return total;
+      const publishedTime = new Date(video.publishedAt).getTime();
+      return Number.isFinite(publishedTime) && publishedTime >= startTime && publishedTime <= endTime
+        ? total + parseViews(video.views)
+        : total;
+    }, 0);
+  }, [comparisonYouTubeVideos, dateFromIsoDate, parseViews]);
 
   const getPublishedIgViewsForWeek = useCallback((startDateStr: string, endDateStr: string) => {
     const startTime = dateFromIsoDate(startDateStr).getTime();
@@ -5057,6 +5133,17 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
       }
     }
 
+    if (comparisonReleasedVideoDates.length) {
+      const sortedComparisonDates = comparisonReleasedVideoDates
+        .map((publishedAt) => publishedAt.slice(0, 10))
+        .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
+        .sort();
+      if (sortedComparisonDates.length) {
+        const startDate = sortedComparisonDates[0] < WEEKLY_DASHBOARD_START_DATE ? WEEKLY_DASHBOARD_START_DATE : sortedComparisonDates[0];
+        weekBucketsBetween(startDate, sortedComparisonDates[sortedComparisonDates.length - 1]).forEach(addBucket);
+      }
+    }
+
     if (ttVideos.length) {
       const sortedTtDates = ttVideos
         .map((video) => video.publishedAt?.slice(0, 10) ?? "")
@@ -5076,20 +5163,25 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
     const rows = sourceRows.map((week) => {
       const youtubeWeek = weeklyViews.find((row) => row.startDate === week.startDate);
       const publishedYtViews = getPublishedYtViewsForWeek(week.startDate, week.endDate);
-      const ytViews = publishedYtViews;
+      const comparisonYtViews = getComparisonYtViewsForWeek(week.startDate, week.endDate);
+      const ytViews = publishedYtViews + comparisonYtViews;
       const igViews = getPublishedIgViewsForWeek(week.startDate, week.endDate);
       const ttViews = getPublishedTtViewsForWeek(week.startDate, week.endDate);
       const totalViews = ytViews + igViews + ttViews;
-      const releasedVideoCount = getReleasedVideoCountForWeek(week.startDate, week.endDate);
+      const averageEligibleViews = publishedYtViews + igViews + ttViews;
+      const averageEligibleReleasedVideoCount = getReleasedVideoCountForWeek(week.startDate, week.endDate);
+      const releasedVideoCount = averageEligibleReleasedVideoCount + getComparisonReleasedVideoCountForWeek(week.startDate, week.endDate);
       return {
         ...week,
         views: Number(youtubeWeek?.views ?? week.views ?? 0) || publishedYtViews,
+        averageEligibleReleasedVideoCount,
+        averageEligibleViews,
         ytViews,
         igViews,
         ttViews,
         totalViews,
         releasedVideoCount,
-        averageViewsPerReleasedVideo: releasedVideoCount ? totalViews / releasedVideoCount : null
+        averageViewsPerReleasedVideo: averageEligibleReleasedVideoCount ? averageEligibleViews / averageEligibleReleasedVideoCount : null
       };
     });
 
@@ -5112,7 +5204,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
         ytViewsChangePercent: percentChange(week.ytViews, previousWeek?.ytViews ?? null)
       };
     });
-  }, [igDailyViews, releasedVideoDates, ttVideos, weeklyViews, youtubeRange, weekBucketsBetween, getPublishedIgViewsForWeek, getPublishedTtViewsForWeek, getPublishedYtViewsForWeek, getReleasedVideoCountForWeek]);
+  }, [comparisonReleasedVideoDates, igDailyViews, releasedVideoDates, ttVideos, weeklyViews, youtubeRange, weekBucketsBetween, getComparisonReleasedVideoCountForWeek, getComparisonYtViewsForWeek, getPublishedIgViewsForWeek, getPublishedTtViewsForWeek, getPublishedYtViewsForWeek, getReleasedVideoCountForWeek]);
 
   const weeklyViewsDateRange = useMemo(() => {
     if (!weeklyViewsData.length) return "";
@@ -5137,9 +5229,11 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
     const ttViews = weeklyViewsData.reduce((sum, week) => sum + week.ttViews, 0);
     const totalViews = weeklyViewsData.reduce((sum, week) => sum + week.totalViews, 0);
     const releasedVideoCount = weeklyViewsData.reduce((sum, week) => sum + week.releasedVideoCount, 0);
+    const averageEligibleViews = weeklyViewsData.reduce((sum, week) => sum + week.averageEligibleViews, 0);
+    const averageEligibleReleasedVideoCount = weeklyViewsData.reduce((sum, week) => sum + week.averageEligibleReleasedVideoCount, 0);
 
     return {
-      averageViewsPerReleasedVideo: releasedVideoCount ? totalViews / releasedVideoCount : null,
+      averageViewsPerReleasedVideo: averageEligibleReleasedVideoCount ? averageEligibleViews / averageEligibleReleasedVideoCount : null,
       igViews,
       releasedVideoCount,
       ttViews,
@@ -5481,11 +5575,97 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
       );
 	  }, [formatDurationSeconds, igPosts, igVideoDurations, links, parseDurationSeconds, parseViews, ttLinks, ttVideos, ytAnalytics, ytVideos]);
 
+  const comparisonEntries = useMemo(() => {
+    const entries = comparisonYouTubeVideos.map((ytVideo, index) => {
+      const ytViews = parseViews(ytVideo.views);
+      const ytLikes = parseAnalyticsCount(ytVideo.likes);
+      const likedPercentage = ytViews ? (ytLikes / ytViews) * 100 : null;
+
+      return {
+        averageViewPercentage: null,
+        color: ["#ef4444", "#f97316", "#eab308", "#22c55e", "#3b82f6"][index % 5],
+        duration: ytVideo.duration ?? "-",
+        engagedViews: null,
+        id: `comparison-youtube-${ytVideo.id || index}`,
+        imageUrl: ytVideo.imageUrl || "https://images.unsplash.com/photo-1516979187457-637abb4f9353?w=600",
+        igAverageViewPercentage: null,
+        igCaption: null,
+        igEngagedViews: null,
+        igPost: null,
+        igStayedToWatch: null,
+        igViews: 0,
+        igViewsChangePercent: null,
+        igLikes: 0,
+        likedPercentage,
+        performanceLabel: "Public channel",
+        performanceRank: null,
+        performanceReason: `${formatExactCount(ytViews)} views${likedPercentage !== null ? ` · ${new Intl.NumberFormat("en-GB", { maximumFractionDigits: 1 }).format(likedPercentage)}% liked` : ""}`,
+        performanceScore: null,
+        platform: "youtube" as const,
+        publishedAt: ytVideo.publishedAt,
+        stayedToWatch: null,
+        title: ytVideo.title ?? "YouTube video",
+        totalLikes: ytLikes,
+        totalViews: ytViews,
+        ttLikes: 0,
+        ttVideo: null,
+        ttViews: 0,
+        ttViewsChangePercent: null,
+        watchHours: 0,
+        watchTimeShare: 0,
+        ytAverageViewPercentage: null,
+        ytEngagedViews: null,
+        ytLikes,
+        ytStayedToWatch: null,
+        ytVideo,
+        ytViews,
+        ytViewsChangePercent: null
+      };
+    });
+
+    const viewPercentiles = entries.map((entry) => Math.log1p(entry.totalViews));
+    const likedPercentiles = entries
+      .map((entry) => entry.likedPercentage)
+      .filter((value): value is number => value !== null && Number.isFinite(value));
+
+    const scoredEntries = entries.map((entry) => ({
+      ...entry,
+      performanceScore: calculateVideoPerformanceScore({
+        averageViewPercentiles: [],
+        averageViewPercentage: null,
+        likedPercentiles,
+        likedPercentage: entry.likedPercentage,
+        stayedPercentiles: [],
+        stayedToWatch: null,
+        totalViews: entry.totalViews,
+        viewPercentiles
+      })
+    }));
+
+    const rankedEntries = [...scoredEntries].sort((left, right) =>
+      compareNullableNumberForSort(left.performanceScore, right.performanceScore, "desc") ||
+      right.totalViews - left.totalViews ||
+      compareText(left.title, right.title)
+    );
+    const rankById = new Map(rankedEntries.map((entry, index) => [entry.id, index + 1]));
+
+    return scoredEntries.map((entry) => {
+      const rank = rankById.get(entry.id) ?? null;
+      return {
+        ...entry,
+        performanceLabel: videoPerformanceLabel(entry.performanceScore, rank ?? scoredEntries.length, scoredEntries.length),
+        performanceRank: rank
+      };
+    });
+  }, [comparisonYouTubeVideos, parseViews]);
+
+  const displayedPerformanceEntries = activePerformanceTab === "comparison" ? comparisonEntries : combinedEntries;
+
   const sortedCombinedEntries = useMemo(() => {
-    if (!combinedPerformanceSort) return combinedEntries;
+    if (!combinedPerformanceSort) return displayedPerformanceEntries;
 
     const { direction, key } = combinedPerformanceSort;
-    return [...combinedEntries].sort((left, right) => {
+    return [...displayedPerformanceEntries].sort((left, right) => {
       let result = 0;
 
       if (key === "title") {
@@ -5501,7 +5681,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 
       return result === 0 ? compareText(left.title, right.title) : result;
     });
-  }, [combinedEntries, combinedPerformanceSort]);
+  }, [combinedPerformanceSort, displayedPerformanceEntries]);
 
   const toggleCombinedPerformanceSort = (key: CombinedPerformanceSortKey) => {
     setCombinedPerformanceSort((current) => {
@@ -5583,26 +5763,26 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
   };
 
 	  const combinedPerformanceTotals = useMemo(() => {
-	    const totalViews = combinedEntries.reduce((sum, entry) => sum + entry.totalViews, 0);
-	    const totalLikes = combinedEntries.reduce((sum, entry) => sum + entry.totalLikes, 0);
-	    const ytViews = combinedEntries.reduce((sum, entry) => sum + entry.ytViews, 0);
-	    const igViews = combinedEntries.reduce((sum, entry) => sum + entry.igViews, 0);
-	    const ttViews = combinedEntries.reduce((sum, entry) => sum + entry.ttViews, 0);
-	    const ytLikes = combinedEntries.reduce((sum, entry) => sum + entry.ytLikes, 0);
-	    const igLikes = combinedEntries.reduce((sum, entry) => sum + entry.igLikes, 0);
-	    const ttLikes = combinedEntries.reduce((sum, entry) => sum + entry.ttLikes, 0);
+	    const totalViews = displayedPerformanceEntries.reduce((sum, entry) => sum + entry.totalViews, 0);
+	    const totalLikes = displayedPerformanceEntries.reduce((sum, entry) => sum + entry.totalLikes, 0);
+	    const ytViews = displayedPerformanceEntries.reduce((sum, entry) => sum + entry.ytViews, 0);
+	    const igViews = displayedPerformanceEntries.reduce((sum, entry) => sum + entry.igViews, 0);
+	    const ttViews = displayedPerformanceEntries.reduce((sum, entry) => sum + entry.ttViews, 0);
+	    const ytLikes = displayedPerformanceEntries.reduce((sum, entry) => sum + entry.ytLikes, 0);
+	    const igLikes = displayedPerformanceEntries.reduce((sum, entry) => sum + entry.igLikes, 0);
+	    const ttLikes = displayedPerformanceEntries.reduce((sum, entry) => sum + entry.ttLikes, 0);
 	    const watchMetricViews = ytViews + igViews;
-	    const watchHours = combinedEntries.reduce((sum, entry) => sum + entry.watchHours, 0);
+	    const watchHours = displayedPerformanceEntries.reduce((sum, entry) => sum + entry.watchHours, 0);
 	    const likedPercentage = totalViews ? (totalLikes / totalViews) * 100 : null;
-		    const engagedViews = combinedEntries.reduce((sum, entry) => sum + Number(entry.engagedViews ?? 0), 0);
-		    const ytEngagedViews = combinedEntries.reduce((sum, entry) => sum + Number(entry.ytEngagedViews ?? 0), 0);
-		    const igEngagedViews = combinedEntries.reduce((sum, entry) => sum + Number(entry.igEngagedViews ?? 0), 0);
-		    const averageViewRows = combinedEntries.filter((entry) => entry.averageViewPercentage !== null);
-		    const ytAverageRows = combinedEntries.filter((entry) => entry.ytAverageViewPercentage !== null && entry.ytViews > 0);
-		    const igAverageRows = combinedEntries.filter((entry) => entry.igAverageViewPercentage !== null && entry.igViews > 0);
-		    const stayedRows = combinedEntries.filter((entry) => entry.stayedToWatch !== null);
-		    const ytStayedRows = combinedEntries.filter((entry) => entry.ytStayedToWatch !== null && entry.ytViews > 0);
-		    const igStayedRows = combinedEntries.filter((entry) => entry.igStayedToWatch !== null && entry.igViews > 0);
+		    const engagedViews = displayedPerformanceEntries.reduce((sum, entry) => sum + Number(entry.engagedViews ?? 0), 0);
+		    const ytEngagedViews = displayedPerformanceEntries.reduce((sum, entry) => sum + Number(entry.ytEngagedViews ?? 0), 0);
+		    const igEngagedViews = displayedPerformanceEntries.reduce((sum, entry) => sum + Number(entry.igEngagedViews ?? 0), 0);
+		    const averageViewRows = displayedPerformanceEntries.filter((entry) => entry.averageViewPercentage !== null);
+		    const ytAverageRows = displayedPerformanceEntries.filter((entry) => entry.ytAverageViewPercentage !== null && entry.ytViews > 0);
+		    const igAverageRows = displayedPerformanceEntries.filter((entry) => entry.igAverageViewPercentage !== null && entry.igViews > 0);
+		    const stayedRows = displayedPerformanceEntries.filter((entry) => entry.stayedToWatch !== null);
+		    const ytStayedRows = displayedPerformanceEntries.filter((entry) => entry.ytStayedToWatch !== null && entry.ytViews > 0);
+		    const igStayedRows = displayedPerformanceEntries.filter((entry) => entry.igStayedToWatch !== null && entry.igViews > 0);
 	    const averageViewPercentage = averageViewRows.length && watchMetricViews
 	      ? averageViewRows.reduce((sum, entry) => sum + Number(entry.averageViewPercentage ?? 0) * (entry.ytViews + entry.igViews), 0) / watchMetricViews
 	      : null;
@@ -5623,7 +5803,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
 		      : null;
 
 		    return { averageViewPercentage, engagedViews, igAverageViewPercentage, igEngagedViews, igLikes, igStayedToWatch, igViews, likedPercentage, stayedToWatch, totalLikes, totalViews, ttLikes, ttViews, watchHours, ytAverageViewPercentage, ytEngagedViews, ytLikes, ytStayedToWatch, ytViews };
-		  }, [combinedEntries]);
+		  }, [displayedPerformanceEntries]);
 
   const expandedViewMetric = (views: number, changePercent: number | null = null) => {
     if (views <= 0) return "-";
@@ -5903,7 +6083,36 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
           </p>
         </div>
 
-        {combinedEntries.length > 0 ? (
+        <div className="combined-performance-tabs" role="tablist" aria-label="Performance table source">
+          <button
+            aria-selected={activePerformanceTab === "connected"}
+            className={activePerformanceTab === "connected" ? "active" : ""}
+            onClick={() => setActivePerformanceTab("connected")}
+            role="tab"
+            type="button"
+          >
+            Connected content
+            <span>{combinedEntries.length}</span>
+          </button>
+          <button
+            aria-selected={activePerformanceTab === "comparison"}
+            className={activePerformanceTab === "comparison" ? "active" : ""}
+            onClick={() => setActivePerformanceTab("comparison")}
+            role="tab"
+            type="button"
+          >
+            {COMPARISON_YOUTUBE_CHANNEL_LABEL}
+            <span>{comparisonYouTubeLoading ? "..." : comparisonEntries.length}</span>
+          </button>
+        </div>
+
+        {activePerformanceTab === "comparison" && comparisonYouTubeError && (
+          <div className="dashboard-error" style={{ margin: "0 0 18px 0" }}>
+            <span>{comparisonYouTubeError}</span>
+          </div>
+        )}
+
+        {displayedPerformanceEntries.length > 0 ? (
           <div className="youtube-analytics-table-wrap combined-performance-table-wrap">
             <table className="youtube-analytics-table combined-performance-table">
               <thead>
@@ -6153,9 +6362,22 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
           </div>
         ) : (
           <div className="dashboard-sparkline-empty" style={{ minHeight: 140 }}>
-            <InfoIcon />
-            <span style={{ marginTop: 8, fontWeight: 700 }}>No video or reel content found.</span>
-            <small style={{ color: '#64748b', marginTop: 4 }}>Connect YouTube Sync or Instagram Sync tabs to retrieve lists.</small>
+            {activePerformanceTab === "comparison" && comparisonYouTubeLoading ? (
+              <>
+                <Loader2 className="spin" size={18} aria-hidden="true" />
+                <span style={{ marginTop: 8, fontWeight: 700 }}>Loading comparison YouTube videos</span>
+              </>
+            ) : (
+              <>
+                <InfoIcon />
+                <span style={{ marginTop: 8, fontWeight: 700 }}>No video or reel content found.</span>
+                <small style={{ color: '#64748b', marginTop: 4 }}>
+                  {activePerformanceTab === "comparison"
+                    ? "The comparison channel did not return any public uploads."
+                    : "Connect YouTube Sync or Instagram Sync tabs to retrieve lists."}
+                </small>
+              </>
+            )}
           </div>
         )}
       </div>

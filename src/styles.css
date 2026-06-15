@@ -12122,6 +12122,55 @@ html[data-color-scheme] .library-upgrade-button {
   margin: 0;
 }
 
+.combined-performance-tabs {
+  display: inline-flex;
+  gap: 6px;
+  margin: 0 0 18px 0;
+  padding: 4px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.18);
+}
+
+.combined-performance-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #64748b;
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.combined-performance-tabs button:hover,
+.combined-performance-tabs button:focus-visible {
+  color: #0f172a;
+  background: rgba(255, 255, 255, 0.7);
+  outline: none;
+}
+
+.combined-performance-tabs button.active {
+  color: #0f172a;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+}
+
+.combined-performance-tabs button span {
+  min-width: 22px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+  color: inherit;
+  font-size: 0.72rem;
+  text-align: center;
+}
+
 /* Combined Content Library Table */
 .combined-videos-table-wrap {
   overflow-x: auto;
