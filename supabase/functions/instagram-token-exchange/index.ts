@@ -45,7 +45,7 @@ const graphGet = async (path: string, token: string, params: Record<string, stri
   const response = await fetch(url);
   const body = await response.json();
   if (!response.ok) {
-    throw new Error(body.error?.message || "Facebook Graph API request failed.");
+    throw new Error(instagramErrorMessage(body, "Facebook Graph API request failed."));
   }
   return body;
 };
@@ -57,6 +57,66 @@ const withStage = async <T,>(stage: string, work: () => Promise<T>) => {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${stage}: ${message}`);
   }
+};
+
+const instagramErrorMessage = (body: any, fallback: string) => {
+  const message =
+    body?.error?.message ||
+    body?.error_message ||
+    (typeof body?.error === "string" ? body.error : "") ||
+    fallback;
+  const type = body?.error?.type || body?.error_type;
+  const code = body?.error?.code || body?.code;
+  const detail = [type, code ? `code ${code}` : ""].filter(Boolean).join(", ");
+  return detail ? `${message} (${detail})` : message;
+};
+
+const describeReturnedPages = (pages: any) => {
+  const data = Array.isArray(pages?.data) ? pages.data : [];
+  if (!data.length) {
+    return "Facebook returned zero Pages for this login. In the Facebook consent screen, choose the Facebook Page connected to your Instagram professional account and approve all requested Page/Instagram permissions.";
+  }
+
+  const pageNames = data
+    .map((page: any) => {
+      const ig = page?.instagram_business_account;
+      return `${page?.name || page?.id || "Unnamed Page"}${ig?.id ? ` -> Instagram @${ig.username || ig.id}` : " -> no connected Instagram professional account returned"}`;
+    })
+    .join("; ");
+
+  return `Facebook returned ${data.length} Page(s), but none had a connected Instagram professional account with a Page access token. Returned Pages: ${pageNames}. Make sure the Instagram account is Professional, linked to the selected Facebook Page, and that your Facebook user has full control/task access to that Page.`;
+};
+
+const usableInstagramPage = (pages: any) => {
+  const data = Array.isArray(pages?.data) ? pages.data : [];
+  return data.find((item: any) => item.instagram_business_account?.id && item.access_token);
+};
+
+const loadBusinessPages = async (userToken: string) => {
+  const businesses = await graphGet("me/businesses", userToken, {
+    fields: "id,name",
+    limit: "50"
+  });
+  const allPages: any[] = [];
+
+  for (const business of businesses.data ?? []) {
+    for (const edge of ["owned_pages", "client_pages"]) {
+      try {
+        const pages = await graphGet(`${business.id}/${edge}`, userToken, {
+          fields: "id,name,access_token,instagram_business_account{id,username}",
+          limit: "100"
+        });
+        allPages.push(...(pages.data ?? []).map((page: any) => ({
+          ...page,
+          business: { id: business.id, name: business.name, edge }
+        })));
+      } catch (error) {
+        console.warn(`Could not load ${edge} for business ${business.id}:`, error instanceof Error ? error.message : String(error));
+      }
+    }
+  }
+
+  return { data: allPages };
 };
 
 const exchangeCode = async (code: string, redirectUri: string) => {
@@ -71,7 +131,7 @@ const exchangeCode = async (code: string, redirectUri: string) => {
   const shortResponse = await fetch(shortUrl);
   const shortBody = await shortResponse.json();
   if (!shortResponse.ok || !shortBody.access_token) {
-    throw new Error(shortBody.error?.message || "Could not exchange Instagram authorization code.");
+    throw new Error(instagramErrorMessage(shortBody, "Could not exchange Instagram authorization code."));
   }
 
   const longUrl = new URL(`https://graph.facebook.com/${INSTAGRAM_GRAPH_VERSION}/oauth/access_token`);
@@ -83,7 +143,7 @@ const exchangeCode = async (code: string, redirectUri: string) => {
   const longResponse = await fetch(longUrl);
   const longBody = await longResponse.json();
   if (!longResponse.ok || !longBody.access_token) {
-    console.warn("Could not create long-lived Instagram token; using authorization-code token:", longBody.error?.message || longBody.error || "unknown error");
+    console.warn("Could not create long-lived Instagram token; using authorization-code token:", instagramErrorMessage(longBody, "unknown error"));
     return shortBody as { access_token: string; expires_in?: number };
   }
 
@@ -131,9 +191,15 @@ Deno.serve(async (req) => {
       fields: "id,name,access_token,instagram_business_account{id,username}",
       limit: "25"
     }));
-    const page = (pages.data ?? []).find((item: any) => item.instagram_business_account?.id && item.access_token);
+    let page = usableInstagramPage(pages);
+    let pageDiagnostics = pages;
     if (!page) {
-      throw new Error("No Facebook Page with a connected Instagram professional account was returned.");
+      const businessPages = await withStage("business page lookup", () => loadBusinessPages(userToken.access_token));
+      page = usableInstagramPage(businessPages);
+      pageDiagnostics = businessPages.data?.length ? businessPages : pages;
+    }
+    if (!page) {
+      throw new Error(describeReturnedPages(pageDiagnostics));
     }
 
     await storeConnection(supabaseUrl, serviceRoleKey, {

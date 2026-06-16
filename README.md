@@ -43,6 +43,7 @@ supabase functions deploy youtube-feed
 supabase functions deploy youtube-analytics
 supabase functions deploy instagram-token-exchange
 supabase functions deploy instagram-feed
+supabase functions deploy reels-post
 ```
 
 ## Owner dashboard
@@ -60,10 +61,16 @@ supabase secrets set GOOGLE_CLIENT_SECRET=...
 supabase secrets set GOOGLE_CLIENT_ID=...
 supabase secrets set YOUTUBE_API_KEY=...
 supabase secrets set YOUTUBE_CHANNEL_ID=@ilumereader
-supabase secrets set INSTAGRAM_APP_ID=...
-supabase secrets set INSTAGRAM_APP_SECRET=...
+supabase secrets set INSTAGRAM_PLATFORM_APP_ID=...
+supabase secrets set INSTAGRAM_PLATFORM_APP_SECRET=...
 supabase secrets set INSTAGRAM_ACCESS_TOKEN=...
 ```
+
+Instagram relinking uses Meta's Instagram API with Instagram Login. Set `VITE_INSTAGRAM_PLATFORM_APP_ID`
+and the Supabase `INSTAGRAM_PLATFORM_APP_ID` secret to the Instagram app ID from Meta > Products >
+Instagram > API setup, not the Facebook App ID. For local testing, add
+`http://localhost:5173/auth/instagram/callback` to that Instagram app's valid OAuth redirect URIs,
+then restart Vite so `VITE_` env changes are loaded.
 
 The database migrations create:
 

@@ -28,6 +28,7 @@ Deno.serve(async (req) => {
     const clientSecret = requiredEnv("TIKTOK_CLIENT_SECRET");
     const redirectUri = payload.redirectUri;
     const code = payload.code;
+    const codeVerifier = payload.codeVerifier;
     const refreshToken = payload.refreshToken;
 
     if (!clientKey) throw new Error("Missing TikTok client key.");
@@ -45,6 +46,7 @@ Deno.serve(async (req) => {
           client_key: clientKey,
           client_secret: clientSecret,
           code,
+          ...(typeof codeVerifier === "string" && codeVerifier ? { code_verifier: codeVerifier } : {}),
           grant_type: "authorization_code",
           redirect_uri: redirectUri
         });

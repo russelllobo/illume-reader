@@ -2623,8 +2623,71 @@ const WEEKLY_DASHBOARD_START_DATE = "2026-05-18";
 const WEEKLY_DASHBOARD_SKIPPED_WEEK_START_DATES = new Set(["2026-06-01"]);
 const COMPARISON_YOUTUBE_CHANNEL_URL = "https://www.youtube.com/channel/UC86ucorUenaLgYeo_WhBNxw";
 const COMPARISON_YOUTUBE_CHANNEL_LABEL = "Second YouTube";
-type DashboardTab = "users" | "weekly_views" | "content" | "instagram" | "tiktok";
+const REELS_BUCKET = "reels";
+type DashboardTab = "users" | "weekly_views" | "sync" | "reels";
+type DashboardSyncTab = "content" | "instagram" | "tiktok";
 type SortDirection = "asc" | "desc";
+
+type DashboardGeneratedReel = {
+  id: string;
+  metadata: {
+    captions?: string[];
+    durations?: number[];
+    selected_audio?: string | null;
+    selected_images?: string[];
+    text_font?: string;
+    timing_mode?: string;
+    timing_preset?: ReelTimingPreset | null;
+  };
+  outputDir: string;
+  previewUrl: string;
+  publicSlideUrls?: string[];
+  publicVideoStoragePath?: string;
+  publicVideoUrl?: string;
+  slidePaths?: string[];
+  slidePreviewUrls?: string[];
+  sizeBytes: number;
+  videoPath: string;
+  youtubePath?: string;
+  youtubePreviewUrl?: string;
+};
+
+type ReelMusicTrack = {
+  name: string;
+  path: string;
+  sizeBytes?: number;
+};
+
+type ReelTimingPreset = {
+  endAt: number;
+  maxSlideSeconds: number;
+  minSlideSeconds: number;
+  name: string;
+  snapWindow: number;
+  transitionTargets: number[];
+};
+
+type ReelTimingPresetFile = {
+  tracks: Record<string, ReelTimingPreset>;
+  version: number;
+};
+
+type DashboardPostResult = {
+  error?: string;
+  message?: string;
+  platform: "youtube" | "instagram" | "tiktok" | string;
+  result?: unknown;
+  url?: string;
+};
+
+type DashboardPostResponse = {
+  cleanup?: {
+    deleted?: boolean;
+    error?: string;
+    path?: string;
+  };
+  results?: DashboardPostResult[];
+};
 
 const parseViewCount = (views: string | number | null | undefined): number => {
   if (typeof views === "number") return Number.isFinite(views) ? views : 0;
@@ -2871,27 +2934,49 @@ const numericSortDirectionFor = (direction: SortDirection) => (direction === "as
 
 const YOUTUBE_OAUTH_SCOPES = [
   "https://www.googleapis.com/auth/youtube.readonly",
-  "https://www.googleapis.com/auth/yt-analytics.readonly"
+  "https://www.googleapis.com/auth/yt-analytics.readonly",
+  "https://www.googleapis.com/auth/youtube.upload"
 ];
 const YOUTUBE_OAUTH_SCOPE = YOUTUBE_OAUTH_SCOPES.join(" ");
 const LEGACY_YOUTUBE_CLIENT_ID = "1013878176385-hhhdtg9kim3g6gencok1ka058osc25q1.apps.googleusercontent.com";
 const YOUTUBE_DEFAULT_CLIENT_ID =
   (import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined) ??
   "1013878176385-hhhdtg9kim3g6gencok1ka058osc25q1.apps.googleusercontent.com";
-const TIKTOK_OAUTH_SCOPE = "user.info.basic,video.list";
+const TIKTOK_OAUTH_SCOPE = "user.info.basic,video.list,video.upload,video.publish";
 const TIKTOK_DEFAULT_CLIENT_KEY =
   (import.meta.env.VITE_TIKTOK_CLIENT_KEY as string | undefined) ??
   "sbawrw36ejuxde41rf";
+const TIKTOK_PKCE_CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
 const INSTAGRAM_OAUTH_SCOPES = [
   "instagram_basic",
+  "instagram_content_publish",
   "instagram_manage_insights",
   "pages_show_list",
-  "pages_read_engagement"
+  "pages_read_engagement",
+  "business_management"
 ];
 const INSTAGRAM_OAUTH_SCOPE = INSTAGRAM_OAUTH_SCOPES.join(",");
 const INSTAGRAM_DEFAULT_APP_ID = (import.meta.env.VITE_INSTAGRAM_APP_ID as string | undefined) ?? "";
-const INSTAGRAM_LOGIN_CONFIGURATION_ID = "1662166615913905";
+const INSTAGRAM_PLATFORM_APP_ID = (import.meta.env.VITE_INSTAGRAM_PLATFORM_APP_ID as string | undefined) ?? "";
 const validMetaAppId = (value: string | null | undefined) => Boolean(value && /^\d{5,}$/.test(value.trim()));
+const instagramOAuthAppId = () => (validMetaAppId(INSTAGRAM_DEFAULT_APP_ID) ? INSTAGRAM_DEFAULT_APP_ID.trim() : INSTAGRAM_PLATFORM_APP_ID.trim());
+const instagramOAuthErrorMessage = (message: string) => {
+  if (/invalid platform app/i.test(message)) {
+    return "Meta rejected the app ID for Instagram Login. I switched the app to the Facebook/Instagram Business Graph login path; reload and try Link Instagram publish again.";
+  }
+  return message;
+};
+const localSecureOAuthRedirect = (redirectUri: string) => {
+  if (typeof window === "undefined") return redirectUri;
+  const url = new URL(redirectUri, window.location.origin);
+  if (url.protocol === "http:" && url.hostname === "127.0.0.1") {
+    url.hostname = "localhost";
+  }
+  return url.toString();
+};
+const instagramDefaultRedirectUri = () => localSecureOAuthRedirect("/auth/instagram/callback");
+const storedInstagramRedirectUri = () =>
+  localSecureOAuthRedirect(localStorage.getItem("reader-ig-redirect-uri") || instagramDefaultRedirectUri());
 const storedInstagramAppId = () => {
   const stored = localStorage.getItem("reader-ig-app-id");
   return validMetaAppId(stored) ? stored!.trim() : INSTAGRAM_DEFAULT_APP_ID;
@@ -2901,6 +2986,16 @@ const storedYouTubeAccessToken = () =>
   localStorage.getItem("reader-yt-access-token") ??
   (localStorage.getItem("reader-yt-api-key")?.startsWith("AIzaSy") ? null : localStorage.getItem("reader-yt-api-key")) ??
   "";
+
+const randomTikTokCodeVerifier = (length = 64) => {
+  const values = crypto.getRandomValues(new Uint8Array(length));
+  return Array.from(values, (value) => TIKTOK_PKCE_CHARACTERS[value % TIKTOK_PKCE_CHARACTERS.length]).join("");
+};
+
+const tiktokCodeChallenge = async (verifier: string) => {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+};
 
 const initialYouTubeStatus = (): ServiceConnectionStatus => {
   const savedStatus = localStorage.getItem("reader-yt-status") as ServiceConnectionStatus | null;
@@ -2940,7 +3035,7 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
   const [igAppId, setIgAppId] = useState("");
   const [igAppSecret, setIgAppSecret] = useState("");
   const [igAccessToken, setIgAccessToken] = useState("");
-  const [igRedirectUri, setIgRedirectUri] = useState(() => localStorage.getItem("reader-ig-redirect-uri") ?? window.location.origin + "/auth/instagram/callback");
+  const [igRedirectUri, setIgRedirectUri] = useState(storedInstagramRedirectUri);
   const [igStatus, setIgStatus] = useState<ServiceConnectionStatus>(() => {
     const stored = localStorage.getItem("reader-ig-status") as ServiceConnectionStatus;
     if (stored && stored !== "simulated") return stored;
@@ -3175,7 +3270,9 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
     localStorage.setItem("reader-yt-channel", ytChannel.trim() || "@ilumereader");
     localStorage.setItem("reader-yt-client-id", clientId);
     localStorage.setItem("reader-yt-redirect-uri", redirectUri);
-    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(YOUTUBE_OAUTH_SCOPE)}&access_type=offline&prompt=consent`;
+    localStorage.removeItem("reader-yt-access-token");
+    localStorage.removeItem("reader-yt-refresh-token");
+    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(YOUTUBE_OAUTH_SCOPE)}&access_type=offline&prompt=consent&include_granted_scopes=true&state=${crypto.randomUUID()}`;
     window.location.href = authUrl;
   };
 
@@ -3197,7 +3294,9 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
     localStorage.setItem("reader-ig-app-id", igAppId);
     localStorage.setItem("reader-ig-app-secret", igAppSecret);
     localStorage.setItem("reader-ig-access-token", igAccessToken);
-    localStorage.setItem("reader-ig-redirect-uri", igRedirectUri);
+    const redirectUri = localSecureOAuthRedirect(igRedirectUri.trim() || instagramDefaultRedirectUri());
+    localStorage.setItem("reader-ig-redirect-uri", redirectUri);
+    setIgRedirectUri(redirectUri);
     if (igAccessToken || (igAppId && igAppSecret)) {
       setIgStatus("connected");
       localStorage.setItem("reader-ig-status", "connected");
@@ -3636,11 +3735,9 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
               Pulling API content...
             </span>
           )}
-          {!youtubeAnalytics && ytStatus !== "disconnected" && (
-            <button className="dashboard-secondary-button" onClick={handleYtOAuth} type="button" style={{ width: 'auto', margin: 0, padding: '0 16px' }}>
-              Link Google
-            </button>
-          )}
+          <button className="dashboard-secondary-button" onClick={handleYtOAuth} type="button" style={{ width: 'auto', margin: 0, padding: '0 16px' }}>
+            Relink YouTube upload
+          </button>
         </div>
 
         {fetchError && (
@@ -3648,7 +3745,7 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
             <span>{fetchError}</span>
             {fetchError.toLowerCase().includes("link google") && (
               <button className="dashboard-secondary-button" onClick={handleYtOAuth} type="button" style={{ width: 'auto', marginLeft: 12, padding: '8px 12px' }}>
-                Link Google
+                Link YouTube upload
               </button>
             )}
           </div>
@@ -3775,7 +3872,7 @@ function ContentIntegrationsSection({ refreshSignal }: { refreshSignal: number }
                   <span>
                     {authModalType === "youtube"
                       ? "Requesting scope: youtube.readonly..."
-                      : "Requesting permissions: instagram_basic, instagram_manage_insights..."}
+                      : "Requesting permissions: instagram_basic, instagram_content_publish, pages_show_list..."}
                   </span>
                 </div>
 
@@ -3819,7 +3916,7 @@ function InstagramIntegrationSection({ refreshSignal, onLinksChanged }: { refres
   const [igAppId, setIgAppId] = useState(storedInstagramAppId);
   const [igAppSecret, setIgAppSecret] = useState("");
   const [igAccessToken, setIgAccessToken] = useState("");
-  const [igRedirectUri, setIgRedirectUri] = useState(() => localStorage.getItem("reader-ig-redirect-uri") ?? window.location.origin + "/auth/instagram/callback");
+  const [igRedirectUri, setIgRedirectUri] = useState(storedInstagramRedirectUri);
   const [igStatus, setIgStatus] = useState<ServiceConnectionStatus>(() => {
     const stored = localStorage.getItem("reader-ig-status") as ServiceConnectionStatus;
     if (stored && stored !== "simulated") return stored;
@@ -3970,7 +4067,9 @@ function InstagramIntegrationSection({ refreshSignal, onLinksChanged }: { refres
     localStorage.setItem("reader-ig-app-id", igAppId);
     localStorage.setItem("reader-ig-app-secret", igAppSecret);
     localStorage.setItem("reader-ig-access-token", igAccessToken);
-    localStorage.setItem("reader-ig-redirect-uri", igRedirectUri);
+    const redirectUri = localSecureOAuthRedirect(igRedirectUri.trim() || instagramDefaultRedirectUri());
+    localStorage.setItem("reader-ig-redirect-uri", redirectUri);
+    setIgRedirectUri(redirectUri);
     if (igAccessToken || (igAppId && igAppSecret)) {
       setIgStatus("connected");
       localStorage.setItem("reader-ig-status", "connected");
@@ -3981,25 +4080,27 @@ function InstagramIntegrationSection({ refreshSignal, onLinksChanged }: { refres
   };
 
   const handleInstagramOAuth = () => {
-    const appId = validMetaAppId(INSTAGRAM_DEFAULT_APP_ID) ? INSTAGRAM_DEFAULT_APP_ID.trim() : igAppId.trim();
-    const redirectUri = igRedirectUri.trim();
+    const appId = instagramOAuthAppId();
+    const redirectUri = localSecureOAuthRedirect(igRedirectUri.trim() || instagramDefaultRedirectUri());
     if (!validMetaAppId(appId)) {
       localStorage.removeItem("reader-ig-app-id");
-      setIgAppId(INSTAGRAM_DEFAULT_APP_ID);
-      setFetchError("Your stored Meta app ID was invalid. I reset it to the .env app ID; click Link Instagram again.");
+      setFetchError("Set VITE_INSTAGRAM_APP_ID to the Meta app ID with Facebook Login and Instagram Graph API permissions, restart Vite, then relink.");
       return;
     }
 
     localStorage.setItem("reader-ig-app-id", appId);
     localStorage.setItem("reader-ig-redirect-uri", redirectUri);
+    setIgRedirectUri(redirectUri);
+    localStorage.removeItem("reader-ig-access-token");
 
     const url = new URL("https://www.facebook.com/v25.0/dialog/oauth");
     url.searchParams.set("client_id", appId);
     url.searchParams.set("redirect_uri", redirectUri);
     url.searchParams.set("response_type", "code");
-    url.searchParams.set("override_default_response_type", "true");
-    url.searchParams.set("config_id", INSTAGRAM_LOGIN_CONFIGURATION_ID);
     url.searchParams.set("scope", INSTAGRAM_OAUTH_SCOPE);
+    url.searchParams.set("auth_type", "rerequest");
+    url.searchParams.set("enable_profile_selector", "1");
+    url.searchParams.set("return_scopes", "true");
     url.searchParams.set("state", crypto.randomUUID());
     console.log("Instagram OAuth URL:", url.toString());
     window.location.href = url.toString();
@@ -4120,7 +4221,7 @@ function InstagramIntegrationSection({ refreshSignal, onLinksChanged }: { refres
           ) : (
             <button className="dashboard-secondary-button" onClick={handleInstagramOAuth} type="button" style={{ width: "auto", margin: 0, padding: "0 14px" }}>
               <InstagramIcon />
-              <span>Link Instagram</span>
+              <span>Link Instagram publish</span>
             </button>
           )}
         </div>
@@ -4138,7 +4239,7 @@ function InstagramIntegrationSection({ refreshSignal, onLinksChanged }: { refres
             <small style={{ color: '#64748b', marginTop: 4 }}>Link the connected Facebook Page to pull Instagram Business Graph totals.</small>
             <button className="dashboard-secondary-button" onClick={handleInstagramOAuth} type="button" style={{ width: "auto", marginTop: 14, padding: "8px 14px" }}>
               <InstagramIcon />
-              <span>Link Instagram</span>
+              <span>Link Instagram publish</span>
             </button>
           </div>
         ) : !feedFetched ? (
@@ -4254,7 +4355,7 @@ function InstagramIntegrationSection({ refreshSignal, onLinksChanged }: { refres
                   <div className="simulation-indicator">
                     {authModalStep >= 2 ? <CheckIcon /> : authModalStep === 1 ? <Loader2 className="spin" size={14} /> : <KeyIcon />}
                   </div>
-                  <span>Requesting permissions: instagram_basic, instagram_manage_insights...</span>
+                  <span>Requesting permissions: instagram_basic, instagram_content_publish, pages_show_list...</span>
                 </div>
 
                 <div className={`simulation-step ${authModalStep >= 3 ? "completed" : authModalStep === 2 ? "active" : ""}`}>
@@ -4461,21 +4562,26 @@ function TikTokIntegrationSection({ refreshSignal, onLinksChanged }: { refreshSi
     return `${minutes}:${String(remainder).padStart(2, "0")}`;
   };
 
-  const handleTikTokOAuth = () => {
+  const handleTikTokOAuth = async () => {
     const clientKey = ttClientKey.trim();
     const redirectUri = ttRedirectUri.trim();
     if (!clientKey) {
       setFetchError("Enter your TikTok client key before linking TikTok.");
       return;
     }
+    const codeVerifier = randomTikTokCodeVerifier();
+    const codeChallenge = await tiktokCodeChallenge(codeVerifier);
     localStorage.setItem("reader-tt-client-key", clientKey);
     localStorage.setItem("reader-tt-redirect-uri", redirectUri);
+    localStorage.setItem("reader-tt-code-verifier", codeVerifier);
     const url = new URL("https://www.tiktok.com/v2/auth/authorize/");
     url.searchParams.set("client_key", clientKey);
     url.searchParams.set("scope", TIKTOK_OAUTH_SCOPE);
     url.searchParams.set("response_type", "code");
     url.searchParams.set("redirect_uri", redirectUri);
     url.searchParams.set("state", crypto.randomUUID());
+    url.searchParams.set("code_challenge", codeChallenge);
+    url.searchParams.set("code_challenge_method", "S256");
     window.location.href = url.toString();
   };
 
@@ -4740,6 +4846,722 @@ function TikTokIntegrationSection({ refreshSignal, onLinksChanged }: { refreshSi
         </div>
       )}
     </div>
+  );
+}
+
+const DEFAULT_REEL_TRANSITION_TARGETS = [2.767, 4.967, 7.1];
+const DEFAULT_REEL_END_AT = 11.54;
+
+const defaultReelTimingPreset = (trackName = "Custom timing"): ReelTimingPreset => ({
+  endAt: DEFAULT_REEL_END_AT,
+  maxSlideSeconds: 4.5,
+  minSlideSeconds: 1.25,
+  name: trackName.replace(/\.[^.]+$/, "") || "Custom timing",
+  snapWindow: 0.45,
+  transitionTargets: DEFAULT_REEL_TRANSITION_TARGETS
+});
+
+const normalizeReelTransitionTargets = (targets?: number[]) =>
+  DEFAULT_REEL_TRANSITION_TARGETS.map((fallback, index) => {
+    const value = targets?.[index];
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+  });
+
+const formatReelTime = (seconds: number) => {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00.00";
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds - minutes * 60;
+  return `${minutes}:${remainder.toFixed(2).padStart(5, "0")}`;
+};
+
+const formatTrackLabel = (track?: ReelMusicTrack | null) => {
+  if (!track) return "No music track selected";
+  return track.name.replace(/\.[^.]+$/, "");
+};
+
+const safeReelStorageName = (value: string) =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 96) || "reel.mp4";
+
+function ReelStudioSection() {
+  const [sourceDir, setSourceDir] = useState("/home/russ/reading a classic");
+  const [count, setCount] = useState(3);
+  const [seedBase] = useState(() => Math.floor(Date.now() / 1000));
+  const [reels, setReels] = useState<DashboardGeneratedReel[]>([]);
+  const [selectedReelId, setSelectedReelId] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [posting, setPosting] = useState(false);
+  const [statusMessage, setStatusMessage] = useState("");
+  const [postResults, setPostResults] = useState<DashboardPostResult[]>([]);
+  const [platforms, setPlatforms] = useState({ instagram: true, tiktok: false, youtube: true });
+  const [tiktokPostType, setTiktokPostType] = useState<"slideshow" | "slideshow_auto_music" | "video">("slideshow_auto_music");
+  const [title, setTitle] = useState("Trying to read a classic without dissociating");
+  const [description, setDescription] = useState("Trying to read a classic without dissociating #reading #classics #bored #art");
+  const [privacyStatus, setPrivacyStatus] = useState("private");
+  const [publicVideoUrl, setPublicVideoUrl] = useState("");
+  const [musicTracks, setMusicTracks] = useState<ReelMusicTrack[]>([]);
+  const [timingPresets, setTimingPresets] = useState<ReelTimingPresetFile>({ tracks: {}, version: 1 });
+  const [selectedAudioPath, setSelectedAudioPath] = useState("");
+  const [presetName, setPresetName] = useState("Custom timing");
+  const [transitionTargets, setTransitionTargets] = useState<number[]>(DEFAULT_REEL_TRANSITION_TARGETS);
+  const [endAt, setEndAt] = useState(DEFAULT_REEL_END_AT);
+  const [snapWindow, setSnapWindow] = useState(0.45);
+  const [minSlideSeconds, setMinSlideSeconds] = useState(1.25);
+  const [maxSlideSeconds, setMaxSlideSeconds] = useState(4.5);
+  const [snapToBeats, setSnapToBeats] = useState(true);
+  const [musicLoading, setMusicLoading] = useState(false);
+  const [presetSaving, setPresetSaving] = useState(false);
+  const [hostingVideo, setHostingVideo] = useState(false);
+  const [activeCutIndex, setActiveCutIndex] = useState(0);
+  const [mediaDuration, setMediaDuration] = useState(0);
+  const [mediaCurrentTime, setMediaCurrentTime] = useState(0);
+  const [audioPlaying, setAudioPlaying] = useState(false);
+  const mediaRef = useRef<HTMLAudioElement | null>(null);
+
+  const selectedReel = reels.find((reel) => reel.id === selectedReelId) ?? reels[0] ?? null;
+  const selectedTrack = musicTracks.find((track) => track.path === selectedAudioPath) ?? musicTracks[0] ?? null;
+  const selectedTrackKey = selectedTrack?.name ?? "";
+  const localReelApiAvailable =
+    import.meta.env.DEV ||
+    (typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname));
+  const selectedTrackPreviewUrl = localReelApiAvailable && selectedTrack ? `/api/reels/audio?path=${encodeURIComponent(selectedTrack.path)}` : "";
+  const timingBarEnd = Math.max(endAt || DEFAULT_REEL_END_AT, ...transitionTargets, 1);
+
+  const selectedPlatforms = useMemo(
+    () => Object.entries(platforms).filter(([, enabled]) => enabled).map(([platform]) => platform),
+    [platforms]
+  );
+
+  useEffect(() => {
+    if (selectedReel?.publicVideoUrl) setPublicVideoUrl(selectedReel.publicVideoUrl);
+  }, [selectedReel?.publicVideoUrl]);
+
+  const formatDurationList = (durations?: number[]) =>
+    durations?.length ? durations.map((duration) => `${duration.toFixed(2)}s`).join(" / ") : "Reference timing";
+
+  const currentTimingPreset = (): ReelTimingPreset => ({
+    endAt: Number(endAt) || DEFAULT_REEL_END_AT,
+    maxSlideSeconds: Math.max(Number(minSlideSeconds) || 1.25, Number(maxSlideSeconds) || 4.5),
+    minSlideSeconds: Math.max(0.25, Number(minSlideSeconds) || 1.25),
+    name: presetName.trim() || formatTrackLabel(selectedTrack),
+    snapWindow: Math.max(0, Number(snapWindow) || 0),
+    transitionTargets: normalizeReelTransitionTargets(transitionTargets)
+  });
+
+  const loadMusicSettings = useCallback(async () => {
+    if (!localReelApiAvailable) {
+      setMusicTracks([]);
+      setTimingPresets({ tracks: {}, version: 1 });
+      setSelectedAudioPath("");
+      return;
+    }
+
+    setMusicLoading(true);
+    try {
+      const response = await fetch(`/api/reels/music?sourceDir=${encodeURIComponent(sourceDir)}`);
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Could not load music tracks.");
+      const tracks = (body.tracks ?? []) as ReelMusicTrack[];
+      setMusicTracks(tracks);
+      setTimingPresets((body.presets ?? { tracks: {}, version: 1 }) as ReelTimingPresetFile);
+      setSelectedAudioPath((current) => tracks.some((track) => track.path === current) ? current : tracks[0]?.path ?? "");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not load music tracks.");
+    } finally {
+      setMusicLoading(false);
+    }
+  }, [localReelApiAvailable, sourceDir]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadMusicSettings();
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [loadMusicSettings]);
+
+  useEffect(() => {
+    const preset = selectedTrackKey ? timingPresets.tracks[selectedTrackKey] ?? defaultReelTimingPreset(selectedTrackKey) : defaultReelTimingPreset();
+    setPresetName(preset.name);
+    setTransitionTargets(normalizeReelTransitionTargets(preset.transitionTargets));
+    setEndAt(preset.endAt || DEFAULT_REEL_END_AT);
+    setSnapWindow(preset.snapWindow ?? 0.45);
+    setMinSlideSeconds(preset.minSlideSeconds ?? 1.25);
+    setMaxSlideSeconds(preset.maxSlideSeconds ?? 4.5);
+  }, [selectedTrackKey, timingPresets]);
+
+  const updateTransitionTarget = (index: number, value: number) => {
+    setTransitionTargets((current) => current.map((target, targetIndex) => targetIndex === index ? value : target));
+  };
+
+  const setMediaTime = (seconds: number) => {
+    const nextTime = Math.max(0, seconds);
+    if (mediaRef.current) mediaRef.current.currentTime = nextTime;
+    setMediaCurrentTime(nextTime);
+  };
+
+  const handleTimingBarPointer = (event: PointerEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const ratio = rect.width ? Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)) : 0;
+    const nextTime = Number((ratio * timingBarEnd).toFixed(3));
+    updateTransitionTarget(activeCutIndex, nextTime);
+    setMediaTime(nextTime);
+  };
+
+  const markActiveCutAtPlayhead = () => {
+    updateTransitionTarget(activeCutIndex, Number(mediaCurrentTime.toFixed(3)));
+  };
+
+  const toggleAudioPlayback = async () => {
+    if (!mediaRef.current) return;
+    if (mediaRef.current.paused) {
+      try {
+        await mediaRef.current.play();
+        setAudioPlaying(true);
+      } catch {
+        setStatusMessage("Could not play the audio preview. Try refreshing the track.");
+      }
+      return;
+    }
+    mediaRef.current.pause();
+    setAudioPlaying(false);
+  };
+
+  const uploadHostedMedia = async (blob: Blob, fileName: string, contentType: string) => {
+    const { data: userData, error: userError } = await supabase.auth.getUser();
+    if (userError || !userData.user) throw new Error("Sign in before hosting media.");
+
+    const path = `${userData.user.id}/${Date.now()}-${safeReelStorageName(fileName)}`;
+    const { error: uploadError } = await supabase.storage.from(REELS_BUCKET).upload(path, blob, {
+      cacheControl: "3600",
+      contentType,
+      upsert: false
+    });
+    if (uploadError) throw uploadError;
+
+    const { data } = supabase.storage.from(REELS_BUCKET).getPublicUrl(path);
+    if (!data.publicUrl) throw new Error("Could not create a public reel URL.");
+    return { path, publicUrl: data.publicUrl };
+  };
+
+  const uploadHostedReel = (blob: Blob, fileName: string) => uploadHostedMedia(blob, fileName, "video/mp4");
+
+  const uploadGeneratedReel = async (reel: DashboardGeneratedReel, index: number) => {
+    const response = await fetch(reel.previewUrl);
+    if (!response.ok) throw new Error(`Could not read generated reel ${index + 1} for upload.`);
+    const blob = await response.blob();
+    return uploadHostedReel(blob, `${reel.id || `reel-${index + 1}`}.mp4`);
+  };
+
+  const uploadGeneratedSlides = async (reel: DashboardGeneratedReel) => {
+    const slideUrls = reel.slidePreviewUrls ?? [];
+    return Promise.all(slideUrls.map(async (slideUrl, index) => {
+      const response = await fetch(slideUrl);
+      if (!response.ok) throw new Error(`Could not read slide ${index + 1} for upload.`);
+      const blob = await response.blob();
+      return (await uploadHostedMedia(blob, `${reel.id || "reel"}-slide-${String(index + 1).padStart(2, "0")}.jpg`, "image/jpeg")).publicUrl;
+    }));
+  };
+
+  const handleHostedFileSelect = async (file: File | null) => {
+    if (!file) return;
+    if (file.type && file.type !== "video/mp4") {
+      setStatusMessage("Please choose an MP4 file.");
+      return;
+    }
+
+    setHostingVideo(true);
+    setStatusMessage("Uploading reel...");
+    try {
+      const { publicUrl } = await uploadHostedReel(file, file.name);
+      setPublicVideoUrl(publicUrl);
+      setStatusMessage("Reel uploaded. The public URL is ready for posting.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not upload the reel.");
+    } finally {
+      setHostingVideo(false);
+    }
+  };
+
+  const handleSavePreset = async () => {
+    if (!selectedTrackKey) return;
+    setPresetSaving(true);
+    setStatusMessage("");
+    try {
+      const nextPresets = {
+        version: timingPresets.version || 1,
+        tracks: {
+          ...timingPresets.tracks,
+          [selectedTrackKey]: currentTimingPreset()
+        }
+      };
+      const response = await fetch("/api/reels/music-presets", {
+        body: JSON.stringify({ presets: nextPresets, sourceDir }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Could not save timing preset.");
+      setTimingPresets((body.presets ?? nextPresets) as ReelTimingPresetFile);
+      setStatusMessage(`Saved timing for ${selectedTrackKey}.`);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not save timing preset.");
+    } finally {
+      setPresetSaving(false);
+    }
+  };
+
+  const handleGenerate = async () => {
+    if (!localReelApiAvailable) {
+      setStatusMessage("Live generation is not available yet because the renderer currently runs on local Python/ffmpeg files. Paste a hosted MP4 URL below to post from illumereader.com.");
+      return;
+    }
+
+    setGenerating(true);
+    setStatusMessage("");
+    setPostResults([]);
+
+    try {
+      const response = await fetch("/api/reels/generate", {
+        body: JSON.stringify({
+          audioFile: selectedTrack?.path,
+          count,
+          seedBase,
+          snapToBeats,
+          sourceDir,
+          timingPreset: selectedTrack ? currentTimingPreset() : undefined
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Could not generate reels.");
+      const nextReels = (body.reels ?? []) as DashboardGeneratedReel[];
+      setReels(nextReels);
+      setSelectedReelId(nextReels[0]?.id ?? "");
+      setStatusMessage(`Generated ${nextReels.length} reel${nextReels.length === 1 ? "" : "s"}. Uploading hosted copies...`);
+      const hostedReels = await Promise.all(nextReels.map(async (reel, index) => {
+        const [publicSlideUrls, hostedVideo] = await Promise.all([
+          uploadGeneratedSlides(reel),
+          uploadGeneratedReel(reel, index)
+        ]);
+        return {
+          ...reel,
+          publicSlideUrls,
+          publicVideoStoragePath: hostedVideo.path,
+          publicVideoUrl: hostedVideo.publicUrl
+        };
+      }));
+      setReels(hostedReels);
+      setSelectedReelId(hostedReels[0]?.id ?? "");
+      setPublicVideoUrl(hostedReels[0]?.publicVideoUrl ?? "");
+      setStatusMessage(`Generated and hosted ${hostedReels.length} reel${hostedReels.length === 1 ? "" : "s"}.`);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not generate reels.");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handlePost = async () => {
+    if (!selectedPlatforms.length) return;
+    if (!selectedReel && !publicVideoUrl.trim()) {
+      setStatusMessage("Generate a local reel or paste a public HTTPS MP4 URL before posting.");
+      return;
+    }
+    setPosting(true);
+    setStatusMessage("");
+    setPostResults([]);
+
+    try {
+      const resolvedPublicVideoUrl = publicVideoUrl.trim() || selectedReel?.publicVideoUrl || "";
+      const shouldAutoDeleteHostedVideo =
+        Boolean(selectedReel?.publicVideoStoragePath) &&
+        Boolean(selectedReel?.publicVideoUrl) &&
+        resolvedPublicVideoUrl === selectedReel?.publicVideoUrl;
+      const payload = {
+        autoDeleteHostedVideo: shouldAutoDeleteHostedVideo,
+        description,
+        hostedVideoStoragePath: shouldAutoDeleteHostedVideo ? selectedReel?.publicVideoStoragePath : undefined,
+        platforms: selectedPlatforms,
+        privacyStatus,
+        publicVideoUrl: resolvedPublicVideoUrl,
+        tiktokAutoAddMusic: tiktokPostType === "slideshow_auto_music",
+        tiktokPostMode: tiktokPostType === "slideshow_auto_music" ? "DIRECT_POST" : "MEDIA_UPLOAD",
+        tiktokPostType: tiktokPostType === "video" ? "video" : "slideshow",
+        tiktokSlideUrls: selectedReel?.publicSlideUrls ?? [],
+        title,
+        videoPath: selectedReel?.videoPath
+      };
+
+      if (resolvedPublicVideoUrl) {
+        const { data, error } = await supabase.functions.invoke("reels-post", {
+          body: payload
+        });
+        if (error) throw new Error(await edgeFunctionErrorMessage(error));
+        const postResponse = (data ?? {}) as DashboardPostResponse;
+        setPostResults(postResponse.results ?? []);
+        if (postResponse.cleanup?.deleted && selectedReel?.id) {
+          setReels((current) => current.map((reel) => reel.id === selectedReel.id
+            ? { ...reel, publicVideoStoragePath: undefined, publicVideoUrl: undefined }
+            : reel));
+          if (publicVideoUrl.trim() === resolvedPublicVideoUrl) setPublicVideoUrl("");
+        }
+      } else if (localReelApiAvailable && selectedReel?.videoPath) {
+        const response = await fetch("/api/reels/post", {
+          body: JSON.stringify(payload),
+          headers: { "Content-Type": "application/json" },
+          method: "POST"
+        });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || "Could not post reel.");
+        setPostResults((body.results ?? []) as DashboardPostResult[]);
+      } else {
+        throw new Error("Upload or host the reel before posting.");
+      }
+      setStatusMessage("Posting run finished.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not post reel.");
+    } finally {
+      setPosting(false);
+    }
+  };
+
+  const togglePlatform = (platform: keyof typeof platforms) => {
+    setPlatforms((current) => ({ ...current, [platform]: !current[platform] }));
+  };
+
+  return (
+    <section className="dashboard-user-section reel-studio-section">
+      <div className="dashboard-section-heading reel-studio-heading">
+        <div>
+          <h2>Reel generator</h2>
+          <p>{localReelApiAvailable ? "Generate the reading-a-classic slideshow, preview outputs, then send the selected hosted reel to the connected platforms." : "Upload an MP4 or use a hosted reel URL, then post from the live dashboard."}</p>
+        </div>
+        <button className="dashboard-primary-button" disabled={generating || !localReelApiAvailable} onClick={handleGenerate} type="button">
+          {generating ? <Loader2 className="spin" size={17} aria-hidden="true" /> : <RefreshCw size={17} aria-hidden="true" />}
+          <span>{generating ? "Generating" : localReelApiAvailable ? "Generate reels" : "Local generator only"}</span>
+        </button>
+      </div>
+
+      <div className="reel-studio-grid">
+        <div className="reel-control-panel">
+          <div className="credentials-form reel-form-grid">
+            <div className="form-group reel-form-wide">
+              <label htmlFor="reel-source-dir">Source folder</label>
+              <input id="reel-source-dir" value={sourceDir} onChange={(event) => setSourceDir(event.target.value)} />
+            </div>
+            <div className="form-group">
+              <label htmlFor="reel-count">Outputs</label>
+              <input id="reel-count" max={6} min={1} type="number" value={count} onChange={(event) => setCount(Number(event.target.value) || 1)} />
+            </div>
+            <div className="reel-timing-panel reel-form-wide">
+              <div className="reel-timing-header">
+                <div>
+                  <h3>Music track</h3>
+                  <span>{musicLoading ? "Loading tracks" : selectedTrack ? formatTrackLabel(selectedTrack) : "No tracks found"}</span>
+                </div>
+                <button className="dashboard-secondary-button" disabled={musicLoading} onClick={() => void loadMusicSettings()} type="button">
+                  <RefreshCw size={15} aria-hidden="true" />
+                  <span>Refresh</span>
+                </button>
+              </div>
+              <div className="form-group">
+                <label htmlFor="reel-audio-track">Music track</label>
+                <select id="reel-audio-track" value={selectedAudioPath} onChange={(event) => setSelectedAudioPath(event.target.value)}>
+                  {musicTracks.length ? (
+                    musicTracks.map((track) => (
+                      <option key={track.path} value={track.path}>{track.name}</option>
+                    ))
+                  ) : (
+                    <option value="">No music tracks</option>
+                  )}
+                </select>
+              </div>
+              <details className="reel-collapsible">
+                <summary>
+                  <span>Music timing</span>
+                  <ChevronDown size={16} aria-hidden="true" />
+                </summary>
+              {selectedTrack && (
+                <div className="reel-playbar-panel">
+                  <audio
+                    className="reel-audio-native"
+                    controls
+                    key={selectedTrack.path}
+                    onEnded={() => setAudioPlaying(false)}
+                    onLoadedMetadata={(event) => setMediaDuration(event.currentTarget.duration || 0)}
+                    onPause={() => setAudioPlaying(false)}
+                    onPlay={() => setAudioPlaying(true)}
+                    onTimeUpdate={(event) => setMediaCurrentTime(event.currentTarget.currentTime || 0)}
+                    preload="metadata"
+                    ref={mediaRef}
+                    src={selectedTrackPreviewUrl}
+                  />
+                  <div className="reel-playbar-main">
+                    <button className="reel-play-button" onClick={() => void toggleAudioPlayback()} type="button">
+                      {audioPlaying ? <Pause size={18} aria-hidden="true" /> : <Play size={18} aria-hidden="true" />}
+                      <span>{audioPlaying ? "Pause" : "Play"}</span>
+                    </button>
+                    <div className="reel-playbar-readout">
+                      <strong>{formatReelTime(mediaCurrentTime)}</strong>
+                      <span>{formatTrackLabel(selectedTrack)}</span>
+                    </div>
+                  </div>
+                  <div className="reel-playbar-meta">
+                    <span>{formatReelTime(mediaCurrentTime)}</span>
+                    <span>{formatReelTime(mediaDuration || timingBarEnd)}</span>
+                  </div>
+                  <input
+                    aria-label="Audio playhead"
+                    className="reel-playhead-slider"
+                    max={Math.max(mediaDuration || timingBarEnd, timingBarEnd)}
+                    min={0}
+                    onChange={(event) => setMediaTime(Number(event.target.value) || 0)}
+                    step={0.01}
+                    type="range"
+                    value={Math.min(mediaCurrentTime, Math.max(mediaDuration || timingBarEnd, timingBarEnd))}
+                  />
+                  <div className="reel-marker-bar" onPointerDown={handleTimingBarPointer} role="presentation">
+                    <div className="reel-marker-progress" style={{ width: `${Math.min(100, (mediaCurrentTime / timingBarEnd) * 100)}%` }} />
+                    {transitionTargets.map((target, index) => (
+                      <button
+                        aria-label={`Select cut ${index + 1}`}
+                        className={activeCutIndex === index ? "active" : undefined}
+                        key={`marker-${index}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setActiveCutIndex(index);
+                          setMediaTime(target);
+                        }}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        style={{ left: `${Math.min(100, (target / timingBarEnd) * 100)}%` }}
+                        type="button"
+                      >
+                        {index + 1}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="reel-cut-toolbar">
+                    <div className="reel-cut-tabs" role="tablist" aria-label="Photo cuts">
+                      {transitionTargets.map((target, index) => (
+                        <button
+                          className={activeCutIndex === index ? "active" : undefined}
+                          key={`cut-tab-${index}`}
+                          onClick={() => {
+                            setActiveCutIndex(index);
+                            setMediaTime(target);
+                          }}
+                          type="button"
+                        >
+                          <span>Cut {index + 1}</span>
+                          <small>{formatReelTime(target)}</small>
+                        </button>
+                      ))}
+                    </div>
+                    <button className="dashboard-secondary-button" onClick={markActiveCutAtPlayhead} type="button">
+                      <MoveHorizontal size={15} aria-hidden="true" />
+                      <span>Set cut at playhead</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+              <div className="reel-form-grid">
+                <div className="form-group reel-form-wide">
+                  <label htmlFor="reel-preset-name">Preset name</label>
+                  <input id="reel-preset-name" value={presetName} onChange={(event) => setPresetName(event.target.value)} />
+                </div>
+                {transitionTargets.map((target, index) => (
+                  <div className="form-group" key={`transition-${index}`}>
+                    <label htmlFor={`reel-transition-${index}`}>Cut {index + 1}</label>
+                    <input
+                      id={`reel-transition-${index}`}
+                      min={0.1}
+                      step={0.001}
+                      type="number"
+                      value={target}
+                      onChange={(event) => updateTransitionTarget(index, Number(event.target.value) || 0)}
+                    />
+                  </div>
+                ))}
+                <div className="form-group">
+                  <label htmlFor="reel-end-at">End at</label>
+                  <input id="reel-end-at" min={0.1} step={0.001} type="number" value={endAt} onChange={(event) => setEndAt(Number(event.target.value) || 0)} />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="reel-snap-window">Snap window</label>
+                  <input id="reel-snap-window" min={0} step={0.05} type="number" value={snapWindow} onChange={(event) => setSnapWindow(Number(event.target.value) || 0)} />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="reel-min-slide">Min slide</label>
+                  <input id="reel-min-slide" min={0.25} step={0.05} type="number" value={minSlideSeconds} onChange={(event) => setMinSlideSeconds(Number(event.target.value) || 0)} />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="reel-max-slide">Max slide</label>
+                  <input id="reel-max-slide" min={0.25} step={0.05} type="number" value={maxSlideSeconds} onChange={(event) => setMaxSlideSeconds(Number(event.target.value) || 0)} />
+                </div>
+              </div>
+              <div className="reel-timing-actions">
+                <label className="reel-checkbox-control">
+                  <input checked={snapToBeats} onChange={(event) => setSnapToBeats(event.target.checked)} type="checkbox" />
+                  <span>Snap to beats</span>
+                </label>
+                <button className="dashboard-secondary-button" disabled={!selectedTrack || presetSaving} onClick={handleSavePreset} type="button">
+                  {presetSaving ? <Loader2 className="spin" size={15} aria-hidden="true" /> : <Check size={15} aria-hidden="true" />}
+                  <span>{presetSaving ? "Saving" : "Save timing"}</span>
+                </button>
+              </div>
+              </details>
+            </div>
+            <div className="form-group reel-form-wide">
+              <label htmlFor="reel-title">Post title</label>
+              <input id="reel-title" value={title} onChange={(event) => setTitle(event.target.value)} />
+            </div>
+            <div className="form-group reel-form-wide">
+              <label htmlFor="reel-description">Caption / description</label>
+              <textarea id="reel-description" rows={3} value={description} onChange={(event) => setDescription(event.target.value)} />
+            </div>
+            <div className="form-group">
+              <label htmlFor="reel-privacy">YouTube privacy</label>
+              <select id="reel-privacy" value={privacyStatus} onChange={(event) => setPrivacyStatus(event.target.value)}>
+                <option value="private">Private</option>
+                <option value="unlisted">Unlisted</option>
+                <option value="public">Public</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label htmlFor="reel-tiktok-type">TikTok format</label>
+              <select
+                id="reel-tiktok-type"
+                value={tiktokPostType}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setTiktokPostType(value === "video" || value === "slideshow" ? value : "slideshow_auto_music");
+                }}
+              >
+                <option value="slideshow_auto_music">Slideshow + auto music</option>
+                <option value="slideshow">Slideshow inbox</option>
+                <option value="video">Video draft</option>
+              </select>
+            </div>
+            <details className="reel-collapsible reel-form-wide">
+              <summary>
+                <span>Manual hosted video</span>
+                <ChevronDown size={16} aria-hidden="true" />
+              </summary>
+              <div className="reel-form-grid">
+                <div className="form-group reel-form-wide">
+                  <label htmlFor="reel-public-url">Public video URL for live posting</label>
+                  <input id="reel-public-url" value={publicVideoUrl} onChange={(event) => setPublicVideoUrl(event.target.value)} placeholder="https://..." />
+                </div>
+                <div className="form-group reel-form-wide">
+                  <label htmlFor="reel-hosted-upload">Upload MP4 to host</label>
+                  <input
+                    accept="video/mp4"
+                    disabled={hostingVideo}
+                    id="reel-hosted-upload"
+                    onChange={(event) => {
+                      const file = event.currentTarget.files?.[0] ?? null;
+                      event.currentTarget.value = "";
+                      void handleHostedFileSelect(file);
+                    }}
+                    type="file"
+                  />
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <div className="reel-platform-card">
+            <div className="reel-platform-row">
+              <button className={platforms.youtube ? "active" : undefined} onClick={() => togglePlatform("youtube")} type="button">
+                <YouTubeIcon />
+                <span>YouTube</span>
+              </button>
+              <button className={platforms.instagram ? "active" : undefined} onClick={() => togglePlatform("instagram")} type="button">
+                <InstagramIcon />
+                <span>Instagram</span>
+              </button>
+              <button className={platforms.tiktok ? "active" : undefined} onClick={() => togglePlatform("tiktok")} type="button">
+                <TikTokIcon />
+                <span>TikTok</span>
+              </button>
+            </div>
+            <button className="dashboard-primary-button" disabled={posting || !selectedPlatforms.length || (!selectedReel?.publicVideoUrl && !publicVideoUrl.trim())} onClick={handlePost} type="button">
+              {posting ? <Loader2 className="spin" size={17} aria-hidden="true" /> : <Upload size={17} aria-hidden="true" />}
+              <span>{posting ? "Posting" : selectedReel ? "Post selected reel" : "Post hosted reel"}</span>
+            </button>
+          </div>
+
+          <div className="reel-needs-panel">
+            <h3>Needed for direct posting</h3>
+            <p>YouTube needs upload scope. Instagram needs a professional account linked to a Facebook Page. TikTok can direct-post the slideshow with automatic music or send it to the TikTok inbox for final editing.</p>
+          </div>
+        </div>
+
+        <div className="reel-preview-panel">
+          {reels.length > 0 && (
+            <div className="reel-output-tabs" role="tablist" aria-label="Generated reel outputs">
+              {reels.map((reel, index) => (
+                <button
+                  aria-selected={reel.id === selectedReel?.id}
+                  className={reel.id === selectedReel?.id ? "active" : undefined}
+                  key={reel.id}
+                  onClick={() => setSelectedReelId(reel.id)}
+                  role="tab"
+                  type="button"
+                >
+                  <span>Output {index + 1}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {selectedReel ? (
+            <>
+              <div className="reel-player-wrap">
+                <video controls playsInline src={selectedReel.previewUrl} />
+              </div>
+              <div className="reel-preview-meta">
+                <strong>{selectedReel.id}</strong>
+                <span>{formatBytes(selectedReel.sizeBytes)} · {formatDurationList(selectedReel.metadata.durations)}</span>
+                {selectedReel.publicSlideUrls?.length ? <span>{selectedReel.publicSlideUrls.length} hosted TikTok slides</span> : null}
+                {selectedReel.metadata.timing_mode && <span>{selectedReel.metadata.timing_mode}</span>}
+                {selectedReel.publicVideoUrl && <small>{selectedReel.publicVideoUrl}</small>}
+                <small>{selectedReel.videoPath}</small>
+              </div>
+            </>
+          ) : (
+            <div className="dashboard-sparkline-empty reel-empty-state">
+              <ImageIcon size={22} aria-hidden="true" />
+              <span>Generate reels to preview them here.</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {statusMessage && (
+        <div className="dashboard-error reel-status-message">
+          <span>{statusMessage}</span>
+        </div>
+      )}
+
+      {postResults.length > 0 && (
+        <div className="reel-post-results">
+          {postResults.map((result) => (
+            <article className={result.error ? "failed" : "posted"} key={`${result.platform}-${result.error || result.message || result.url || "ok"}`}>
+              <div>
+                <strong>{result.platform}</strong>
+                <span>{result.error || result.message || result.url || "Posted successfully"}</span>
+              </div>
+              {result.error ? <X size={16} aria-hidden="true" /> : <Check size={16} aria-hidden="true" />}
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -6374,7 +7196,7 @@ function WeeklyViewsSection({ refreshSignal, linksVersion }: { refreshSignal: nu
                 <small style={{ color: '#64748b', marginTop: 4 }}>
                   {activePerformanceTab === "comparison"
                     ? "The comparison channel did not return any public uploads."
-                    : "Connect YouTube Sync or Instagram Sync tabs to retrieve lists."}
+                    : "Connect platforms from the Sync tab to retrieve lists."}
                 </small>
               </>
             )}
@@ -6399,8 +7221,10 @@ function ReaderDashboard({
   selectedUserId,
   session,
   activeTab,
+  activeSyncTab,
   contentRefreshSignal,
-  setActiveTab
+  setActiveTab,
+  setActiveSyncTab
 }: {
   busy: boolean;
   data: ReaderDashboardData | null;
@@ -6413,8 +7237,10 @@ function ReaderDashboard({
   selectedUserId: string | null;
   session: Session | null;
   activeTab: DashboardTab;
+  activeSyncTab: DashboardSyncTab;
   contentRefreshSignal: number;
   setActiveTab: (tab: DashboardTab) => void;
+  setActiveSyncTab: (tab: DashboardSyncTab) => void;
 }) {
   const email = session?.user.email ?? "";
   const isOwner = email.toLowerCase() === "r.lobo2003@gmail.com";
@@ -6666,28 +7492,20 @@ function ReaderDashboard({
           <span>Weekly & Combined Views</span>
         </button>
         <button
-          className={`dashboard-tab-btn ${activeTab === "content" ? "active" : ""}`}
-          onClick={() => setActiveTab("content")}
+          className={`dashboard-tab-btn ${activeTab === "sync" ? "active" : ""}`}
+          onClick={() => setActiveTab("sync")}
           type="button"
         >
-          <YouTubeIcon />
-          <span>YouTube Sync</span>
+          <Link2 size={16} aria-hidden="true" />
+          <span>Sync</span>
         </button>
         <button
-          className={`dashboard-tab-btn ${activeTab === "instagram" ? "active" : ""}`}
-          onClick={() => setActiveTab("instagram")}
+          className={`dashboard-tab-btn ${activeTab === "reels" ? "active" : ""}`}
+          onClick={() => setActiveTab("reels")}
           type="button"
         >
-          <InstagramIcon />
-          <span>Instagram Sync</span>
-        </button>
-        <button
-          className={`dashboard-tab-btn ${activeTab === "tiktok" ? "active" : ""}`}
-          onClick={() => setActiveTab("tiktok")}
-          type="button"
-        >
-          <TikTokIcon />
-          <span>TikTok Sync</span>
+          <Play size={16} aria-hidden="true" />
+          <span>Reels</span>
         </button>
       </div>
 
@@ -6820,16 +7638,63 @@ function ReaderDashboard({
         <WeeklyViewsSection refreshSignal={contentRefreshSignal} linksVersion={linksVersion} />
       </div>
 
-      <div style={{ display: activeTab === "content" ? "block" : "none" }}>
-        <ContentIntegrationsSection refreshSignal={contentRefreshSignal} />
+      <div style={{ display: activeTab === "sync" ? "block" : "none" }}>
+        <section className="dashboard-user-section dashboard-sync-section">
+          <div className="dashboard-section-heading dashboard-sync-heading">
+            <div>
+              <h2>Platform sync</h2>
+              <p>Connect and refresh YouTube, Instagram, and TikTok content.</p>
+            </div>
+            <div className="dashboard-subtabs" role="tablist" aria-label="Platform sync views">
+              <button
+                aria-selected={activeSyncTab === "content"}
+                className={activeSyncTab === "content" ? "active" : undefined}
+                onClick={() => setActiveSyncTab("content")}
+                role="tab"
+                type="button"
+              >
+                <YouTubeIcon />
+                <span>YouTube</span>
+              </button>
+              <button
+                aria-selected={activeSyncTab === "instagram"}
+                className={activeSyncTab === "instagram" ? "active" : undefined}
+                onClick={() => setActiveSyncTab("instagram")}
+                role="tab"
+                type="button"
+              >
+                <InstagramIcon />
+                <span>Instagram</span>
+              </button>
+              <button
+                aria-selected={activeSyncTab === "tiktok"}
+                className={activeSyncTab === "tiktok" ? "active" : undefined}
+                onClick={() => setActiveSyncTab("tiktok")}
+                role="tab"
+                type="button"
+              >
+                <TikTokIcon />
+                <span>TikTok</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <div style={{ display: activeSyncTab === "content" ? "block" : "none" }}>
+          <ContentIntegrationsSection refreshSignal={contentRefreshSignal} />
+        </div>
+
+        <div style={{ display: activeSyncTab === "instagram" ? "block" : "none" }}>
+          <InstagramIntegrationSection refreshSignal={contentRefreshSignal} onLinksChanged={() => setLinksVersion((v) => v + 1)} />
+        </div>
+
+        <div style={{ display: activeSyncTab === "tiktok" ? "block" : "none" }}>
+          <TikTokIntegrationSection refreshSignal={contentRefreshSignal} onLinksChanged={() => setLinksVersion((v) => v + 1)} />
+        </div>
       </div>
 
-      <div style={{ display: activeTab === "instagram" ? "block" : "none" }}>
-        <InstagramIntegrationSection refreshSignal={contentRefreshSignal} onLinksChanged={() => setLinksVersion((v) => v + 1)} />
-      </div>
-
-      <div style={{ display: activeTab === "tiktok" ? "block" : "none" }}>
-        <TikTokIntegrationSection refreshSignal={contentRefreshSignal} onLinksChanged={() => setLinksVersion((v) => v + 1)} />
+      <div style={{ display: activeTab === "reels" ? "block" : "none" }}>
+        <ReelStudioSection />
       </div>
     </main>
   );
@@ -6838,9 +7703,8 @@ function ReaderDashboard({
 const authRedirectUrl = () => {
   const url = new URL(window.location.href);
   if (url.pathname.startsWith("/dashboard")) {
-    const redirectUrl = new URL(window.location.origin);
-    redirectUrl.searchParams.set("redirect", url.pathname);
-    return redirectUrl.toString();
+    url.hash = "";
+    return url.toString();
   }
 
   url.search = "";
@@ -7381,11 +8245,14 @@ function App() {
   const [dashboardPath, setDashboardPath] = useState(() => window.location.pathname);
   const [dashboardTab, setDashboardTab] = useState<DashboardTab>(() => {
     const tab = new URL(window.location.href).searchParams.get("tab");
-    if (tab === "content") return "content";
-    if (tab === "instagram") return "instagram";
-    if (tab === "tiktok") return "tiktok";
+    if (tab === "content" || tab === "instagram" || tab === "tiktok") return "sync";
     if (tab === "weekly_views") return "weekly_views";
+    if (tab === "reels") return "reels";
     return "users";
+  });
+  const [dashboardSyncTab, setDashboardSyncTab] = useState<DashboardSyncTab>(() => {
+    const tab = new URL(window.location.href).searchParams.get("tab");
+    return tab === "instagram" || tab === "tiktok" ? tab : "content";
   });
   const [contentRefreshSignal, setContentRefreshSignal] = useState(0);
 
@@ -7573,24 +8440,25 @@ function App() {
           if (error) throw new Error(await edgeFunctionErrorMessage(error));
 
           if (data?.access_token) {
+            if (!data.refresh_token) {
+              throw new Error("Google did not return a new refresh token. Remove IllumeReader from your Google Account third-party app access, then link YouTube upload again.");
+            }
             localStorage.setItem("reader-yt-access-token", data.access_token);
             localStorage.removeItem("reader-yt-api-key");
             localStorage.setItem("reader-yt-status", "connected");
-            if (data.refresh_token) {
-              localStorage.setItem("reader-yt-refresh-token", data.refresh_token);
-              const { data: sessionData } = await supabase.auth.getSession();
-              const { error: storeError } = await supabase.functions.invoke("youtube-analytics", {
-                body: {
-                  action: "store",
-                  channel: localStorage.getItem("reader-yt-channel") || "@ilumereader",
-                  refreshToken: data.refresh_token
-                },
-                headers: sessionData.session?.access_token
-                  ? { Authorization: `Bearer ${sessionData.session.access_token}` }
-                  : undefined
-              });
-              if (storeError) throw new Error(await edgeFunctionErrorMessage(storeError));
-            }
+            localStorage.setItem("reader-yt-refresh-token", data.refresh_token);
+            const { data: sessionData } = await supabase.auth.getSession();
+            const { error: storeError } = await supabase.functions.invoke("youtube-analytics", {
+              body: {
+                action: "store",
+                channel: localStorage.getItem("reader-yt-channel") || "@ilumereader",
+                refreshToken: data.refresh_token
+              },
+              headers: sessionData.session?.access_token
+                ? { Authorization: `Bearer ${sessionData.session.access_token}` }
+                : undefined
+            });
+            if (storeError) throw new Error(await edgeFunctionErrorMessage(storeError));
             alert("Successfully connected your YouTube channel!");
           } else {
             throw new Error("No access token returned from exchange");
@@ -7611,14 +8479,16 @@ function App() {
         try {
           const clientKey = localStorage.getItem("reader-tt-client-key") || TIKTOK_DEFAULT_CLIENT_KEY;
           const redirectUri = localStorage.getItem("reader-tt-redirect-uri") || `${window.location.origin}/auth/tiktok/callback`;
+          const codeVerifier = localStorage.getItem("reader-tt-code-verifier") || "";
 
           const { data, error } = await supabase.functions.invoke("tiktok-token-exchange", {
-            body: { code, redirectUri, clientKey }
+            body: { code, redirectUri, clientKey, codeVerifier }
           });
 
           if (error) throw new Error(await edgeFunctionErrorMessage(error));
           if (!data?.access_token) throw new Error("No TikTok access token returned from exchange.");
 
+          localStorage.removeItem("reader-tt-code-verifier");
           localStorage.setItem("reader-tt-status", "connected");
           const { data: sessionData } = await supabase.auth.getSession();
           const { error: storeError } = await supabase.functions.invoke("tiktok-feed", {
@@ -7650,7 +8520,7 @@ function App() {
     if (window.location.pathname === "/auth/instagram/callback" && code) {
       const exchangeToken = async () => {
         try {
-          const redirectUri = localStorage.getItem("reader-ig-redirect-uri") || `${window.location.origin}/auth/instagram/callback`;
+          const redirectUri = storedInstagramRedirectUri();
           const { data: sessionData } = await supabase.auth.getSession();
           const { data, error } = await supabase.functions.invoke("instagram-token-exchange", {
             body: { code, redirectUri },
@@ -7668,13 +8538,21 @@ function App() {
           alert(`Successfully connected Instagram${data.profile?.username ? ` @${data.profile.username}` : ""}!`);
         } catch (err) {
           console.error("Instagram authentication failed:", err);
-          alert("Failed to connect Instagram account: " + (err instanceof Error ? err.message : String(err)));
+          alert("Failed to connect Instagram account: " + instagramOAuthErrorMessage(err instanceof Error ? err.message : String(err)));
         } finally {
           window.location.href = `${window.location.origin}/dashboard?tab=instagram`;
         }
       };
 
       void exchangeToken();
+    } else if (window.location.pathname === "/auth/instagram/callback" && url.searchParams.has("error")) {
+      const errorDescription =
+        url.searchParams.get("error_description") ||
+        url.searchParams.get("error_reason") ||
+        url.searchParams.get("error") ||
+        "Instagram authorization failed.";
+      alert("Failed to connect Instagram account: " + instagramOAuthErrorMessage(errorDescription));
+      window.location.href = `${window.location.origin}/dashboard?tab=instagram`;
     }
   }, []);
 
@@ -7688,7 +8566,8 @@ function App() {
     window.history.replaceState({}, "", redirectPath);
     setDashboardPath(window.location.pathname);
     const tab = new URL(window.location.href).searchParams.get("tab");
-    setDashboardTab(tab === "content" || tab === "instagram" || tab === "tiktok" || tab === "weekly_views" ? tab : "users");
+    setDashboardTab(tab === "content" || tab === "instagram" || tab === "tiktok" ? "sync" : tab === "weekly_views" ? "weekly_views" : tab === "reels" ? "reels" : "users");
+    setDashboardSyncTab(tab === "instagram" || tab === "tiktok" ? tab : "content");
   }, [session?.user?.id]);
 
   useEffect(() => {
@@ -11174,8 +12053,10 @@ function App() {
           selectedUserId={selectedDashboardUserId}
           session={session}
           activeTab={dashboardTab}
+          activeSyncTab={dashboardSyncTab}
           contentRefreshSignal={contentRefreshSignal}
           setActiveTab={setDashboardTab}
+          setActiveSyncTab={setDashboardSyncTab}
         />
       </DashboardErrorBoundary>
     );

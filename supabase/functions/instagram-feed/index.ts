@@ -319,7 +319,7 @@ Deno.serve(async (req) => {
           stored.instagram_user_id,
           `${stored.instagram_user_id}/media`,
           stored.access_token,
-          facebookGraphGet
+          graphGet
         );
         await storeConnection(supabaseUrl, serviceRoleKey, {
           access_token: stored.access_token,
@@ -329,7 +329,24 @@ Deno.serve(async (req) => {
         });
         return jsonResponse(result);
       } catch (err) {
-        console.warn("Facebook Graph Instagram feed failed:", err instanceof Error ? err.message : String(err));
+        console.warn("Instagram Graph feed failed; trying legacy Facebook Graph token path:", err instanceof Error ? err.message : String(err));
+        try {
+          const result = await loadInstagramFeed(
+            stored.instagram_user_id,
+            `${stored.instagram_user_id}/media`,
+            stored.access_token,
+            facebookGraphGet
+          );
+          await storeConnection(supabaseUrl, serviceRoleKey, {
+            access_token: stored.access_token,
+            expires_at: stored.expires_at ?? null,
+            instagram_user_id: result.profile.id,
+            username: result.profile.username
+          });
+          return jsonResponse(result);
+        } catch (legacyErr) {
+          console.warn("Facebook Graph Instagram feed failed:", legacyErr instanceof Error ? legacyErr.message : String(legacyErr));
+        }
         const refreshedLegacyToken = await refreshInstagramToken(stored.access_token);
         if (!refreshedLegacyToken?.access_token) {
           throw err;

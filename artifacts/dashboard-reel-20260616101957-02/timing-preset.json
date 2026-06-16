@@ -1,0 +1,12 @@
+{
+  "endAt": 11.54,
+  "maxSlideSeconds": 4.5,
+  "minSlideSeconds": 1.25,
+  "name": "ScreenRecording_06-16-2026 10-24-38_1",
+  "snapWindow": 0.45,
+  "transitionTargets": [
+    4.345,
+    7.154,
+    9.262
+  ]
+}

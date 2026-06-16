@@ -1,0 +1,48 @@
+{
+  "source_dir": "/home/russ/reading a classic",
+  "selected_images": [
+    "/home/russ/reading a classic/1/Pasted image (4).png",
+    "/home/russ/reading a classic/2/62de1b92f01c41b1de8bffd9411b6253.jpg",
+    "/home/russ/reading a classic/3/Pasted image.png",
+    "/home/russ/reading a classic/4/ChatGPT Image Jun 13, 2026, 06_09_51 PM (1).png"
+  ],
+  "selected_audio": "/home/russ/reading a classic/music/ScreenRecording_06-16-2026 10-24-38_1.mov",
+  "captions": [
+    "Me reading a classic\nbecause I want to be\nintellectual...\ud83d\udc40",
+    "Two minutes later\nBook shut \ud83d\ude2d",
+    "Where\u2019s my phone...",
+    "Not me suddenly\nunderstanding the plot\u2728"
+  ],
+  "durations": [
+    4.398004535147392,
+    2.648798185941043,
+    2.1990022675736958,
+    2.2941950113378677
+  ],
+  "timing_mode": "preset-snapped",
+  "timing_preset": {
+    "endAt": 11.54,
+    "maxSlideSeconds": 4.5,
+    "minSlideSeconds": 1.25,
+    "name": "ScreenRecording_06-16-2026 10-24-38_1",
+    "snapWindow": 0.45,
+    "transitionTargets": [
+      4.345,
+      7.154,
+      9.262
+    ]
+  },
+  "text_font": "TikTok Sans SemiBold",
+  "emoji_font": "Apple Color Emoji",
+  "slides": [
+    "/home/russ/Documents/Projects/reader/artifacts/dashboard-reel-20260616101957-03/slides/slide-01.jpg",
+    "/home/russ/Documents/Projects/reader/artifacts/dashboard-reel-20260616101957-03/slides/slide-02.jpg",
+    "/home/russ/Documents/Projects/reader/artifacts/dashboard-reel-20260616101957-03/slides/slide-03.jpg",
+    "/home/russ/Documents/Projects/reader/artifacts/dashboard-reel-20260616101957-03/slides/slide-04.jpg"
+  ],
+  "videos": {
+    "instagram": "/home/russ/Documents/Projects/reader/artifacts/dashboard-reel-20260616101957-03/reading-classic-instagram-reel.mp4",
+    "youtube": "/home/russ/Documents/Projects/reader/artifacts/dashboard-reel-20260616101957-03/reading-classic-youtube-short.mp4"
+  },
+  "tiktok_photo_payload": "/home/russ/Documents/Projects/reader/artifacts/dashboard-reel-20260616101957-03/tiktok-photo-carousel-payload.json"
+}
