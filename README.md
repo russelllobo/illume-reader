@@ -1,6 +1,6 @@
-# Reader Library
+# Illume Reader
 
-A Supabase-backed EPUB/PDF reader with per-user login, a synced catalogue, private document storage, reading progress sync, browser text-to-speech, and optional AI image mode.
+Full-stack EPUB/PDF reading library (React 19 + Vite + TypeScript + Supabase): per-user auth, synced catalogue, private document storage with RLS, reading-progress sync, browser text-to-speech, and an optional AI image mode backed by Supabase Edge Functions. Includes Stripe Pro billing and an owner analytics dashboard.
 
 ## Run locally
 
