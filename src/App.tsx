@@ -42,6 +42,7 @@ import { ChangeEvent, Component, CSSProperties, DragEvent, FormEvent, Fragment, 
 import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
 import { parsePdf, pdfPreviewToBook, pdfjsLib, readPdfPreview, type PdfPreview, type StoredPdfPage } from "./pdf";
 import { createEdgeTtsPlayer, DEFAULT_EDGE_TTS_VOICE, EdgeTtsPlayer } from "./edgeTts";
+import { createSpeechifyPlayer, isSpeechifyVoiceId, SPEECHIFY_DEFAULT_VOICE_ID, SpeechifyPlayer } from "./speechifyTts";
 import { supabase } from "./supabase";
 import { LandingPage } from "./LandingPage";
 
@@ -198,6 +199,7 @@ const NARRATION_RATE_MAX = 2;
 const NARRATION_RATE_PRESETS = [1, 1.25, 1.5, 2];
 
 const VOICE_OPTIONS = [
+  { id: "speechify-geffen", label: "Geffen (Speechify)", flag: "✨" },
   { id: "en-US-AndrewMultilingualNeural", label: "American Man", flag: "🇺🇸" },
   { id: "en-US-AvaMultilingualNeural", label: "American Woman", flag: "🇺🇸" },
   { id: "en-GB-RyanNeural", label: "British Man", flag: "🇬🇧" },
@@ -1119,10 +1121,10 @@ const edgeFunctionErrorMessage = async (error: unknown) => {
 const readerImageErrorMessage = (message: string) => {
   const normalized = message.toLowerCase();
   if (
-    normalized.includes("rate limit reached") ||
+    normalized.includes("rate limit") ||
     normalized.includes("rate_limit") ||
-    normalized.includes("gpt-image") ||
-    normalized.includes("platform.openai.com/account/rate-limits")
+    normalized.includes("muse") ||
+    normalized.includes("openrouter")
   ) {
     return "Image generation is busy. Please try again in a moment.";
   }
@@ -7758,7 +7760,7 @@ const VOICE_STORAGE_KEY = "reader-narration-voice";
 const initialNarrationVoice = () => {
   const saved = window.localStorage.getItem(VOICE_STORAGE_KEY);
   if (saved && VOICE_OPTIONS.some((v) => v.id === saved)) return saved;
-  return DEFAULT_EDGE_TTS_VOICE;
+  return SPEECHIFY_DEFAULT_VOICE_ID;
 };
 
 const readBookReaderPreferences = () => {
@@ -8165,6 +8167,7 @@ function App() {
   const readerImageRunRef = useRef(0);
   const pendingScrollIndex = useRef<number | null>(null);
   const edgeTtsPlayerRef = useRef<EdgeTtsPlayer | null>(null);
+  const speechifyPlayerRef = useRef<SpeechifyPlayer | null>(null);
   const suppressNextPlaybackStartRef = useRef(false);
   const speedControlRef = useRef<HTMLDivElement | null>(null);
   const voiceControlRef = useRef<HTMLDivElement | null>(null);
@@ -8824,6 +8827,7 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem("reader-narration-rate", narrationRate.toFixed(2));
     edgeTtsPlayerRef.current?.setRate(narrationRate);
+    speechifyPlayerRef.current?.setRate(narrationRate);
   }, [narrationRate]);
 
   useEffect(() => {
@@ -9780,6 +9784,8 @@ function App() {
   const stopAudio = () => {
     edgeTtsPlayerRef.current?.stop();
     edgeTtsPlayerRef.current = null;
+    speechifyPlayerRef.current?.stop();
+    speechifyPlayerRef.current = null;
     setSpeechHighlight(null);
   };
 
@@ -9821,6 +9827,7 @@ function App() {
     setVoicePopoverOpen(false);
     if (playback !== "idle") {
       edgeTtsPlayerRef.current?.setRate(narrationRate);
+      speechifyPlayerRef.current?.setRate(narrationRate);
     }
   };
 
@@ -9855,11 +9862,39 @@ function App() {
     setCurrentIndex(target);
   };
 
+  const stopNarrationPlayers = () => {
+    edgeTtsPlayerRef.current?.stop();
+    edgeTtsPlayerRef.current = null;
+    speechifyPlayerRef.current?.stop();
+    speechifyPlayerRef.current = null;
+  };
+
+  const clearNarrationPlayers = () => {
+    edgeTtsPlayerRef.current = null;
+    speechifyPlayerRef.current = null;
+  };
+
+  const startNarrationPlayer = (
+    options: Parameters<typeof createEdgeTtsPlayer>[0]
+  ) => {
+    stopNarrationPlayers();
+    if (isSpeechifyVoiceId(narrationVoice)) {
+      speechifyPlayerRef.current = createSpeechifyPlayer({
+        ...options,
+        voice: "geffen_32"
+      });
+    } else {
+      edgeTtsPlayerRef.current = createEdgeTtsPlayer({
+        ...options,
+        voice: narrationVoice
+      });
+    }
+  };
+
   const speakEdge = (paragraph: ReaderParagraph) => {
     if (paragraph.kind === "image") return;
 
-    edgeTtsPlayerRef.current?.stop();
-    edgeTtsPlayerRef.current = null;
+    stopNarrationPlayers();
     const wordRanges = wordRangesFromText(paragraph.text);
 
     if (wordRanges[0]) {
@@ -9868,12 +9903,12 @@ function App() {
       setSpeechHighlight({ paragraphId: paragraph.id, start: 0, end: 0 });
     }
 
-    edgeTtsPlayerRef.current = createEdgeTtsPlayer({
+    startNarrationPlayer({
       onBoundary: (range) => {
         setSpeechHighlight({ paragraphId: paragraph.id, ...range });
       },
       onEnded: () => {
-        edgeTtsPlayerRef.current = null;
+        clearNarrationPlayers();
         setSpeechHighlight(null);
         if (book && currentIndex < book.paragraphs.length - 1) {
           advance();
@@ -9882,9 +9917,9 @@ function App() {
         }
       },
       onError: (error) => {
-        edgeTtsPlayerRef.current = null;
+        clearNarrationPlayers();
         setSpeechHighlight(null);
-        setNotice(error.message || "Edge voice could not play this paragraph.");
+        setNotice(error.message || "Narration voice could not play this paragraph.");
         setPlayback("idle");
       },
       text: paragraph.text,
@@ -9901,8 +9936,7 @@ function App() {
     const wordIndex = fullRanges.findIndex((r) => r.start === wordCharStart);
     if (wordIndex < 0) return;
 
-    edgeTtsPlayerRef.current?.stop();
-    edgeTtsPlayerRef.current = null;
+    stopNarrationPlayers();
 
     const slicedText = paragraph.text.slice(wordCharStart);
     const slicedRanges = wordRangesFromText(slicedText);
@@ -9919,12 +9953,12 @@ function App() {
       setCurrentIndex(paragraphIndex);
     }
 
-    edgeTtsPlayerRef.current = createEdgeTtsPlayer({
+    startNarrationPlayer({
       onBoundary: (range) => {
         setSpeechHighlight({ paragraphId: paragraph.id, start: wordCharStart + range.start, end: wordCharStart + range.end });
       },
       onEnded: () => {
-        edgeTtsPlayerRef.current = null;
+        clearNarrationPlayers();
         setSpeechHighlight(null);
         if (book && paragraphIndex >= 0 && paragraphIndex < book.paragraphs.length - 1) {
           const nextIndex = paragraphIndex + 1;
@@ -9935,9 +9969,9 @@ function App() {
         }
       },
       onError: (error) => {
-        edgeTtsPlayerRef.current = null;
+        clearNarrationPlayers();
         setSpeechHighlight(null);
-        setNotice(error.message || "Edge voice could not play this paragraph.");
+        setNotice(error.message || "Narration voice could not play this paragraph.");
         setPlayback("idle");
       },
       text: slicedText,
@@ -9956,8 +9990,7 @@ function App() {
     const slicedRanges = wordRangesFromText(slicedText);
     const speechParagraphId = pdfPageSpeechId(pageNumber);
 
-    edgeTtsPlayerRef.current?.stop();
-    edgeTtsPlayerRef.current = null;
+    stopNarrationPlayers();
 
     if (slicedRanges[0]) {
       setSpeechHighlight({
@@ -9970,7 +10003,7 @@ function App() {
     setCurrentPage(pageNumber);
     setPlayback("playing");
 
-    edgeTtsPlayerRef.current = createEdgeTtsPlayer({
+    startNarrationPlayer({
       onBoundary: (range) => {
         setSpeechHighlight({
           paragraphId: speechParagraphId,
@@ -9979,14 +10012,14 @@ function App() {
         });
       },
       onEnded: () => {
-        edgeTtsPlayerRef.current = null;
+        clearNarrationPlayers();
         setSpeechHighlight(null);
         setPlayback("idle");
       },
       onError: (error) => {
-        edgeTtsPlayerRef.current = null;
+        clearNarrationPlayers();
         setSpeechHighlight(null);
-        setNotice(error.message || "Edge voice could not play this PDF page.");
+        setNotice(error.message || "Narration voice could not play this PDF page.");
         setPlayback("idle");
       },
       text: slicedText,
@@ -11085,12 +11118,14 @@ function App() {
 
     if (playback === "playing") {
       edgeTtsPlayerRef.current?.pause();
+      speechifyPlayerRef.current?.pause();
       setPlayback("paused");
       return;
     }
 
     if (playback === "paused") {
       edgeTtsPlayerRef.current?.resume();
+      speechifyPlayerRef.current?.resume();
       setPlayback("playing");
       return;
     }

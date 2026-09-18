@@ -2,6 +2,8 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.106.0";
 
 const READER_IMAGE_BUCKET = "reader-images";
+const OPENROUTER_IMAGE_URL = "https://openrouter.ai/api/v1/images";
+const READER_IMAGE_MODEL = "meta/muse-image";
 const FREE_READER_IMAGE_LIFETIME_LIMIT = 25;
 const PRO_READER_IMAGE_MONTHLY_LIMIT = 1000;
 type ReaderImageStyle = "cartoon" | "cute";
@@ -141,7 +143,7 @@ const errorMessage = (error: unknown, fallback = "Could not generate image.") =>
   return fallback;
 };
 
-const openAiImageErrorMessage = (status: number, result: unknown) => {
+const openRouterImageErrorMessage = (status: number, result: unknown) => {
   const rawMessage =
     result && typeof result === "object" && "error" in result
       ? (result.error as { message?: unknown }).message
@@ -151,14 +153,13 @@ const openAiImageErrorMessage = (status: number, result: unknown) => {
 
   if (
     status === 429 ||
-    normalized.includes("rate limit reached") ||
-    normalized.includes("rate_limit") ||
-    normalized.includes("platform.openai.com/account/rate-limits")
+    normalized.includes("rate limit") ||
+    normalized.includes("rate_limit")
   ) {
     return "Image generation is busy. Please try again in a moment.";
   }
 
-  return message || "OpenAI image generation failed.";
+  return message || "Muse image generation failed.";
 };
 
 const readerImageRowCount = async (adminClient: any, userId: string, periodStart?: string) => {
@@ -306,7 +307,7 @@ Deno.serve(async (req) => {
     const supabaseUrl = requiredEnv("SUPABASE_URL");
     const anonKey = requiredEnv("SUPABASE_ANON_KEY");
     const serviceRoleKey = requiredEnv("SUPABASE_SERVICE_ROLE_KEY");
-    const openAiKey = requiredEnv("OPENAI_API_KEY");
+    const openRouterKey = requiredEnv("OPENROUTER_API_KEY");
     const authorization = req.headers.get("Authorization");
 
     if (!authorization) throw new Error("Missing Authorization header");
@@ -409,30 +410,27 @@ Deno.serve(async (req) => {
     try {
       const prompt = promptForStyle(imageStyle, bookTitle, text);
 
-      const response = await fetch("https://api.openai.com/v1/images/generations", {
+      const response = await fetch(OPENROUTER_IMAGE_URL, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${openAiKey}`,
+          Authorization: `Bearer ${openRouterKey}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model: "gpt-image-2",
-          n: 1,
-          output_compression: 78,
+          model: READER_IMAGE_MODEL,
           output_format: "webp",
           prompt,
-          quality: "low",
           size: "1024x1536"
         })
       });
 
       const result = await response.json();
       if (!response.ok) {
-        throw new Error(openAiImageErrorMessage(response.status, result));
+        throw new Error(openRouterImageErrorMessage(response.status, result));
       }
 
       const base64Image = result?.data?.[0]?.b64_json;
-      if (!base64Image) throw new Error("OpenAI returned no image data.");
+      if (!base64Image) throw new Error("Muse returned no image data.");
       const storagePath = imagePathFor(userData.user.id, bookId, imageStyle, startWord, endWord);
 
       const { error: uploadError } = await adminClient.storage
