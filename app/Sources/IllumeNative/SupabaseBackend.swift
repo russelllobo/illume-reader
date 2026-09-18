@@ -6,8 +6,8 @@ import IllumeCore
 import Supabase
 
 struct SupabaseConfig: Sendable {
-    let url = URL(string: "https://mduemjbplprditrqolcp.supabase.co")!
-    let publishableKey = "sb_publishable_rvlRgP3T8YCdMHlgh6-cbA_vNS7hJOT"
+    let url = URL(string: "https://hiswlrweciottgskunlc.supabase.co")!
+    let publishableKey = "sb_publishable_45QqkC64abbEjt2gS77xFw_kDHT1vcH"
     let oauthBridgeRedirectURL = URL(string: "https://illumereader.com/auth/native-callback")!
     let oauthRedirectURL = URL(string: "com.russellsystems.illume://auth-callback")!
     let storageQuotaBytes = IllumeLimits.defaultUserStorageQuotaBytes

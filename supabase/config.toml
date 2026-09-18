@@ -127,9 +127,17 @@ enroll_enabled = false
 verify_enabled = false
 
 [auth.external.apple]
-enabled = true
+enabled = false
 client_id = "com.russellsystems.illume"
 secret = "env(SUPABASE_AUTH_EXTERNAL_APPLE_SECRET)"
+redirect_uri = ""
+url = ""
+skip_nonce_check = false
+
+[auth.external.google]
+enabled = true
+client_id = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_ID)"
+secret = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_SECRET)"
 redirect_uri = ""
 url = ""
 skip_nonce_check = false
@@ -140,6 +148,12 @@ policy = "oneshot"
 inspector_port = 8083
 
 [functions.youtube-token-exchange]
+verify_jwt = false
+
+[functions.tiktok-token-exchange]
+verify_jwt = false
+
+[functions.stripe-webhook]
 verify_jwt = false
 
 [analytics]

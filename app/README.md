@@ -13,10 +13,10 @@ Free accounts use the shared 100 MB library quota. Pro accounts use a 5 GB libra
 
 ## Backend
 
-The app connects to the same Supabase project as `/home/russ/Documents/Projects/reader`:
+The app connects to the same Supabase project as the web app:
 
 ```text
-https://mduemjbplprditrqolcp.supabase.co
+https://hiswlrweciottgskunlc.supabase.co
 ```
 
 Dashboard/admin functionality is intentionally out of scope.

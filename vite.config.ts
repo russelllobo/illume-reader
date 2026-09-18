@@ -28,7 +28,7 @@ const jsonResponse = (res: import("node:http").ServerResponse, statusCode: numbe
 const projectRoot = fileURLToPath(new URL(".", import.meta.url));
 const artifactsRoot = resolve(projectRoot, "artifacts");
 const defaultReelSourceDir = "/home/russ/reading a classic";
-const defaultSupabaseUrl = "https://mduemjbplprditrqolcp.supabase.co";
+const defaultSupabaseUrl = "https://hiswlrweciottgskunlc.supabase.co";
 const reelAudioExtensions = new Set([".aac", ".aiff", ".flac", ".m4a", ".mp3", ".mp4", ".mov", ".wav", ".webm"]);
 const instagramContainerPollIntervalsMs = [3_000, 5_000, 8_000, 12_000, 15_000, 15_000, 15_000];
 
