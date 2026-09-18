@@ -4591,6 +4591,185 @@ button:disabled {
   color: var(--reader-theme-bg);
 }
 
+/* Whole-chrome theme: selectors, popovers, image stage, notices follow the reader theme. */
+.reader-themed-shell .image-mode-control .secondary-button,
+.reader-themed-shell .secondary-button.image-style-button,
+.reader-themed-shell .font-mode-toggle,
+.reader-themed-shell .pdf-view-btn {
+  border-color: var(--reader-theme-border);
+  background: var(--reader-theme-panel);
+  color: var(--reader-theme-text);
+}
+
+.reader-themed-shell .image-mode-control .secondary-button:hover:not(:disabled),
+.reader-themed-shell .secondary-button.image-style-button:hover:not(:disabled),
+.reader-themed-shell .font-mode-toggle button:hover:not(.active),
+.reader-themed-shell .pdf-view-btn:hover:not(:disabled):not(.active) {
+  background: var(--reader-theme-accent-soft);
+  color: var(--reader-theme-text);
+}
+
+.reader-themed-shell .image-mode-control .secondary-button.active,
+.reader-themed-shell .secondary-button.image-style-button.active,
+.reader-themed-shell .font-mode-toggle button.active,
+.reader-themed-shell .pdf-view-btn.active {
+  border-color: var(--reader-theme-accent);
+  background: var(--reader-theme-accent);
+  color: var(--reader-theme-bg);
+}
+
+.reader-themed-shell .image-mode-control .secondary-button:disabled,
+.reader-themed-shell .pdf-view-btn:disabled,
+.reader-themed-shell .rail-icon:disabled {
+  border-color: var(--reader-theme-border);
+  color: var(--reader-theme-faint);
+}
+
+.reader-themed-shell .font-mode-toggle button {
+  color: var(--reader-theme-muted);
+}
+
+.reader-themed-shell .font-mode-toggle button:hover {
+  color: var(--reader-theme-text);
+}
+
+.reader-themed-shell .narration-speed-popover,
+.reader-themed-shell .narration-voice-popover,
+.reader-themed-shell .image-style-menu {
+  border-color: var(--reader-theme-border);
+  background: color-mix(in srgb, var(--reader-theme-panel) 94%, transparent);
+  box-shadow: 0 14px 30px var(--reader-theme-shadow), 0 0 0 1px var(--reader-theme-border);
+  color: var(--reader-theme-text);
+}
+
+.reader-themed-shell .narration-speed-popover::after,
+.reader-themed-shell .narration-voice-popover::after {
+  border-right-color: var(--reader-theme-border);
+  border-bottom-color: var(--reader-theme-border);
+  background: var(--reader-theme-panel);
+}
+
+.reader-themed-shell .narration-speed-bar {
+  background: var(--reader-theme-faint);
+}
+
+.reader-themed-shell .narration-speed-bar.selected {
+  background: var(--reader-theme-accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--reader-theme-accent) 35%, transparent);
+}
+
+.reader-themed-shell .narration-speed-presets button {
+  color: var(--reader-theme-muted);
+}
+
+.reader-themed-shell .narration-speed-presets button:hover {
+  color: var(--reader-theme-text);
+}
+
+.reader-themed-shell .narration-speed-presets button.active {
+  color: var(--reader-theme-accent);
+}
+
+.reader-themed-shell .narration-voice-option {
+  color: var(--reader-theme-muted);
+}
+
+.reader-themed-shell .narration-voice-option:hover {
+  background: var(--reader-theme-accent-soft);
+  color: var(--reader-theme-text);
+}
+
+.reader-themed-shell .narration-voice-option.active {
+  background: var(--reader-theme-accent);
+  color: var(--reader-theme-bg);
+}
+
+.reader-themed-shell .image-style-menu-heading span {
+  color: var(--reader-theme-muted);
+}
+
+.reader-themed-shell .image-style-menu-heading strong {
+  color: var(--reader-theme-text);
+}
+
+.reader-themed-shell .image-style-option {
+  border-color: var(--reader-theme-border);
+  background: var(--reader-theme-panel);
+  color: var(--reader-theme-text);
+  box-shadow: none;
+}
+
+.reader-themed-shell .image-style-option:hover,
+.reader-themed-shell .image-style-option:focus-visible {
+  border-color: var(--reader-theme-accent);
+  background: var(--reader-theme-accent-soft);
+}
+
+.reader-themed-shell .image-style-option.active {
+  border-color: var(--reader-theme-accent);
+  background: var(--reader-theme-accent-soft);
+}
+
+.reader-themed-shell .image-style-preview {
+  border-color: var(--reader-theme-border);
+  background: var(--reader-theme-bg-alt);
+}
+
+.reader-themed-shell .image-style-option small {
+  color: var(--reader-theme-muted);
+}
+
+.reader-themed-shell .reader-image-stage {
+  color: var(--reader-theme-text);
+}
+
+.reader-themed-shell .reader-image-stage-header strong,
+.reader-themed-shell .reader-image-stage-footer strong {
+  color: var(--reader-theme-text);
+}
+
+.reader-themed-shell .reader-image-kicker,
+.reader-themed-shell .reader-image-stage-footer span {
+  color: var(--reader-theme-muted);
+}
+
+.reader-themed-shell .reader-image-status {
+  border-color: var(--reader-theme-border);
+  background: var(--reader-theme-panel);
+  color: var(--reader-theme-text);
+}
+
+.reader-themed-shell .reader-image-status.ready {
+  border-color: var(--reader-theme-border);
+  background: var(--reader-theme-accent-soft);
+  color: var(--reader-theme-text);
+}
+
+.reader-themed-shell .reader-image-dots span {
+  background: var(--reader-theme-faint);
+}
+
+.reader-themed-shell .reader-image-dots span.active {
+  background: var(--reader-theme-accent);
+}
+
+.reader-themed-shell .notice {
+  border-color: var(--reader-theme-border);
+  background: var(--reader-theme-panel);
+  color: var(--reader-theme-text);
+  box-shadow: 0 14px 30px var(--reader-theme-shadow);
+}
+
+.reader-themed-shell .play-button:hover {
+  background: var(--reader-theme-accent);
+  color: var(--reader-theme-bg);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--reader-theme-accent) 30%, transparent), 0 6px 18px color-mix(in srgb, var(--reader-theme-accent) 18%, transparent);
+}
+
+.reader-themed-shell .rail-icon:disabled {
+  opacity: 0.45;
+}
+
 .reader-themed-shell.image-reader-shell,
 .reader-themed-shell.image-reader-shell .reader-frame,
 .reader-themed-shell.image-reader-shell .main-spread,
