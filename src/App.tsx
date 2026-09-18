@@ -7709,7 +7709,15 @@ const authRedirectUrl = () => {
 
   url.search = "";
   url.hash = "";
-  return url.toString();
+  const normalized = url.toString();
+  if (url.pathname === "/" && normalized.endsWith("/")) {
+    // Supabase matches Redirect URLs exactly: the allowlist holds the site
+    // root without a trailing slash, while URL.toString() emits one. A
+    // mismatch makes Supabase drop the auth code and fall back to the Site
+    // URL, returning the user to the landing page logged out.
+    return normalized.slice(0, -1);
+  }
+  return normalized;
 };
 
 const initialReaderFontMode = (): ReaderFontMode =>
