@@ -41,7 +41,7 @@ import {
 import { ChangeEvent, Component, CSSProperties, DragEvent, FormEvent, Fragment, KeyboardEvent, MouseEvent, PointerEvent, ReactNode, RefObject, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
 import { parsePdf, pdfPreviewToBook, pdfjsLib, readPdfPreview, type PdfPreview, type StoredPdfPage } from "./pdf";
-import { createSpeechifyPlayer, SPEECHIFY_DEFAULT_VOICE_ID, SPEECHIFY_SERVER_VOICE_ID, SpeechifyPlayer } from "./speechifyTts";
+import { createSpeechifyPlayer, prefetchSpeechifyAudio, SPEECHIFY_DEFAULT_VOICE_ID, SPEECHIFY_SERVER_VOICE_ID, SpeechifyPlayer } from "./speechifyTts";
 import { supabase, supabaseFunctionUrl, supabasePublishableKey } from "./supabase";
 import { LandingPage } from "./LandingPage";
 
@@ -8945,6 +8945,27 @@ function App() {
     speakEdge(current);
   }, [currentIndex]);
 
+  // Warm the TTS cache for the paragraph you're on (so pressing play starts
+  // near-instantly) plus the next ones (so advancing has no gap). While
+  // playing, speakEdge already warms the next paragraphs; this covers the
+  // idle case and navigation-driven index changes. Debounced so fast
+  // scrolling doesn't spam the synthesis API, and deduped by the cache.
+  useEffect(() => {
+    if (view !== "reader" || !book) return;
+    const paragraph = book.paragraphs[currentIndex];
+    if (!paragraph || paragraph.kind === "image" || !paragraph.text.trim()) return;
+
+    if (playback === "playing") {
+      prefetchUpcomingParagraphs(currentIndex, 2);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      prefetchSpeechifyAudio(paragraph.text, SPEECHIFY_SERVER_VOICE_ID);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [book, currentIndex, playback, view]);
+
   useEffect(() => {
     const chapterButton = chapterRefs.current.get(isPdfBook ? activePdfChapterIndex : current?.chapterIndex ?? -1);
     chapterButton?.scrollIntoView({ block: "nearest" });
@@ -9948,6 +9969,19 @@ function App() {
     setCurrentIndex(target);
   };
 
+  // Warm the TTS cache for the paragraphs after fromIndex so advancing is
+  // near-instant. Skips images/empty text; deduped by the shared cache.
+  const prefetchUpcomingParagraphs = (fromIndex: number, count = 2) => {
+    if (!book) return;
+    let queued = 0;
+    for (let i = fromIndex + 1; i < book.paragraphs.length && queued < count; i += 1) {
+      const upcoming = book.paragraphs[i];
+      if (!upcoming || upcoming.kind === "image" || !upcoming.text.trim()) continue;
+      prefetchSpeechifyAudio(upcoming.text, SPEECHIFY_SERVER_VOICE_ID);
+      queued += 1;
+    }
+  };
+
   const speakEdge = (paragraph: ReaderParagraph) => {
     if (paragraph.kind === "image") return;
 
@@ -9985,6 +10019,13 @@ function App() {
       voice: SPEECHIFY_SERVER_VOICE_ID,
       wordRanges
     });
+
+    // While this paragraph plays, get the next ones ready so there's no
+    // gap. The shared cache dedupes, so this is a no-op if already warm.
+    if (book) {
+      const paragraphIndex = book.paragraphs.findIndex((p) => p.id === paragraph.id);
+      if (paragraphIndex >= 0) prefetchUpcomingParagraphs(paragraphIndex, 2);
+    }
   };
 
   const speakEdgeFromWord = (paragraph: ReaderParagraph, wordCharStart: number) => {
