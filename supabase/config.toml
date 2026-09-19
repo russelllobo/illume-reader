@@ -75,6 +75,7 @@ site_url = "https://illumereader.com"
 additional_redirect_urls = [
   "http://localhost:5173/**",
   "https://illumereader.com",
+  "https://illumereader.com/**",
   "https://illumereader.com/auth/native-callback",
   "com.russellsystems.illume://auth-callback"
 ]
