@@ -1,67 +1,24 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.106.0";
 
-const DEEPINFRA_KOKORO_URL =
-  "https://api.deepinfra.com/v1/inference/hexgrad/Kokoro-82M";
-const DEFAULT_VOICE = "af_heart";
-const DEFAULT_FORMAT = "wav";
-const MAX_TEXT_LENGTH = 8_000;
+const SPEECHIFY_SPEECH_URL = "https://api.speechify.ai/v1/audio/speech";
+const DEFAULT_VOICE = "geffen_32";
+const DEFAULT_MODEL = "simba-3.2";
+const DEFAULT_FORMAT = "mp3";
+// Speechify speech endpoint accepts up to 2,000 characters per request.
+const MAX_TEXT_LENGTH = 2_000;
 
+// Single-voice setup: Geffen only. Extra ids are accepted as aliases and
+// mapped to geffen_32 so older saved voices keep working.
 const allowedVoices = new Set([
-  "af_alloy",
-  "af_aoede",
-  "af_bella",
-  "af_heart",
-  "af_jessica",
-  "af_kore",
-  "af_nicole",
-  "af_nova",
-  "af_river",
-  "af_sarah",
-  "af_sky",
-  "am_adam",
-  "am_echo",
-  "am_eric",
-  "am_fenrir",
-  "am_liam",
-  "am_michael",
-  "am_onyx",
-  "am_puck",
-  "am_santa",
-  "bf_alice",
-  "bf_emma",
-  "bf_isabella",
-  "bf_lily",
-  "bm_daniel",
-  "bm_fable",
-  "bm_george",
-  "bm_lewis",
-  "ef_dora",
-  "em_alex",
-  "em_santa",
-  "ff_siwis",
-  "hf_alpha",
-  "hf_beta",
-  "hm_omega",
-  "hm_psi",
-  "if_sara",
-  "im_nicola",
-  "jf_alpha",
-  "jf_gongitsune",
-  "jf_nezumi",
-  "jf_tebukuro",
-  "jm_kumo",
-  "pf_dora",
-  "pm_alex",
-  "pm_santa",
-  "zf_xiaobei",
-  "zf_xiaoni",
-  "zf_xiaoxiao",
-  "zf_xiaoyi",
-  "zm_yunjian",
-  "zm_yunxi",
-  "zm_yunxia",
-  "zm_yunyang",
+  "geffen_32",
+  "beatrice_32",
+  "dominic_32",
+  "edmund_32",
+  "harper_32",
+  "hugh_32",
+  "imogen_32",
+  "wyatt_32",
 ]);
 
 const corsHeaders = {
@@ -84,10 +41,7 @@ const cleanText = (value: unknown, maxLength = MAX_TEXT_LENGTH) =>
     .trim()
     .slice(0, maxLength);
 
-const cleanVoice = (value: unknown) => {
-  const voice = String(value ?? DEFAULT_VOICE).trim();
-  return allowedVoices.has(voice) ? voice : DEFAULT_VOICE;
-};
+const cleanVoice = (_value: unknown) => DEFAULT_VOICE;
 
 const cleanRate = (value: unknown) => {
   const rate = typeof value === "number" ? value : Number(value);
@@ -119,29 +73,54 @@ const audioBase64From = (value: unknown) => {
 };
 
 const cleanWords = (value: unknown) => {
-  if (!Array.isArray(value)) return [];
+  const chunks = Array.isArray(value)
+    ? value
+    : value && typeof value === "object" && Array.isArray((value as { chunks?: unknown }).chunks)
+      ? (value as { chunks: unknown[] }).chunks
+      : [];
 
-  return value.flatMap((word) => {
+  return chunks.flatMap((word) => {
     if (!word || typeof word !== "object") return [];
-    const item = word as { text?: unknown; start?: unknown; end?: unknown };
-    const text = String(item.text ?? "").trim();
-    const start = typeof item.start === "number" ? item.start : Number(item.start);
-    const end = typeof item.end === "number" ? item.end : Number(item.end);
-    if (!text || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    const item = word as {
+      value?: unknown;
+      text?: unknown;
+      start?: unknown;
+      end?: unknown;
+      start_time?: unknown;
+      end_time?: unknown;
+    };
+    const text = String(item.value ?? item.text ?? "").trim();
+    // Speechify speech_marks use start_time/end_time in milliseconds.
+    const startRaw = item.start_time ?? item.start;
+    const endRaw = item.end_time ?? item.end;
+    const start = typeof startRaw === "number" ? startRaw : Number(startRaw);
+    const end = typeof endRaw === "number" ? endRaw : Number(endRaw);
+    const startSeconds = start > 100 ? start / 1000 : start;
+    const endSeconds = end > 100 ? end / 1000 : end;
+    if (
+      !text ||
+      !Number.isFinite(startSeconds) ||
+      !Number.isFinite(endSeconds) ||
+      endSeconds <= startSeconds
+    ) {
       return [];
     }
-    return [{ text, start, end }];
+    return [{ text, start: startSeconds, end: endSeconds }];
   });
 };
 
-const deepInfraErrorMessage = (status: number, result: unknown) => {
+const speechifyErrorMessage = (status: number, result: unknown) => {
   if (result && typeof result === "object") {
     const value = result as {
       error?: unknown;
       message?: unknown;
       detail?: unknown;
     };
-    for (const candidate of [value.message, value.error, value.detail]) {
+    const nested =
+      value.error && typeof value.error === "object"
+        ? (value.error as { message?: unknown }).message
+        : undefined;
+    for (const candidate of [value.message, nested, value.error, value.detail]) {
       if (typeof candidate === "string" && candidate.trim()) return candidate;
     }
   }
@@ -149,42 +128,47 @@ const deepInfraErrorMessage = (status: number, result: unknown) => {
   if (status === 429) {
     return "Narration generation is busy. Please try again in a moment.";
   }
-  return "DeepInfra Kokoro TTS failed.";
+  return "Speechify narration failed.";
 };
 
-const synthesizeSpeech = async (text: string, voice: string, rate: number) => {
-  const apiKey = requiredEnv("DEEPINFRA_API_KEY");
-  const response = await fetch(DEEPINFRA_KOKORO_URL, {
+const synthesizeSpeech = async (text: string, voice: string, _rate: number) => {
+  const apiKey = requiredEnv("SPEECHIFY_API_KEY");
+  const response = await fetch(SPEECHIFY_SPEECH_URL, {
     method: "POST",
     headers: {
-      Authorization: `bearer ${apiKey}`,
+      Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      output_format: DEFAULT_FORMAT,
-      preset_voice: [voice],
-      return_timestamps: true,
-      speed: rate,
-      stream: false,
-      text,
+      audio_format: DEFAULT_FORMAT,
+      input: text,
+      model: DEFAULT_MODEL,
+      voice_id: voice,
     }),
   });
 
   const result = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(deepInfraErrorMessage(response.status, result));
+    throw new Error(speechifyErrorMessage(response.status, result));
   }
 
-  const output = result as { audio?: unknown; words?: unknown; output_format?: unknown } | null;
-  const audioBase64 = audioBase64From(output?.audio);
+  const output = result as {
+    audio_data?: unknown;
+    audio?: unknown;
+    speech_marks?: unknown;
+    words?: unknown;
+    audio_format?: unknown;
+  } | null;
+  const audioBase64 = audioBase64From(output?.audio_data ?? output?.audio);
   const audio = audioBase64 ? audioBytesFrom(audioBase64) : null;
-  if (!audio?.byteLength) throw new Error("Kokoro TTS returned no audio.");
+  if (!audio?.byteLength) throw new Error("Speechify returned no audio.");
 
   return {
     audio,
     audioBase64: audioBase64 ?? "",
-    outputFormat: typeof output?.output_format === "string" ? output.output_format : DEFAULT_FORMAT,
-    words: cleanWords(output?.words),
+    outputFormat:
+      typeof output?.audio_format === "string" ? output.audio_format : DEFAULT_FORMAT,
+    words: cleanWords(output?.speech_marks ?? output?.words),
   };
 };
 

@@ -41,7 +41,7 @@ import {
 import { ChangeEvent, Component, CSSProperties, DragEvent, FormEvent, Fragment, KeyboardEvent, MouseEvent, PointerEvent, ReactNode, RefObject, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
 import { parsePdf, pdfPreviewToBook, pdfjsLib, readPdfPreview, type PdfPreview, type StoredPdfPage } from "./pdf";
-import { createEdgeTtsPlayer, DEFAULT_EDGE_TTS_VOICE, EdgeTtsPlayer } from "./edgeTts";
+import { createSpeechifyPlayer, SPEECHIFY_DEFAULT_VOICE_ID, SPEECHIFY_SERVER_VOICE_ID, SpeechifyPlayer } from "./speechifyTts";
 import { supabase } from "./supabase";
 import { LandingPage } from "./LandingPage";
 
@@ -197,12 +197,6 @@ const NARRATION_RATE_MIN = 0.7;
 const NARRATION_RATE_MAX = 2;
 const NARRATION_RATE_PRESETS = [1, 1.25, 1.5, 2];
 
-const VOICE_OPTIONS = [
-  { id: "en-US-AndrewMultilingualNeural", label: "American Man", flag: "🇺🇸" },
-  { id: "en-US-AvaMultilingualNeural", label: "American Woman", flag: "🇺🇸" },
-  { id: "en-GB-RyanNeural", label: "British Man", flag: "🇬🇧" },
-  { id: "en-GB-SoniaNeural", label: "British Woman", flag: "🇬🇧" }
-] as const;
 const READER_TEXT_SCALE_MIN = 9 / 16;
 const READER_TEXT_SCALE_MAX = 1.5;
 const READER_LINE_HEIGHT_MIN = 1.1;
@@ -7763,10 +7757,9 @@ const initialNarrationRate = () => {
 
 const VOICE_STORAGE_KEY = "reader-narration-voice";
 
-const initialNarrationVoice = () => {
-  const saved = window.localStorage.getItem(VOICE_STORAGE_KEY);
-  if (saved && VOICE_OPTIONS.some((v) => v.id === saved)) return saved;
-  return DEFAULT_EDGE_TTS_VOICE;
+const ensureSingleSpeechifyVoice = () => {
+  window.localStorage.setItem(VOICE_STORAGE_KEY, SPEECHIFY_DEFAULT_VOICE_ID);
+  return SPEECHIFY_DEFAULT_VOICE_ID;
 };
 
 const readBookReaderPreferences = () => {
@@ -8136,10 +8129,8 @@ function App() {
   const [readerLineHeight, setReaderLineHeight] = useState(initialReaderLineHeight);
   const [readerLineWidth, setReaderLineWidth] = useState(initialReaderLineWidth);
   const [narrationRate, setNarrationRate] = useState(initialNarrationRate);
-  const [narrationVoice, setNarrationVoice] = useState(initialNarrationVoice);
   const [speedPreviewRate, setSpeedPreviewRate] = useState<number | null>(null);
   const [speedPopoverOpen, setSpeedPopoverOpen] = useState(false);
-  const [voicePopoverOpen, setVoicePopoverOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [pendingDeleteExiting, setPendingDeleteExiting] = useState(false);
@@ -8172,10 +8163,9 @@ function App() {
   const readerImageModeRef = useRef(false);
   const readerImageRunRef = useRef(0);
   const pendingScrollIndex = useRef<number | null>(null);
-  const edgeTtsPlayerRef = useRef<EdgeTtsPlayer | null>(null);
+  const speechifyPlayerRef = useRef<SpeechifyPlayer | null>(null);
   const suppressNextPlaybackStartRef = useRef(false);
   const speedControlRef = useRef<HTMLDivElement | null>(null);
-  const voiceControlRef = useRef<HTMLDivElement | null>(null);
   const imageStyleMenuRef = useRef<HTMLDivElement | null>(null);
   const textReaderActionsRef = useRef<TextReaderActions>({
     moveTo: () => undefined,
@@ -8831,8 +8821,12 @@ function App() {
 
   useEffect(() => {
     window.localStorage.setItem("reader-narration-rate", narrationRate.toFixed(2));
-    edgeTtsPlayerRef.current?.setRate(narrationRate);
+    speechifyPlayerRef.current?.setRate(narrationRate);
   }, [narrationRate]);
+
+  useEffect(() => {
+    ensureSingleSpeechifyVoice();
+  }, []);
 
   useEffect(() => {
     if (!activeBookId || view !== "reader") return;
@@ -8878,27 +8872,6 @@ function App() {
       window.removeEventListener("keydown", closeOnEscape);
     };
   }, [speedPopoverOpen]);
-
-  useEffect(() => {
-    if (!voicePopoverOpen) return;
-
-    const closeOnOutsidePointer = (event: globalThis.PointerEvent) => {
-      if (event.target instanceof Node && voiceControlRef.current?.contains(event.target)) return;
-      setVoicePopoverOpen(false);
-    };
-
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") setVoicePopoverOpen(false);
-    };
-
-    window.addEventListener("pointerdown", closeOnOutsidePointer);
-    window.addEventListener("keydown", closeOnEscape);
-
-    return () => {
-      window.removeEventListener("pointerdown", closeOnOutsidePointer);
-      window.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [voicePopoverOpen]);
 
   useEffect(() => {
     if (!readerImageStyleOpen) return;
@@ -9786,8 +9759,8 @@ function App() {
   };
 
   const stopAudio = () => {
-    edgeTtsPlayerRef.current?.stop();
-    edgeTtsPlayerRef.current = null;
+    speechifyPlayerRef.current?.stop();
+    speechifyPlayerRef.current = null;
     setSpeechHighlight(null);
   };
 
@@ -9821,15 +9794,6 @@ function App() {
 
   const chooseNarrationRate = (value: number) => {
     setNarrationRate(clampNarrationRate(value));
-  };
-
-  const chooseNarrationVoice = (voiceId: string) => {
-    setNarrationVoice(voiceId);
-    window.localStorage.setItem(VOICE_STORAGE_KEY, voiceId);
-    setVoicePopoverOpen(false);
-    if (playback !== "idle") {
-      edgeTtsPlayerRef.current?.setRate(narrationRate);
-    }
   };
 
   const speedRateFromPointer = (event: PointerEvent<HTMLDivElement>) => {
@@ -9866,8 +9830,8 @@ function App() {
   const speakEdge = (paragraph: ReaderParagraph) => {
     if (paragraph.kind === "image") return;
 
-    edgeTtsPlayerRef.current?.stop();
-    edgeTtsPlayerRef.current = null;
+    speechifyPlayerRef.current?.stop();
+    speechifyPlayerRef.current = null;
     const wordRanges = wordRangesFromText(paragraph.text);
 
     if (wordRanges[0]) {
@@ -9876,12 +9840,12 @@ function App() {
       setSpeechHighlight({ paragraphId: paragraph.id, start: 0, end: 0 });
     }
 
-    edgeTtsPlayerRef.current = createEdgeTtsPlayer({
+    speechifyPlayerRef.current = createSpeechifyPlayer({
       onBoundary: (range) => {
         setSpeechHighlight({ paragraphId: paragraph.id, ...range });
       },
       onEnded: () => {
-        edgeTtsPlayerRef.current = null;
+        speechifyPlayerRef.current = null;
         setSpeechHighlight(null);
         if (book && currentIndex < book.paragraphs.length - 1) {
           advance();
@@ -9890,14 +9854,14 @@ function App() {
         }
       },
       onError: (error) => {
-        edgeTtsPlayerRef.current = null;
+        speechifyPlayerRef.current = null;
         setSpeechHighlight(null);
-        setNotice(error.message || "Edge voice could not play this paragraph.");
+        setNotice(error.message || "Speechify voice could not play this paragraph.");
         setPlayback("idle");
       },
       text: paragraph.text,
       rate: narrationRate,
-      voice: narrationVoice,
+      voice: SPEECHIFY_SERVER_VOICE_ID,
       wordRanges
     });
   };
@@ -9909,8 +9873,8 @@ function App() {
     const wordIndex = fullRanges.findIndex((r) => r.start === wordCharStart);
     if (wordIndex < 0) return;
 
-    edgeTtsPlayerRef.current?.stop();
-    edgeTtsPlayerRef.current = null;
+    speechifyPlayerRef.current?.stop();
+    speechifyPlayerRef.current = null;
 
     const slicedText = paragraph.text.slice(wordCharStart);
     const slicedRanges = wordRangesFromText(slicedText);
@@ -9927,12 +9891,12 @@ function App() {
       setCurrentIndex(paragraphIndex);
     }
 
-    edgeTtsPlayerRef.current = createEdgeTtsPlayer({
+    speechifyPlayerRef.current = createSpeechifyPlayer({
       onBoundary: (range) => {
         setSpeechHighlight({ paragraphId: paragraph.id, start: wordCharStart + range.start, end: wordCharStart + range.end });
       },
       onEnded: () => {
-        edgeTtsPlayerRef.current = null;
+        speechifyPlayerRef.current = null;
         setSpeechHighlight(null);
         if (book && paragraphIndex >= 0 && paragraphIndex < book.paragraphs.length - 1) {
           const nextIndex = paragraphIndex + 1;
@@ -9943,14 +9907,14 @@ function App() {
         }
       },
       onError: (error) => {
-        edgeTtsPlayerRef.current = null;
+        speechifyPlayerRef.current = null;
         setSpeechHighlight(null);
-        setNotice(error.message || "Edge voice could not play this paragraph.");
+        setNotice(error.message || "Speechify voice could not play this paragraph.");
         setPlayback("idle");
       },
       text: slicedText,
       rate: narrationRate,
-      voice: narrationVoice,
+      voice: SPEECHIFY_SERVER_VOICE_ID,
       wordRanges: slicedRanges
     });
   };
@@ -9964,8 +9928,8 @@ function App() {
     const slicedRanges = wordRangesFromText(slicedText);
     const speechParagraphId = pdfPageSpeechId(pageNumber);
 
-    edgeTtsPlayerRef.current?.stop();
-    edgeTtsPlayerRef.current = null;
+    speechifyPlayerRef.current?.stop();
+    speechifyPlayerRef.current = null;
 
     if (slicedRanges[0]) {
       setSpeechHighlight({
@@ -9978,7 +9942,7 @@ function App() {
     setCurrentPage(pageNumber);
     setPlayback("playing");
 
-    edgeTtsPlayerRef.current = createEdgeTtsPlayer({
+    speechifyPlayerRef.current = createSpeechifyPlayer({
       onBoundary: (range) => {
         setSpeechHighlight({
           paragraphId: speechParagraphId,
@@ -9987,19 +9951,19 @@ function App() {
         });
       },
       onEnded: () => {
-        edgeTtsPlayerRef.current = null;
+        speechifyPlayerRef.current = null;
         setSpeechHighlight(null);
         setPlayback("idle");
       },
       onError: (error) => {
-        edgeTtsPlayerRef.current = null;
+        speechifyPlayerRef.current = null;
         setSpeechHighlight(null);
-        setNotice(error.message || "Edge voice could not play this PDF page.");
+        setNotice(error.message || "Speechify voice could not play this PDF page.");
         setPlayback("idle");
       },
       text: slicedText,
       rate: narrationRate,
-      voice: narrationVoice,
+      voice: SPEECHIFY_SERVER_VOICE_ID,
       wordRanges: slicedRanges
     });
   };
@@ -11092,13 +11056,13 @@ function App() {
     setNotice("");
 
     if (playback === "playing") {
-      edgeTtsPlayerRef.current?.pause();
+      speechifyPlayerRef.current?.pause();
       setPlayback("paused");
       return;
     }
 
     if (playback === "paused") {
-      edgeTtsPlayerRef.current?.resume();
+      speechifyPlayerRef.current?.resume();
       setPlayback("playing");
       return;
     }
@@ -12979,42 +12943,10 @@ function App() {
       <footer className="control-rail">
         <div className="control-rail-left" aria-hidden="true" />
         <div className="transport">
-          <div className="narration-voice-control" ref={voiceControlRef}>
-            <button
-              aria-expanded={voicePopoverOpen}
-              aria-haspopup="dialog"
-              className="narration-voice-trigger"
-              onClick={(event) => {
-                if (event.detail === 0) {
-                  setVoicePopoverOpen((open) => !open);
-                  setSpeedPopoverOpen(false);
-                }
-              }}
-              onPointerDown={(event) => {
-                event.preventDefault();
-                setVoicePopoverOpen((open) => !open);
-                setSpeedPopoverOpen(false);
-              }}
-              title="Narration voice"
-              type="button"
-            >
-              {VOICE_OPTIONS.find((v) => v.id === narrationVoice)?.flag ?? "🇺🇸"}
-            </button>
-            {voicePopoverOpen && (
-              <div className="narration-voice-popover" role="dialog" aria-label="Choose narration voice">
-                {VOICE_OPTIONS.map((option) => (
-                  <button
-                    className={narrationVoice === option.id ? "narration-voice-option active" : "narration-voice-option"}
-                    key={option.id}
-                    onClick={() => chooseNarrationVoice(option.id)}
-                    type="button"
-                  >
-                    <span className="narration-voice-flag">{option.flag}</span>
-                    <span className="narration-voice-label">{option.label}</span>
-                  </button>
-                ))}
-              </div>
-            )}
+          <div className="narration-voice-control" title="Narration voice: Geffen (Speechify)">
+            <span className="narration-voice-trigger" aria-label="Narration voice Geffen">
+              ✨
+            </span>
           </div>
           <button
             className="rail-icon"
@@ -13049,13 +12981,11 @@ function App() {
               onClick={(event) => {
                 if (event.detail === 0) {
                   setSpeedPopoverOpen((open) => !open);
-                  setVoicePopoverOpen(false);
                 }
               }}
               onPointerDown={(event) => {
                 event.preventDefault();
                 setSpeedPopoverOpen((open) => !open);
-                setVoicePopoverOpen(false);
               }}
               title="Narration speed"
               type="button"
