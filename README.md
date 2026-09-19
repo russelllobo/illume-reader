@@ -1,6 +1,6 @@
 # Illume Reader
 
-Full-stack EPUB/PDF reading library (React 19 + Vite + TypeScript + Supabase): per-user auth, synced catalogue, private document storage with RLS, reading-progress sync, browser text-to-speech, and an optional AI image mode backed by Supabase Edge Functions. Includes Stripe Pro billing and an owner analytics dashboard.
+Full-stack EPUB/PDF reading library (React 19 + Vite + TypeScript + Supabase): per-user auth, synced catalogue, private document storage with RLS, reading-progress sync, narration, and an optional AI image mode backed by Supabase Edge Functions. Includes Stripe Pro billing and an owner analytics dashboard.
 
 ## Run locally
 
@@ -24,18 +24,23 @@ VITE_PRO_USER_STORAGE_QUOTA_BYTES=5368709120
 
 The default library quota is 100 MB for free users and 5 GB for Pro users. `VITE_USER_STORAGE_QUOTA_BYTES` is still accepted as the free-plan quota for older local env files.
 
-Image mode uses a Supabase Edge Function so the OpenAI key stays server-side. It stores generated images in the private `reader-images` storage bucket and records metadata in `public.reader_images` so future reads reuse existing images before calling OpenAI again. Free users can generate 25 lifetime images; Pro users get 1,000 images per month. Lifetime and monthly usage are tracked in `public.reader_image_usage`.
+Image mode uses a Supabase Edge Function so the API keys stay server-side. Meta Muse Spark (via the OpenCode Go subscription, low reasoning) writes a standalone image prompt for each book section, then GPT Image 2.5 Sunburst at low quality renders it (falling back to Flare when Sunburst's safety filter vetoes a scene). Images are stored in the private `reader-images` storage bucket and metadata recorded in `public.reader_images` so future reads reuse existing images instead of generating again. Free users can generate 25 lifetime images; Pro users get 1,000 images per month. Lifetime and monthly usage are tracked in `public.reader_image_usage`.
 
-Set this function secret:
+Narration uses Speechify (`simba-3.2`, default voice `geffen_32`) through the `edge-tts` Supabase Edge Function, so the Speechify key also stays server-side. The web reader offers Geffen as the default voice with the previous Microsoft Edge voices kept as fallback options; the Edge Function maps any legacy voice id to Geffen.
+
+Set these function secrets:
 
 ```bash
 supabase secrets set OPENAI_API_KEY=sk-...
+supabase secrets set OPENCODE_GO_API_KEY=sk-...
+supabase secrets set SPEECHIFY_API_KEY=sk_...
 ```
 
 Deploy the reader Edge Functions:
 
 ```bash
 supabase functions deploy generate-reader-image
+supabase functions deploy edge-tts
 supabase functions deploy delete-reader-book
 supabase functions deploy reader-dashboard
 supabase functions deploy youtube-token-exchange --no-verify-jwt
