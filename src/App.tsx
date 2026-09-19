@@ -1123,8 +1123,8 @@ const readerImageErrorMessage = (message: string) => {
   if (
     normalized.includes("rate limit") ||
     normalized.includes("rate_limit") ||
-    normalized.includes("muse") ||
-    normalized.includes("openrouter")
+    normalized.includes("flare") ||
+    normalized.includes("openai")
   ) {
     return "Image generation is busy. Please try again in a moment.";
   }

@@ -2,8 +2,12 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.106.0";
 
 const READER_IMAGE_BUCKET = "reader-images";
-const OPENROUTER_IMAGE_URL = "https://openrouter.ai/api/v1/images";
-const READER_IMAGE_MODEL = "meta/muse-image";
+const OPENAI_IMAGE_URL = "https://api.openai.com/v1/images/generations";
+const READER_IMAGE_MODEL = "gpt-image-2.5-sunburst";
+const READER_IMAGE_FALLBACK_MODEL = "gpt-image-2.5-flare";
+// Step 1: Meta Muse Spark via the OpenCode Go subscription writes the image prompt.
+const GO_RESPONSES_URL = "https://opencode.ai/zen/go/v1/responses";
+const IMAGE_PROMPT_MODEL = "muse-spark-1.3-contributor";
 const FREE_READER_IMAGE_LIFETIME_LIMIT = 25;
 const PRO_READER_IMAGE_MONTHLY_LIMIT = 1000;
 type ReaderImageStyle = "cartoon" | "cute";
@@ -40,7 +44,12 @@ const imagePathFor = (
   style: ReaderImageStyle,
   startWord: number,
   endWord: number
-) => `${userId}/${bookId}/${style}/${startWord}-${endWord}.webp`;
+) => `${userId}/${bookId}/${style}/${startWord}-${endWord}.png`;
+
+const styleSuffixFor = (style: ReaderImageStyle) =>
+  style === "cute"
+    ? "Playful premium kawaii editorial illustration, soft rounded shapes, pastel modern colors, warm lighting, crisp details, slightly exaggerated expressions, minimal text, portrait composition."
+    : "Bold Sunday funnies cartoon style, thick outlines, halftone textures, bright 1980s colors, playful premium editorial illustration, minimal text, portrait composition.";
 
 const promptForStyle = (
   style: ReaderImageStyle,
@@ -97,6 +106,68 @@ const promptForStyle = (
   return promptLines.filter((line) => line !== "").join("\n");
 };
 
+// Step 1: Meta Muse Spark (OpenCode Go) writes a standalone image prompt for
+// the section. Throws when the Go key is missing or the call fails, so the
+// caller can fall back to the built-in template prompt.
+const writeImagePromptWithMuse = async (
+  goApiKey: string,
+  style: ReaderImageStyle,
+  bookTitle: string,
+  author: string,
+  text: string,
+  cacheSession: string
+) => {
+  const bookLine = `from ${bookTitle || "Uploaded document"}${author ? ` by ${author}` : ""}`;
+  const input = [
+    "Write ONE image prompt (under 300 words) depicting the key scene of this book section",
+    `${bookLine}.`,
+    "The prompt must stand alone: the image model only sees the prompt, never the book.",
+    "Name the book context briefly, then describe the single key visual scene:",
+    "characters, setting, action, emotion and story shift.",
+    `End with exactly: "${styleSuffixFor(style)}"`,
+    "Reply with ONLY the image prompt, no preamble.",
+    "",
+    `Section: ${text}`,
+  ].join("\n");
+
+  const response = await fetch(GO_RESPONSES_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${goApiKey}`,
+      "Content-Type": "application/json",
+      "User-Agent": "IllumeReader/1.0",
+      "x-opencode-session": cacheSession,
+    },
+    body: JSON.stringify({
+      input,
+      max_output_tokens: 2500,
+      model: IMAGE_PROMPT_MODEL,
+      reasoning: { effort: "low" },
+    }),
+    signal: AbortSignal.timeout(55_000),
+  });
+
+  const result = await response.json();
+  if (!response.ok) {
+    const message =
+      (result?.error as { message?: unknown })?.message ??
+      `Muse prompt step failed (${response.status})`;
+    throw new Error(typeof message === "string" ? message : "Muse prompt step failed.");
+  }
+
+  const outputs = Array.isArray(result?.output) ? result.output : [];
+  for (const item of outputs) {
+    if (item?.type !== "message" || !Array.isArray(item?.content)) continue;
+    for (const part of item.content) {
+      if (part?.type === "output_text" && typeof part?.text === "string" && part.text.trim()) {
+        return part.text.trim().slice(0, 2000);
+      }
+    }
+  }
+
+  throw new Error("Muse returned no image prompt.");
+};
+
 const base64ToBytes = (base64: string) => Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
 
 const bytesToBase64 = (bytes: Uint8Array) => {
@@ -108,7 +179,7 @@ const bytesToBase64 = (bytes: Uint8Array) => {
   return btoa(binary);
 };
 
-const imageDataUrl = (base64: string) => `data:image/webp;base64,${base64}`;
+const imageDataUrl = (base64: string) => `data:image/png;base64,${base64}`;
 
 const currentMonthStart = () => new Date().toISOString().slice(0, 7) + "-01";
 
@@ -143,7 +214,7 @@ const errorMessage = (error: unknown, fallback = "Could not generate image.") =>
   return fallback;
 };
 
-const openRouterImageErrorMessage = (status: number, result: unknown) => {
+const openAiImageErrorMessage = (status: number, result: unknown) => {
   const rawMessage =
     result && typeof result === "object" && "error" in result
       ? (result.error as { message?: unknown }).message
@@ -159,7 +230,7 @@ const openRouterImageErrorMessage = (status: number, result: unknown) => {
     return "Image generation is busy. Please try again in a moment.";
   }
 
-  return message || "Muse image generation failed.";
+  return message || "Image generation failed.";
 };
 
 const readerImageRowCount = async (adminClient: any, userId: string, periodStart?: string) => {
@@ -307,7 +378,8 @@ Deno.serve(async (req) => {
     const supabaseUrl = requiredEnv("SUPABASE_URL");
     const anonKey = requiredEnv("SUPABASE_ANON_KEY");
     const serviceRoleKey = requiredEnv("SUPABASE_SERVICE_ROLE_KEY");
-    const openRouterKey = requiredEnv("OPENROUTER_API_KEY");
+    const openAiKey = requiredEnv("OPENAI_API_KEY");
+    const goApiKey = Deno.env.get("OPENCODE_GO_API_KEY") ?? "";
     const authorization = req.headers.get("Authorization");
 
     if (!authorization) throw new Error("Missing Authorization header");
@@ -323,8 +395,9 @@ Deno.serve(async (req) => {
     const payload = await req.json();
     const bookId = cleanId(payload.bookId);
     const bookTitle = cleanText(payload.bookTitle, 180);
+    const author = cleanText(payload.author, 120);
     const imageStyle = cleanImageStyle(payload.imageStyle ?? payload.style);
-    const text = cleanText(payload.text, 7_500);
+    const text = cleanText(payload.text, 12_000);
     const startWord = Number(payload.startWord);
     const endWord = Number(payload.endWord);
     const checkOnly = payload.checkOnly === true;
@@ -408,35 +481,77 @@ Deno.serve(async (req) => {
     }
 
     try {
-      const prompt = promptForStyle(imageStyle, bookTitle, text);
+      // Step 1: Muse Spark (OpenCode Go, low reasoning) writes the image
+      // prompt for this section. Falls back to the built-in template when the
+      // Go key is missing or the call fails.
+      let prompt = "";
+      let promptSource = "template";
+      if (goApiKey) {
+        try {
+          prompt = await writeImagePromptWithMuse(
+            goApiKey,
+            imageStyle,
+            bookTitle,
+            author,
+            text,
+            `illume-${bookId}`
+          );
+          promptSource = "muse-spark";
+        } catch (museError) {
+          console.warn("Muse prompt step failed, using template", museError);
+        }
+      }
+      if (!prompt) {
+        prompt = promptForStyle(imageStyle, bookTitle, text);
+      }
 
-      const response = await fetch(OPENROUTER_IMAGE_URL, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${openRouterKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: READER_IMAGE_MODEL,
-          output_format: "webp",
-          prompt,
-          size: "1024x1536"
-        })
-      });
+      // Step 2: Sunburst Low renders the Muse-written prompt. If Sunburst's
+      // safety filter vetoes the scene, retry once with Flare.
+      const renderWithModel = async (model: string) => {
+        const res = await fetch(OPENAI_IMAGE_URL, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${openAiKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model,
+            n: 1,
+            output_format: "png",
+            prompt,
+            quality: "low",
+            size: "1024x1536"
+          })
+        });
+        const body = await res.json();
+        return { body, res };
+      };
 
-      const result = await response.json();
+      let imageModel = READER_IMAGE_MODEL;
+      let { body: result, res: response } = await renderWithModel(imageModel);
+      if (
+        !response.ok &&
+        /safety system/i.test(
+          String((result?.error as { message?: unknown })?.message ?? "")
+        ) &&
+        imageModel !== READER_IMAGE_FALLBACK_MODEL
+      ) {
+        console.warn("Sunburst safety veto, retrying with Flare");
+        imageModel = READER_IMAGE_FALLBACK_MODEL;
+        ({ body: result, res: response } = await renderWithModel(imageModel));
+      }
       if (!response.ok) {
-        throw new Error(openRouterImageErrorMessage(response.status, result));
+        throw new Error(openAiImageErrorMessage(response.status, result));
       }
 
       const base64Image = result?.data?.[0]?.b64_json;
-      if (!base64Image) throw new Error("Muse returned no image data.");
+      if (!base64Image) throw new Error("Image model returned no image data.");
       const storagePath = imagePathFor(userData.user.id, bookId, imageStyle, startWord, endWord);
 
       const { error: uploadError } = await adminClient.storage
         .from(READER_IMAGE_BUCKET)
         .upload(storagePath, base64ToBytes(base64Image), {
-          contentType: "image/webp",
+          contentType: "image/png",
           upsert: true
         });
 
@@ -464,9 +579,11 @@ Deno.serve(async (req) => {
           cached: false,
           imageCount: finalImageCount,
           imageLimit,
+          imageModel,
           imageUrl: imageDataUrl(base64Image),
           plan: activePlan,
-          prompt
+          prompt,
+          promptSource
         }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
