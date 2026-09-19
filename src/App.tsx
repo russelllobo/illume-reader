@@ -10079,6 +10079,8 @@ function App() {
       voice: SPEECHIFY_SERVER_VOICE_ID,
       wordRanges: slicedRanges
     });
+
+    if (paragraphIndex >= 0) prefetchUpcomingParagraphs(paragraphIndex, 2);
   };
 
   const speakPdfPageFromWord = (pageNumber: number, pageText: string, wordCharStart: number) => {
