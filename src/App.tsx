@@ -43,7 +43,7 @@ import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
 import { parsePdf, pdfPreviewToBook, pdfjsLib, readPdfPreview, type PdfPreview, type StoredPdfPage } from "./pdf";
 import { createEdgeTtsPlayer, DEFAULT_EDGE_TTS_VOICE, EdgeTtsPlayer } from "./edgeTts";
 import { createSpeechifyPlayer, isSpeechifyVoiceId, SPEECHIFY_DEFAULT_VOICE_ID, SpeechifyPlayer } from "./speechifyTts";
-import { supabase } from "./supabase";
+import { supabase, supabaseFunctionUrl, supabasePublishableKey } from "./supabase";
 import { LandingPage } from "./LandingPage";
 
 
@@ -9181,6 +9181,114 @@ function App() {
   const isReaderImageRunActive = (runId: number) =>
     readerImageModeRef.current && runId === readerImageRunRef.current;
 
+  // Streams progressive image previews for a chunk: paints each partial as it
+  // arrives, then resolves with the final payload (same shape as the classic
+  // non-streaming call). Throws on transport or generation errors.
+  const streamReaderImageGeneration = async (
+    requestBody: Record<string, unknown>,
+    chunk: ReaderImageChunk,
+    runId: number,
+    style: ReaderImageStyle
+  ): Promise<{ data?: any; error?: any; skipped?: boolean }> => {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) throw new Error("You must be signed in to generate images.");
+    const response = await fetch(supabaseFunctionUrl("generate-reader-image"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: supabasePublishableKey,
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ ...requestBody, stream: true })
+    });
+    if (!response.ok || !response.body) throw new Error("Image streaming is unavailable.");
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const cancel = () => {
+      try {
+        void reader.cancel();
+      } catch {
+        /* already closed */
+      }
+    };
+
+    const handleFrame = (frame: string): { data?: any; done?: boolean; error?: string; partial?: string } | null => {
+      const lines = frame.split(/\r?\n/);
+      const line = lines.find((entry) => entry.trimStart().startsWith("data:"));
+      if (!line) return null;
+      const raw = line.slice(line.indexOf("data:") + 5).trim();
+      if (!raw || raw === "[DONE]") return null;
+      let event: any = null;
+      try {
+        event = JSON.parse(raw);
+      } catch {
+        return null;
+      }
+      // Event type arrives on the `event:` line; recover it from the frame.
+      const typeLine = lines.find((entry) => entry.trimStart().startsWith("event:"));
+      const type = typeLine ? typeLine.slice(typeLine.indexOf("event:") + 6).trim() : event?.type;
+      if (type === "partial" && typeof event?.imageUrl === "string") return { partial: event.imageUrl };
+      if (type === "final") return { data: event, done: true };
+      if (type === "error") {
+        return { error: typeof event?.error === "string" ? event.error : "Image generation failed." };
+      }
+      return null;
+    };
+
+    const applyResult = (result: { data?: any; done?: boolean; error?: string; partial?: string } | null) => {
+      if (!result) return false;
+      if (!isReaderImageRunActive(runId)) {
+        cancel();
+        return true;
+      }
+      if (result.partial) {
+        setReaderImages((items) => ({
+          ...items,
+          [chunk.index]: {
+            fallbackSrc: items[chunk.index]?.fallbackSrc,
+            isFreshGeneration: true,
+            src: result.partial,
+            status: "loading",
+            style
+          }
+        }));
+        return false;
+      }
+      return true;
+    };
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (value) buffer += decoder.decode(value, { stream: true });
+      if (done) buffer += decoder.decode();
+      const frames = buffer.split(/\r?\n\r?\n/);
+      buffer = done ? "" : (frames.pop() ?? "");
+      for (const frame of frames) {
+        const result = handleFrame(frame);
+        if (!result) continue;
+        if (result.error) {
+          cancel();
+          throw new Error(result.error);
+        }
+        if (result.partial) {
+          if (applyResult(result)) return { skipped: true };
+          continue;
+        }
+        if (result.done) {
+          cancel();
+          if (!isReaderImageRunActive(runId)) return { skipped: true };
+          return { data: result.data };
+        }
+      }
+      if (done) break;
+    }
+
+    throw new Error("Image streaming ended without a final image.");
+  };
+
   const generateReaderImageForBook = async (
     bookId: string,
     sourceBook: ReaderBook,
@@ -9297,14 +9405,27 @@ function App() {
       await waitForNextPaint();
       if (!isReaderImageRunActive(runId)) return "skipped";
 
-      const generationRequest = supabase.functions.invoke("generate-reader-image", {
-        method: "POST",
-        body: requestBody
-      });
-      const [{ data, error }] = await Promise.all([
+      const generationRequest = (async (): Promise<{ data?: any; error?: any; skipped?: boolean }> => {
+        try {
+          return await streamReaderImageGeneration(requestBody, chunk, runId, style);
+        } catch (streamError) {
+          if (!isReaderImageRunActive(runId)) return { skipped: true };
+          // Streaming transport failed: fall back to the classic single-shot
+          // call (server-side cache hits and usage refunds keep this safe).
+          const fallback = await supabase.functions.invoke("generate-reader-image", {
+            method: "POST",
+            body: requestBody
+          });
+          return { data: fallback.data, error: fallback.error };
+        }
+      })();
+      const [generationResult] = await Promise.all([
         generationRequest,
         wait(READER_IMAGE_GENERATION_FEEDBACK_MS)
       ]);
+
+      if (!isReaderImageRunActive(runId) || generationResult.skipped) return "skipped";
+      const { data, error } = generationResult;
 
       if (!isReaderImageRunActive(runId)) return "skipped";
       if (error) throw error;

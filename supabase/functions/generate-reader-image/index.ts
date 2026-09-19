@@ -233,6 +233,108 @@ const openAiImageErrorMessage = (status: number, result: unknown) => {
   return message || "Image generation failed.";
 };
 
+const sseEncode = (event: string, data: unknown) =>
+  `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+
+// Extracts the b64_json value from an SSE frame with plain string slicing.
+// base64 never contains quotes or backslashes, so this avoids JSON.parse on
+// multi-megabyte payloads (edge CPU limits are tight).
+const extractB64 = (frame: string): string | null => {
+  const keyIndex = frame.indexOf('"b64_json"');
+  if (keyIndex < 0) return null;
+  const start = frame.indexOf('"', keyIndex + 11) + 1;
+  if (!start) return null;
+  const end = frame.indexOf('"', start);
+  if (end < 0) return null;
+  return frame.slice(start, end);
+};
+
+const frameType = (frame: string): string => {
+  const keyIndex = frame.indexOf('"type"');
+  if (keyIndex < 0) return "";
+  const start = frame.indexOf('"', keyIndex + 7) + 1;
+  if (!start) return "";
+  const end = frame.indexOf('"', start);
+  if (end < 0) return "";
+  return frame.slice(start, end);
+};
+
+const isSafetyVeto = (result: unknown) =>
+  /safety system/i.test(
+    String((result as { error?: { message?: unknown } })?.error?.message ?? "")
+  );
+
+// Calls the OpenAI Images API in streaming mode, forwarding partial previews.
+// Resolves with the final image. Throws enriched errors (status/result attached).
+const streamImageEvents = async (
+  openAiKey: string,
+  model: string,
+  prompt: string,
+  onPartial: (index: number, b64: string) => void
+): Promise<string> => {
+  const response = await fetch(OPENAI_IMAGE_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${openAiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model,
+      n: 1,
+      output_format: "png",
+      partial_images: 3,
+      prompt,
+      quality: "low",
+      size: "1024x1536",
+      stream: true
+    })
+  });
+
+  if (!response.ok || !response.body) {
+    const result = await response.json().catch(() => null);
+    const error = new Error(openAiImageErrorMessage(response.status, result));
+    (error as { status?: number }).status = response.status;
+    (error as { result?: unknown }).result = result;
+    throw error;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalB64 = "";
+
+  const handleFrame = (frame: string) => {
+    const type = frameType(frame);
+    if (type !== "image_generation.partial_image" && type !== "image_generation.completed") return;
+    const b64 = extractB64(frame);
+    if (!b64) return;
+    if (type === "image_generation.partial_image") {
+      const marker = '"partial_image_index"';
+      const keyIndex = frame.indexOf(marker);
+      let index = 0;
+      if (keyIndex >= 0) {
+        index = Number(frame.slice(keyIndex + marker.length).split(/[^0-9]/).find((part) => part !== "") ?? 0) || 0;
+      }
+      onPartial(index, b64);
+    } else {
+      finalB64 = b64;
+    }
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (value) buffer += decoder.decode(value, { stream: true });
+    if (done) buffer += decoder.decode();
+    const frames = buffer.split(/\r?\n\r?\n/);
+    buffer = done ? "" : (frames.pop() ?? "");
+    for (const frame of frames) handleFrame(frame);
+    if (done) break;
+  }
+
+  if (!finalB64) throw new Error("Image model returned no image data.");
+  return finalB64;
+};
+
 const readerImageRowCount = async (adminClient: any, userId: string, periodStart?: string) => {
   let query = adminClient
     .from("reader_images")
@@ -503,6 +605,96 @@ Deno.serve(async (req) => {
       }
       if (!prompt) {
         prompt = promptForStyle(imageStyle, bookTitle, text);
+      }
+
+      if (payload.stream === true) {
+        const streamUserId = userData.user.id;
+        const streamBookId = bookId;
+        const streamStyle = imageStyle;
+        const streamStartWord = startWord;
+        const streamEndWord = endWord;
+        const streamPrompt = prompt;
+        const streamPromptSource = promptSource;
+        const stream = new ReadableStream({
+          async start(controller) {
+            const send = (event: string, data: unknown) => {
+              controller.enqueue(new TextEncoder().encode(sseEncode(event, data)));
+            };
+            const refund = async () => {
+              const { error: refundError } = await adminClient.rpc("refund_reader_image_generation", {
+                p_period_start: usagePeriodStart,
+                p_resets_monthly: usageResetsMonthly,
+                p_user_id: streamUserId
+              });
+              if (refundError) console.error("Failed to refund reader image generation", refundError);
+            };
+            try {
+              send("prompt", { prompt: streamPrompt, promptSource: streamPromptSource });
+              let imageModel = READER_IMAGE_MODEL;
+              let base64Image = "";
+              for (;;) {
+                try {
+                  base64Image = await streamImageEvents(openAiKey, imageModel, streamPrompt, (index, b64) => {
+                    send("partial", { imageModel, index, imageUrl: imageDataUrl(b64) });
+                  });
+                  break;
+                } catch (streamError) {
+                  const vetoed =
+                    isSafetyVeto((streamError as { result?: unknown }).result) &&
+                    imageModel !== READER_IMAGE_FALLBACK_MODEL;
+                  if (!vetoed) throw streamError;
+                  console.warn("Sunburst safety veto, retrying stream with Flare");
+                  imageModel = READER_IMAGE_FALLBACK_MODEL;
+                }
+              }
+              const storagePath = imagePathFor(streamUserId, streamBookId, streamStyle, streamStartWord, streamEndWord);
+              const { error: uploadError } = await adminClient.storage
+                .from(READER_IMAGE_BUCKET)
+                .upload(storagePath, base64ToBytes(base64Image), {
+                  contentType: "image/png",
+                  upsert: true
+                });
+              if (uploadError) throw uploadError;
+              const { error: insertError } = await adminClient.from("reader_images").upsert(
+                {
+                  book_id: streamBookId,
+                  end_word: streamEndWord,
+                  prompt: streamPrompt,
+                  start_word: streamStartWord,
+                  storage_path: storagePath,
+                  style: streamStyle,
+                  user_id: streamUserId
+                },
+                { onConflict: "book_id,start_word,end_word,style" }
+              );
+              if (insertError) throw insertError;
+              const finalImageCount = await readerImageUsageSnapshot(adminClient, streamUserId, activePlan);
+              send("final", {
+                cached: false,
+                imageCount: finalImageCount,
+                imageLimit,
+                imageModel,
+                imageUrl: imageDataUrl(base64Image),
+                plan: activePlan,
+                prompt: streamPrompt,
+                promptSource: streamPromptSource
+              });
+              controller.close();
+            } catch (error) {
+              await refund();
+              console.error("generate-reader-image stream failed", error);
+              send("error", { error: errorMessage(error) });
+              controller.close();
+            }
+          }
+        });
+        return new Response(stream, {
+          headers: {
+            ...corsHeaders,
+            "Cache-Control": "no-cache",
+            "Content-Type": "text/event-stream"
+          }
+        });
       }
 
       // Step 2: Sunburst Low renders the Muse-written prompt. If Sunburst's
