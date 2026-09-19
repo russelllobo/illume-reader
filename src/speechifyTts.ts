@@ -113,50 +113,146 @@ const functionErrorMessage = (error: unknown) => {
  * Server-side synthesis runs at 1x; the requested rate is applied locally
  * via playbackRate so rate changes (and cache hits) never need a refetch.
  */
+
+// Speechify's plan allows a single simultaneous synthesis request, so every
+// narration fetch goes through one client-side lane: at most one request is
+// ever in flight and real playback jumps ahead of background prefetches.
+// Parallel prefetches otherwise get rejected with "Concurrency limit
+// exceeded" and narration breaks.
+type QueuedSpeechTask = {
+  key: string;
+  priority: boolean;
+  reject: (error: unknown) => void;
+  resolve: (result: FetchedSpeech) => void;
+  run: () => Promise<FetchedSpeech>;
+};
+
+const speechQueue: QueuedSpeechTask[] = [];
+const queuedTasksByKey = new Map<string, QueuedSpeechTask>();
+let speechTaskInFlight = false;
+
+const pumpSpeechQueue = () => {
+  if (speechTaskInFlight) return;
+  const prioritizedIndex = speechQueue.findIndex((task) => task.priority);
+  const task = speechQueue.splice(prioritizedIndex >= 0 ? prioritizedIndex : 0, 1)[0];
+  if (!task) return;
+  speechTaskInFlight = true;
+  queuedTasksByKey.delete(task.key);
+  task.run().then(
+    (result) => {
+      speechTaskInFlight = false;
+      task.resolve(result);
+      pumpSpeechQueue();
+    },
+    (error) => {
+      speechTaskInFlight = false;
+      task.reject(error);
+      pumpSpeechQueue();
+    }
+  );
+};
+
+const dropQueuedPrefetches = () => {
+  for (let index = speechQueue.length - 1; index >= 0; index -= 1) {
+    const task = speechQueue[index];
+    if (task.priority) continue;
+    speechQueue.splice(index, 1);
+    queuedTasksByKey.delete(task.key);
+    task.reject(new Error("Superseded by playback."));
+  }
+};
+
+const CONCURRENCY_RETRY_DELAYS = [700, 1500, 3000];
+
+const isConcurrencyLimitError = (error: unknown) =>
+  error instanceof Error && /concurrency limit exceeded/i.test(error.message);
+
+const sleep = (ms: number) => new Promise<void>((resolve) => void setTimeout(resolve, ms));
+
 export const fetchSpeechifyAudio = (
   text: string,
-  voice: string = SPEECHIFY_SERVER_VOICE_ID
+  voice: string = SPEECHIFY_SERVER_VOICE_ID,
+  options: { priority?: boolean } = {}
 ): Promise<FetchedSpeech> => {
+  const priority = options.priority ?? false;
   const trimmed = text.trim().slice(0, 2000);
   if (!trimmed) return Promise.reject(new Error("No text was provided for speech."));
   const key = speechCacheKey(trimmed, voice);
   const cached = speechCache.get(key);
-  if (cached) return cached;
+  if (cached) {
+    // A real play attaches to an already-queued prefetch for the same text
+    // and promotes it ahead of other prefetches.
+    if (priority) {
+      const queued = queuedTasksByKey.get(key);
+      if (queued) queued.priority = true;
+    }
+    return cached;
+  }
 
-  const request = (async (): Promise<FetchedSpeech> => {
-    const { data, error } = await supabase.functions.invoke("edge-tts", {
-      body: { rate: 1, text: trimmed, voice }
-    });
+  // A new playback need makes already-queued prefetches stale; drop them so
+  // the single lane serves playback first. Fresh prefetches re-queue after.
+  if (priority) dropQueuedPrefetches();
 
-    if (error) throw new Error(functionErrorMessage(error));
-    const serverError =
-      data && typeof data === "object" && typeof (data as { error?: unknown }).error === "string"
-        ? ((data as { error: string }).error as string)
-        : "";
-    if (serverError) throw new Error(serverError);
+  let resolve!: (result: FetchedSpeech) => void;
+  let reject!: (error: unknown) => void;
+  const shared = new Promise<FetchedSpeech>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
 
-    const audioBase64 =
-      data && typeof data === "object" && typeof (data as { audio?: unknown }).audio === "string"
-        ? ((data as { audio: string }).audio as string)
-        : "";
-    if (!audioBase64) throw new Error("Speechify returned no audio.");
+  const run = async (): Promise<FetchedSpeech> => {
+    let attempt = 0;
+    for (;;) {
+      try {
+        const { data, error } = await supabase.functions.invoke("edge-tts", {
+          body: { rate: 1, text: trimmed, voice }
+        });
 
-    const words = (
-      data && typeof data === "object" && Array.isArray((data as { words?: unknown }).words)
-        ? ((data as { words: SpokenWord[] }).words)
-        : []
-    ).filter(
-      (word) =>
-        word &&
-        typeof word.text === "string" &&
-        Number.isFinite(word.start) &&
-        Number.isFinite(word.end)
-    );
+        if (error) throw new Error(functionErrorMessage(error));
+        const serverError =
+          data && typeof data === "object" && typeof (data as { error?: unknown }).error === "string"
+            ? ((data as { error: string }).error as string)
+            : "";
+        if (serverError) throw new Error(serverError);
 
-    return { audioBase64, words };
-  })();
+        const audioBase64 =
+          data && typeof data === "object" && typeof (data as { audio?: unknown }).audio === "string"
+            ? ((data as { audio: string }).audio as string)
+            : "";
+        if (!audioBase64) throw new Error("Speechify returned no audio.");
 
-  return rememberSpeech(key, request);
+        const words = (
+          data && typeof data === "object" && Array.isArray((data as { words?: unknown }).words)
+            ? ((data as { words: SpokenWord[] }).words)
+            : []
+        ).filter(
+          (word) =>
+            word &&
+            typeof word.text === "string" &&
+            Number.isFinite(word.start) &&
+            Number.isFinite(word.end)
+        );
+
+        return { audioBase64, words };
+      } catch (error) {
+        // Another tab/device may briefly hold the single synthesis slot;
+        // back off and retry instead of surfacing a failure.
+        if (isConcurrencyLimitError(error) && attempt < CONCURRENCY_RETRY_DELAYS.length) {
+          await sleep(CONCURRENCY_RETRY_DELAYS[attempt]);
+          attempt += 1;
+          continue;
+        }
+        throw error;
+      }
+    }
+  };
+
+  const task: QueuedSpeechTask = { key, priority, reject, resolve, run };
+  speechQueue.push(task);
+  queuedTasksByKey.set(key, task);
+  pumpSpeechQueue();
+
+  return rememberSpeech(key, shared);
 };
 
 /**
@@ -277,7 +373,7 @@ export const createSpeechifyPlayer = ({
     const trimmed = text.trim();
     if (!trimmed) throw new Error("No text was provided for speech.");
 
-    const { audioBase64, words } = await fetchSpeechifyAudio(trimmed, voice);
+    const { audioBase64, words } = await fetchSpeechifyAudio(trimmed, voice, { priority: true });
 
     if (cancelled) return;
 
