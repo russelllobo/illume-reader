@@ -288,7 +288,7 @@ type BookRow = {
   page_count?: number | null;
   paragraph_count: number;
   pdf_page_metrics?: PdfPreview["pageMetrics"] | null;
-  pdf_toc?: Array<{ pageNumber?: number; pageOffsetRatio?: number; title?: string }> | null;
+  pdf_toc?: Array<{ level?: number; pageNumber?: number; pageOffsetRatio?: number; title?: string }> | null;
   processed_at?: string | null;
   processing_error?: string | null;
   processing_started_at?: string | null;
@@ -1421,15 +1421,57 @@ const bookFormat = (row: Pick<BookRow, "document_type" | "file_name" | "mime_typ
 const documentMimeType = (format: "epub" | "pdf") =>
   format === "pdf" ? "application/pdf" : "application/epub+zip";
 
+const cleanTocTitle = (raw: string) => {
+  const withoutIndent = String(raw ?? "").replace(/^[\s\u00a0]+/, "");
+  const withoutBullets = withoutIndent.replace(/^[•\-–—>▸▹▪·]+\s*/, "");
+  return (withoutBullets || String(raw ?? "")).trim();
+};
+
+const inferTocLevel = (raw: string) => {
+  const leading = String(raw ?? "").match(/^[\s\u00a0]*/)?.[0] ?? "";
+  const spaces = leading.replace(/\u00a0/g, " ").length;
+  if (spaces >= 6) return 3;
+  if (spaces >= 4) return 2;
+  if (spaces >= 2) return 1;
+  return 0;
+};
+
+const tocLevelsForBook = (book: ReaderBook): number[] => {
+  if (Array.isArray(book.chapterLevels) && book.chapterLevels.length === book.chapters.length) {
+    return book.chapterLevels.map((level) => Math.max(0, Math.min(6, Math.floor(Number(level) || 0))));
+  }
+  return book.chapters.map((chapter) => inferTocLevel(chapter));
+};
+
+const tocAncestorsOf = (levels: number[], index: number): number[] => {
+  const ancestors: number[] = [];
+  let depth = levels[index] ?? 0;
+  for (let i = index - 1; i >= 0 && depth > 0; i -= 1) {
+    const level = levels[i] ?? 0;
+    if (level < depth) {
+      ancestors.push(i);
+      depth = level;
+    }
+  }
+  return ancestors;
+};
+
 const pdfPreviewFromRow = (row: BookRow): PdfPreview | null => {
   if (bookFormat(row) !== "pdf" || !row.page_count) return null;
 
   const toc = Array.isArray(row.pdf_toc) ? row.pdf_toc : [];
+  const chapters = toc.map((entry) => cleanTocTitle(String(entry.title ?? ""))).filter(Boolean);
+  const levels = toc.map((entry, index) =>
+    typeof entry.level === "number" && Number.isFinite(entry.level)
+      ? Math.max(0, Math.min(6, Math.floor(entry.level)))
+      : inferTocLevel(String(toc[index]?.title ?? ""))
+  );
   return {
     author: row.author ?? "",
+    chapterLevels: levels.slice(0, chapters.length),
     chapterPageNumbers: toc.map((entry) => Number(entry.pageNumber ?? 1)).filter((page) => Number.isFinite(page) && page > 0),
     chapterPageOffsets: toc.map((entry) => Math.max(0, Math.min(1, Number(entry.pageOffsetRatio ?? 0) || 0))),
-    chapters: toc.map((entry) => String(entry.title ?? "").trim()).filter(Boolean),
+    chapters,
     pageCount: row.page_count,
     pageMetrics: Array.isArray(row.pdf_page_metrics) ? row.pdf_page_metrics : [],
     title: row.title
@@ -8151,6 +8193,8 @@ function App() {
   const [readerImageStyleOpen, setReaderImageStyleOpen] = useState(false);
   const [readerImageUpgradeOpen, setReaderImageUpgradeOpen] = useState(false);
   const [chapterDrawerOpen, setChapterDrawerOpen] = useState(() => window.matchMedia(CHAPTER_SIDEBAR_DESKTOP_QUERY).matches);
+  const [tocExpanded, setTocExpanded] = useState<Set<number>>(() => new Set());
+  const tocBookIdRef = useRef<string | null>(null);
   const parsedBooks = useRef(new Map<string, ReaderBook>());
   const parsedBookFiles = useRef(new Map<string, File>());
   const bookOpenRunRef = useRef(0);
@@ -8292,6 +8336,66 @@ function App() {
 
     return index;
   }, [book?.chapterPageNumbers, book?.chapterPageOffsets, currentPage, isPdfBook, pdfVisibleOffsetRatio]);
+  const activeTocIndex = isPdfBook ? activePdfChapterIndex : (current?.chapterIndex ?? -1);
+  const tocLevels = useMemo(() => (book ? tocLevelsForBook(book) : []), [book]);
+  const tocRows = useMemo(() => {
+    if (!book?.chapters.length) return [];
+    return book.chapters.map((raw, index) => ({
+      index,
+      title: cleanTocTitle(raw) || raw.trim() || `Chapter ${index + 1}`,
+      level: tocLevels[index] ?? 0,
+      pageNumber: book.chapterPageNumbers?.[index] ?? null
+    }));
+  }, [book, tocLevels]);
+  const tocHasChildren = useMemo(() => {
+    const has = new Array(tocRows.length).fill(false);
+    tocRows.forEach((row, i) => {
+      const next = tocRows[i + 1];
+      if (next && next.level > row.level) has[i] = true;
+    });
+    return has;
+  }, [tocRows]);
+  const visibleTocRows = useMemo(() => {
+    const visible: typeof tocRows = [];
+    const collapsedAt: number[] = [];
+    tocRows.forEach((row) => {
+      while (collapsedAt.length && row.level <= collapsedAt[collapsedAt.length - 1]) {
+        collapsedAt.pop();
+      }
+      if (collapsedAt.length) return;
+      visible.push(row);
+      if (tocHasChildren[row.index] && !tocExpanded.has(row.index)) {
+        collapsedAt.push(row.level);
+      }
+    });
+    return visible;
+  }, [tocRows, tocHasChildren, tocExpanded]);
+
+  useEffect(() => {
+    const bookKey = book ? `${book.title}::${book.chapters.length}` : null;
+    if (bookKey !== tocBookIdRef.current) {
+      tocBookIdRef.current = bookKey;
+      setTocExpanded(() => {
+        if (!book || activeTocIndex < 0) return new Set();
+        return new Set(tocAncestorsOf(tocLevels, activeTocIndex));
+      });
+      return;
+    }
+    if (activeTocIndex >= 0 && tocLevels.length) {
+      setTocExpanded((prev) => {
+        const ancestors = tocAncestorsOf(tocLevels, activeTocIndex);
+        let changed = false;
+        const next = new Set(prev);
+        ancestors.forEach((ancestor) => {
+          if (!next.has(ancestor)) {
+            next.add(ancestor);
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+    }
+  }, [book, tocLevels, activeTocIndex]);
   const storageUsed = catalogBooks.reduce((total, item) => total + item.file_size, 0);
   const isBookImporting = pendingBookImports.length > 0;
   const isPro = billingProfile?.plan === "pro" && ["active", "trialing"].includes(billingProfile.status);
@@ -10520,6 +10624,7 @@ function App() {
       pdf_page_metrics: pdfPreview?.pageMetrics ?? [],
       pdf_toc: pdfPreview
         ? pdfPreview.chapters.map((title, index) => ({
+            level: pdfPreview.chapterLevels?.[index] ?? 0,
             pageNumber: pdfPreview.chapterPageNumbers[index] ?? 1,
             pageOffsetRatio: pdfPreview.chapterPageOffsets[index] ?? 0,
             title
@@ -11019,6 +11124,7 @@ function App() {
         setActiveBookFile(file);
         setOpeningPdfPreview({
           author: parsed.author,
+          chapterLevels: parsed.chapterLevels ?? [],
           chapterPageNumbers: parsed.chapterPageNumbers ?? [],
           chapterPageOffsets: parsed.chapterPageOffsets ?? [],
           chapters: parsed.chapters,
@@ -11028,6 +11134,7 @@ function App() {
         });
         if (!pdfPreviewFromRow(row)) {
           const pdfToc = (preview?.chapters ?? []).map((title, index) => ({
+            level: preview?.chapterLevels?.[index] ?? 0,
             pageNumber: preview?.chapterPageNumbers[index] ?? 1,
             pageOffsetRatio: preview?.chapterPageOffsets[index] ?? 0,
             title
@@ -13021,27 +13128,71 @@ function App() {
           className={["chapter-sidebar", chapterDrawerOpen ? "open" : ""].filter(Boolean).join(" ")}
           id="reader-chapter-sidebar"
         >
+          {(book.coverUrl || book.title) && (
+            <div className="toc-book-card">
+              {book.coverUrl ? (
+                <img alt="" className="toc-book-cover" src={book.coverUrl} />
+              ) : (
+                <span className="toc-book-cover toc-book-cover-fallback" aria-hidden="true">
+                  <BookOpen size={14} />
+                </span>
+              )}
+              <span className="toc-book-meta">
+                <span className="toc-book-title" title={book.title}>{book.title}</span>
+                {book.author && <span className="toc-book-author" title={book.author}>{book.author}</span>}
+              </span>
+            </div>
+          )}
           <div className="chapter-heading">{isPdfBook ? "Table of contents" : "Chapters"}</div>
           <nav className="chapter-list" aria-label={isPdfBook ? "Table of contents" : "Chapters"}>
-            {book.chapters.length ? (
-              book.chapters.map((chapter, index) => {
-                const isActive = index === (isPdfBook ? activePdfChapterIndex : current?.chapterIndex);
+            {tocRows.length ? (
+              visibleTocRows.map((row) => {
+                const isActive = row.index === activeTocIndex;
+                const hasChildren = tocHasChildren[row.index] ?? false;
+                const isExpanded = tocExpanded.has(row.index);
                 return (
-                  <div key={`${chapter}-${index}`} className="chapter-item-container" style={{ display: "flex", flexDirection: "column" }}>
+                  <div
+                    key={`${row.index}`}
+                    className={["toc-row", isActive ? "active" : "", hasChildren ? "has-children" : ""].filter(Boolean).join(" ")}
+                    style={{ paddingInlineStart: `${4 + Math.min(row.level, 5) * 12}px` }}
+                    title={row.title}
+                  >
+                    {hasChildren && (
+                      <button
+                        aria-label={isExpanded ? `Collapse ${row.title}` : `Expand ${row.title}`}
+                        className={["toc-expander", isExpanded ? "expanded" : ""].filter(Boolean).join(" ")}
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setTocExpanded((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(row.index)) next.delete(row.index);
+                            else next.add(row.index);
+                            return next;
+                          });
+                        }}
+                      >
+                        <ChevronRight size={13} aria-hidden="true" />
+                      </button>
+                    )}
                     <button
-                      className={isActive ? "chapter-item active" : "chapter-item"}
+                      className={isActive ? "chapter-item active toc-label" : "chapter-item toc-label"}
                       ref={(node) => {
                         if (node) {
-                          chapterRefs.current.set(index, node);
+                          chapterRefs.current.set(row.index, node);
                         } else {
-                          chapterRefs.current.delete(index);
+                          chapterRefs.current.delete(row.index);
                         }
                       }}
                       type="button"
-                      onClick={() => moveToChapter(index)}
-                      title={chapter.trim()}
+                      onClick={() => moveToChapter(row.index)}
+                      title={row.title}
+                      aria-current={isActive ? "page" : undefined}
                     >
-                      {chapter}
+                      <span className="toc-label-text">{row.title}</span>
+                      {isPdfBook && typeof row.pageNumber === "number" && (
+                        <span className="toc-page" aria-hidden="true">{row.pageNumber}</span>
+                      )}
                     </button>
                   </div>
                 );

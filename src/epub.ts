@@ -24,12 +24,15 @@ export type ReaderBook = {
   pageCount?: number;
   chapterPageNumbers?: number[];
   chapterPageOffsets?: number[];
+  chapterLevels?: number[];
   paragraphs: ReaderParagraph[];
   chapters: string[];
 };
 
 type TocEntry = {
   href: string;
+  fullHref: string;
+  level: number;
   title: string;
 };
 
@@ -265,20 +268,42 @@ const getNcxEntries = async (
   if (!ncxText) return [];
 
   const ncx = parseXml(ncxText);
+  const navMap = ncx.getElementsByTagNameNS("*", "navMap")[0];
+  if (!navMap) return [];
 
-  return Array.from(ncx.getElementsByTagNameNS("*", "navPoint"))
-    .map((point): TocEntry | null => {
+  const entries: TocEntry[] = [];
+  const topPoints = Array.from(navMap.childNodes).filter(
+    (node): node is Element => node.nodeType === 1 && (node as Element).localName === "navPoint"
+  );
+  const fallbackPoints =
+    topPoints.length > 0
+      ? topPoints
+      : Array.from(ncx.getElementsByTagNameNS("*", "navPoint")).filter((point) => {
+          const parent = point.parentElement;
+          return !parent || parent.localName !== "navPoint";
+        });
+
+  const visitPoints = (points: Element[], level: number) => {
+    for (const point of points) {
       const title = getElementTextNS(point, ["navLabel", "text"]);
       const src = point.getElementsByTagNameNS("*", "content")[0]?.getAttribute("src");
+      if (title && src) {
+        entries.push({
+          href: resolvePath(resolvedNcxPath, withoutHashOrQuery(src)),
+          fullHref: resolvePath(resolvedNcxPath, src),
+          level,
+          title
+        });
+      }
+      const children = Array.from(point.childNodes).filter(
+        (node): node is Element => node.nodeType === 1 && (node as Element).localName === "navPoint"
+      );
+      if (children.length) visitPoints(children, level + 1);
+    }
+  };
 
-      if (!title || !src) return null;
-
-      return {
-        href: resolvePath(resolvedNcxPath, withoutHashOrQuery(src)),
-        title
-      };
-    })
-    .filter((entry): entry is TocEntry => Boolean(entry));
+  visitPoints(fallbackPoints, 0);
+  return entries;
 };
 
 const getNavEntries = async (
@@ -299,21 +324,50 @@ const getNavEntries = async (
   if (!navText) return [];
 
   const nav = parseXml(navText, "text/html");
-  const links = Array.from(nav.querySelectorAll("nav a, nav li a"));
+  const tocNav =
+    Array.from(nav.querySelectorAll("nav")).find((navEl) => {
+      const type = navEl.getAttribute("epub:type") ?? navEl.getAttribute("type") ?? "";
+      return type.toLowerCase().includes("toc");
+    }) ?? nav.querySelector("nav");
+  const rootList = tocNav?.querySelector(":scope > ol, :scope > ul") ?? tocNav?.querySelector("ol, ul");
+  if (!rootList) {
+    const links = Array.from(nav.querySelectorAll("nav a"));
+    return links
+      .map((link): TocEntry | null => {
+        const title = normaliseSpace(link.textContent ?? "");
+        const href = link.getAttribute("href");
+        if (!title || !href) return null;
+        return {
+          href: resolvePath(navPath, withoutHashOrQuery(href)),
+          fullHref: resolvePath(navPath, href),
+          level: 0,
+          title
+        };
+      })
+      .filter((entry): entry is TocEntry => Boolean(entry));
+  }
 
-  return links
-    .map((link): TocEntry | null => {
-      const title = normaliseSpace(link.textContent ?? "");
-      const href = link.getAttribute("href");
+  const entries: TocEntry[] = [];
+  const visitList = (list: Element, level: number) => {
+    for (const li of Array.from(list.children).filter((el) => el.tagName.toLowerCase() === "li")) {
+      const link = li.querySelector(":scope > a");
+      const title = normaliseSpace(link?.textContent ?? "");
+      const href = link?.getAttribute("href");
+      if (title && href) {
+        entries.push({
+          href: resolvePath(navPath, withoutHashOrQuery(href)),
+          fullHref: resolvePath(navPath, href),
+          level,
+          title
+        });
+      }
+      const nested = li.querySelector(":scope > ol, :scope > ul");
+      if (nested) visitList(nested, level + 1);
+    }
+  };
 
-      if (!title || !href) return null;
-
-      return {
-        href: resolvePath(navPath, withoutHashOrQuery(href)),
-        title
-      };
-    })
-    .filter((entry): entry is TocEntry => Boolean(entry));
+  visitList(rootList, 0);
+  return entries;
 };
 
 export const parseEpub = async (file: File): Promise<ReaderBook> => {
@@ -358,8 +412,6 @@ export const parseEpub = async (file: File): Promise<ReaderBook> => {
   const author = getMetadataValue(opf, "creator");
   const coverPath = getCoverPath(opfPath, opf, manifest);
   const coverUrl = coverPath ? await readImageAsDataUrl(zip, coverPath, assetMimeByPath) : "";
-  const paragraphs: ReaderParagraph[] = [];
-  const chapters: string[] = [];
 
   const spineEl = opf.getElementsByTagNameNS("*", "spine")[0];
   const spineIds = spineEl
@@ -384,20 +436,50 @@ export const parseEpub = async (file: File): Promise<ReaderBook> => {
     .filter((entry): entry is TocEntry & { spineIndex: number } => entry.spineIndex !== undefined)
     .sort((a, b) => a.spineIndex - b.spineIndex);
 
-  let currentChapterTitle = "";
-  let currentChapterIndex = -1;
-  let tocIndex = 0;
+  const paragraphs: ReaderParagraph[] = [];
+  const chapters: string[] = [];
+  const chapterLevels: number[] = [];
+
+  const tocIndicesBySpine = new Map<number, number[]>();
+  tocBySpine.forEach((entry, tocPosition) => {
+    const list = tocIndicesBySpine.get(entry.spineIndex) ?? [];
+    list.push(tocPosition);
+    tocIndicesBySpine.set(entry.spineIndex, list);
+  });
+
+  const fragmentOf = (fullHref: string) => {
+    const hash = fullHref.indexOf("#");
+    if (hash < 0) return "";
+    try {
+      return decodeURIComponent(fullHref.slice(hash + 1));
+    } catch {
+      return fullHref.slice(hash + 1);
+    }
+  };
+
+  const blockIndexForFragment = (doc: Document, blocks: Element[], fragment: string) => {
+    if (!fragment) return -1;
+    const target = doc.getElementById(fragment) ?? doc.querySelector(`[id="${fragment.replace(/"/g, "")}"]`);
+    if (!target) return -1;
+    for (let blockIndex = 0; blockIndex < blocks.length; blockIndex += 1) {
+      const block = blocks[blockIndex];
+      if (block === target || block.contains(target) || target.contains(block)) return blockIndex;
+    }
+    let walker: Node | null = target;
+    while (walker) {
+      const next: Node | null = walker.nextSibling ?? walker.parentElement;
+      if (next instanceof Element) {
+        const idx = blocks.indexOf(next.closest("h1, h2, h3, h4, h5, h6, p, li") as Element);
+        if (idx >= 0) return idx;
+      }
+      walker = walker.parentElement;
+    }
+    return -1;
+  };
 
   for (let spineIndex = 0; spineIndex < spineIds.length; spineIndex += 1) {
     const path = manifest.get(spineIds[spineIndex]);
     if (!path) continue;
-
-    while (
-      tocIndex + 1 < tocBySpine.length &&
-      tocBySpine[tocIndex + 1].spineIndex <= spineIndex
-    ) {
-      tocIndex += 1;
-    }
 
     const html = await zip.file(path)?.async("text");
     if (!html) continue;
@@ -407,28 +489,119 @@ export const parseEpub = async (file: File): Promise<ReaderBook> => {
 
     if (!chapterParagraphs.length) continue;
 
-    const activeToc = tocBySpine[tocIndex];
-    const tocTitle = activeToc && activeToc.spineIndex <= spineIndex ? activeToc.title : "";
-    const fallbackTitle = getChapterTitle(doc, `Chapter ${chapters.length + 1}`);
-    const chapterTitle =
-      tocTitle ||
-      (fallbackTitle === title ? `Chapter ${chapters.length + 1}` : fallbackTitle);
+    const tocPositions = tocIndicesBySpine.get(spineIndex) ?? [];
+    const blockNodes = Array.from(
+      doc.body?.querySelectorAll("h1, h2, h3, h4, h5, h6, p, li") ?? []
+    );
 
-    if (chapterTitle !== currentChapterTitle) {
-      currentChapterTitle = chapterTitle;
-      currentChapterIndex = chapters.length;
+    if (!tocPositions.length) {
+      if (chapters.length > 0) {
+        const chapterIndex = chapters.length - 1;
+        const chapterTitle = chapters[chapterIndex];
+        chapterParagraphs.forEach((paragraph, paragraphIndex) => {
+          paragraphs.push({
+            id: `${chapterIndex}-${paragraphs.length}-${paragraphIndex}`,
+            chapterIndex,
+            chapterTitle,
+            kind: paragraph.kind,
+            text: paragraph.text,
+            image: paragraph.image
+          });
+        });
+        continue;
+      }
+      const fallbackTitle = getChapterTitle(doc, `Chapter ${chapters.length + 1}`);
+      const chapterTitle =
+        fallbackTitle === title ? `Chapter ${chapters.length + 1}` : fallbackTitle;
+      const chapterIndex = chapters.length;
       chapters.push(chapterTitle);
+      chapterLevels.push(0);
+      chapterParagraphs.forEach((paragraph, paragraphIndex) => {
+        paragraphs.push({
+          id: `${chapterIndex}-${paragraphs.length}-${paragraphIndex}`,
+          chapterIndex,
+          chapterTitle,
+          kind: paragraph.kind,
+          text: paragraph.text,
+          image: paragraph.image
+        });
+      });
+      continue;
     }
 
-    chapterParagraphs.forEach((paragraph, paragraphIndex) => {
-      paragraphs.push({
-        id: `${currentChapterIndex}-${paragraphs.length}-${paragraphIndex}`,
-        chapterIndex: currentChapterIndex,
-        chapterTitle,
-        kind: paragraph.kind,
-        text: paragraph.text,
-        image: paragraph.image
+    if (tocPositions.length === 1) {
+      const tocEntry = tocBySpine[tocPositions[0]];
+      const fallbackTitle = getChapterTitle(doc, `Chapter ${chapters.length + 1}`);
+      const chapterTitle = tocEntry.title || fallbackTitle;
+      const chapterIndex = chapters.length;
+      chapters.push(chapterTitle);
+      chapterLevels.push(tocEntry.level);
+      chapterParagraphs.forEach((paragraph, paragraphIndex) => {
+        paragraphs.push({
+          id: `${chapterIndex}-${paragraphs.length}-${paragraphIndex}`,
+          chapterIndex,
+          chapterTitle,
+          kind: paragraph.kind,
+          text: paragraph.text,
+          image: paragraph.image
+        });
       });
+      continue;
+    }
+
+    const starts: number[] = [];
+    tocPositions.forEach((tocPosition, order) => {
+      if (order === 0) {
+        starts.push(0);
+        return;
+      }
+      const fragment = fragmentOf(tocBySpine[tocPosition].fullHref);
+      const blockIndex = fragment ? blockIndexForFragment(doc, blockNodes, fragment) : -1;
+      starts.push(blockIndex >= 0 ? blockIndex : -1);
+    });
+
+    let lastValidStart = 0;
+    starts.forEach((start, order) => {
+      if (start < 0) {
+        starts[order] = lastValidStart;
+      } else {
+        if (start < lastValidStart) starts[order] = lastValidStart;
+        else lastValidStart = start;
+      }
+    });
+
+    tocPositions.forEach((tocPosition, order) => {
+      const tocEntry = tocBySpine[tocPosition];
+      const start = starts[order];
+      const nextStart =
+        order + 1 < starts.length && starts[order + 1] > start
+          ? starts[order + 1]
+          : order + 1 === starts.length
+            ? chapterParagraphs.length
+            : start;
+      const chapterIndex = chapters.length;
+      chapters.push(tocEntry.title);
+      chapterLevels.push(tocEntry.level);
+      if (nextStart > start) {
+        chapterParagraphs.slice(start, nextStart).forEach((paragraph, paragraphIndex) => {
+          paragraphs.push({
+            id: `${chapterIndex}-${paragraphs.length}-${paragraphIndex}`,
+            chapterIndex,
+            chapterTitle: tocEntry.title,
+            kind: paragraph.kind,
+            text: paragraph.text,
+            image: paragraph.image
+          });
+        });
+      } else {
+        paragraphs.push({
+          id: `${chapterIndex}-${paragraphs.length}-heading`,
+          chapterIndex,
+          chapterTitle: tocEntry.title,
+          kind: "heading",
+          text: tocEntry.title
+        });
+      }
     });
   }
 
@@ -442,6 +615,7 @@ export const parseEpub = async (file: File): Promise<ReaderBook> => {
     coverUrl,
     fileName: file.name,
     format: "epub",
+    chapterLevels,
     paragraphs,
     chapters
   };

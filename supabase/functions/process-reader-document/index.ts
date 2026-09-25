@@ -23,6 +23,7 @@ type BookRow = {
 };
 
 type PdfTocEntry = {
+  level: number;
   pageNumber: number;
   pageOffsetRatio: number;
   title: string;
@@ -131,13 +132,13 @@ const collectTocEntries = async (pdf: pdfjsLib.PDFDocumentProxy) => {
 
   const visit = async (nodes: NonNullable<typeof outline>, level: number) => {
     for (const node of nodes) {
-      const title = normaliseSpace(`${level > 0 ? "  ".repeat(Math.min(level, 3)) : ""}${node.title ?? ""}`);
+      const title = normaliseSpace(`${node.title ?? ""}`);
       const target = await resolveDestTarget(pdf, node.dest);
 
       if (title && target && target.pageNumber >= 1 && target.pageNumber <= pdf.numPages) {
         const previous = entries.at(-1);
         if (!(previous?.title === title && previous.pageNumber === target.pageNumber)) {
-          entries.push({ ...target, title });
+          entries.push({ level, ...target, title });
         }
       }
 

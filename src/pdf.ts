@@ -20,6 +20,7 @@ type PdfTocEntry = {
 
 export type PdfPreview = {
   author: string;
+  chapterLevels?: number[];
   chapterPageNumbers: number[];
   chapterPageOffsets: number[];
   chapters: string[];
@@ -177,9 +178,8 @@ export const parsePdf = async (file: File): Promise<ReaderBook> => {
   const pageCount = pdf.numPages;
   const paragraphs: ReaderParagraph[] = [];
   const tocEntries = await collectTocEntries(pdf);
-  const chapters = tocEntries.map((entry) =>
-    `${entry.level > 0 ? `${"  ".repeat(Math.min(entry.level, 3))}` : ""}${entry.title}`
-  );
+  const chapters = tocEntries.map((entry) => entry.title);
+  const chapterLevels = tocEntries.map((entry) => entry.level);
   const chapterPageNumbers = tocEntries.map((entry) => entry.pageNumber);
   const chapterPageOffsets = tocEntries.map((entry) => entry.pageOffsetRatio);
 
@@ -211,6 +211,7 @@ export const parsePdf = async (file: File): Promise<ReaderBook> => {
     fileName: file.name,
     format: "pdf",
     pageCount,
+    chapterLevels,
     chapterPageNumbers,
     chapterPageOffsets,
     paragraphs,
@@ -237,11 +238,10 @@ export const readPdfPreview = async (file: File): Promise<PdfPreview> => {
 
     return {
       author,
+      chapterLevels: tocEntries.map((entry) => entry.level),
       chapterPageNumbers: tocEntries.map((entry) => entry.pageNumber),
       chapterPageOffsets: tocEntries.map((entry) => entry.pageOffsetRatio),
-      chapters: tocEntries.map((entry) =>
-        `${entry.level > 0 ? `${"  ".repeat(Math.min(entry.level, 3))}` : ""}${entry.title}`
-      ),
+      chapters: tocEntries.map((entry) => entry.title),
       pageCount,
       pageMetrics,
       title
@@ -251,17 +251,36 @@ export const readPdfPreview = async (file: File): Promise<PdfPreview> => {
   }
 };
 
+const cleanStoredTitle = (title: string) => {
+  const withoutIndent = title.replace(/^[\s\u00a0]+/, "");
+  const withoutBullets = withoutIndent.replace(/^[•\-–—>▸▹▪·]+\s*/, "");
+  return (withoutBullets || title).trim() || title.trim();
+};
+
+const inferLevelFromTitle = (title: string) => {
+  const leading = title.match(/^[\s\u00a0]*/)?.[0] ?? "";
+  const spaces = leading.replace(/\u00a0/g, " ").length;
+  if (spaces >= 6) return 3;
+  if (spaces >= 4) return 2;
+  if (spaces >= 2) return 1;
+  return 0;
+};
+
 export const pdfPreviewToBook = (
   file: File | string,
   preview: PdfPreview,
   pages: StoredPdfPage[] = []
 ): ReaderBook => {
-  const tocEntries = preview.chapters.map((title, index) => ({
-    level: 0,
-    pageNumber: preview.chapterPageNumbers[index] ?? 1,
-    pageOffsetRatio: preview.chapterPageOffsets[index] ?? 0,
-    title: title.trim()
-  }));
+  const tocEntries = preview.chapters.map((rawTitle, index) => {
+    const storedLevel = preview.chapterLevels?.[index];
+    const title = cleanStoredTitle(rawTitle);
+    return {
+      level: typeof storedLevel === "number" ? storedLevel : inferLevelFromTitle(rawTitle),
+      pageNumber: preview.chapterPageNumbers[index] ?? 1,
+      pageOffsetRatio: preview.chapterPageOffsets[index] ?? 0,
+      title
+    };
+  });
   const paragraphs: ReaderParagraph[] = [];
   const fileName = typeof file === "string" ? file : file.name;
 
@@ -292,10 +311,11 @@ export const pdfPreviewToBook = (
     fileName,
     format: "pdf",
     pageCount: preview.pageCount,
+    chapterLevels: tocEntries.map((entry) => entry.level),
     chapterPageNumbers: preview.chapterPageNumbers,
     chapterPageOffsets: preview.chapterPageOffsets,
     paragraphs,
-    chapters: preview.chapters
+    chapters: tocEntries.map((entry) => entry.title)
   };
 };
 
