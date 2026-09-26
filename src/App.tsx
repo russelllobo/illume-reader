@@ -204,7 +204,6 @@ const READER_LINE_HEIGHT_MAX = 2;
 const READER_LINE_WIDTH_MIN = 30;
 const READER_LINE_WIDTH_MAX = 60;
 const CHAPTER_SIDEBAR_DESKTOP_QUERY = "(min-width: 981px)";
-const LANDING_WAITLIST_QUERY = "(max-width: 1024px)";
 const PDF_PAGE_SCALE_MIN = 0.75;
 const PDF_PAGE_SCALE_MAX = 1.5;
 const READER_THEMES: Array<{ label: string; value: ReaderTheme }> = [
@@ -219,12 +218,12 @@ const READER_THEMES: Array<{ label: string; value: ReaderTheme }> = [
   { value: "solarized", label: "Solarized" }
 ];
 const DEFAULT_READER_PREFERENCES: ReaderPreferences = {
-  fontMode: "serif",
+  fontMode: "sans",
   lineHeight: 1.7,
   lineWidth: 42,
   narrationRate: 1,
   textScale: 1.125,
-  theme: "default",
+  theme: "flexoki",
   themeMode: "light"
 };
 const BOOK_READER_PREFERENCES_KEY = "reader-book-preferences-v1";
@@ -534,9 +533,11 @@ const BOOK_CACHE_NAME = "epub-vision-reader-books-v1";
 const READER_IMAGE_DB_NAME = "epub-vision-reader-images";
 const READER_IMAGE_STORE_NAME = "images";
 const READER_IMAGE_CHUNK_WORDS = 750;
-const READER_IMAGE_CHECK_FEEDBACK_MS = 420;
-const READER_IMAGE_GENERATION_FEEDBACK_MS = 760;
+const READER_IMAGE_CHECK_FEEDBACK_MS = 200;
+const READER_IMAGE_GENERATION_FEEDBACK_MS = 500;
 const READER_IMAGE_SETTLE_DELAY_MS = 900;
+const READER_IMAGE_PROMPT_PREWARM_COUNT = 4;
+const READER_IMAGE_PROMPT_PREWARM_CHARS = 6000;
 const LIBRARY_LOAD_TIMEOUT_MS = 12_000;
 const FREE_READER_IMAGE_LIFETIME_LIMIT = 25;
 const PRO_READER_IMAGE_MONTHLY_LIMIT = 1000;
@@ -7757,7 +7758,7 @@ const authRedirectUrl = () => {
 };
 
 const initialReaderFontMode = (): ReaderFontMode =>
-  window.localStorage.getItem("reader-font-mode") === "sans" ? "sans" : DEFAULT_READER_PREFERENCES.fontMode;
+  window.localStorage.getItem("reader-font-mode") === "serif" ? "serif" : DEFAULT_READER_PREFERENCES.fontMode;
 
 const initialReaderThemeMode = (): ReaderThemeMode => {
   const savedThemeMode = window.localStorage.getItem("reader-theme-mode");
@@ -7767,6 +7768,7 @@ const initialReaderThemeMode = (): ReaderThemeMode => {
 
 const initialReaderTheme = (): ReaderTheme => {
   const value = window.localStorage.getItem("reader-theme");
+  if (value === "default") return "flexoki";
   return READER_THEMES.some((theme) => theme.value === value) ? (value as ReaderTheme) : DEFAULT_READER_PREFERENCES.theme;
 };
 
@@ -7817,9 +7819,9 @@ const readBookReaderPreferences = () => {
 };
 
 const normalizeReaderPreferences = (value: Partial<ReaderPreferences> | undefined, currentThemeMode?: ReaderThemeMode): ReaderPreferences => {
-  const fontMode = value?.fontMode === "sans" ? "sans" : DEFAULT_READER_PREFERENCES.fontMode;
+  const fontMode = value?.fontMode === "serif" ? "serif" : value?.fontMode === "sans" ? "sans" : DEFAULT_READER_PREFERENCES.fontMode;
   const themeMode = currentThemeMode ?? DEFAULT_READER_PREFERENCES.themeMode;
-  const rawTheme = value?.theme;
+  const rawTheme = value?.theme === "default" ? "flexoki" : value?.theme;
   const theme = READER_THEMES.some((item) => item.value === rawTheme) ? rawTheme as ReaderTheme : DEFAULT_READER_PREFERENCES.theme;
   const textScale = typeof value?.textScale === "number" && Number.isFinite(value.textScale)
     ? clampReaderTextScale(value.textScale)
@@ -8177,9 +8179,6 @@ function App() {
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [pendingDeleteExiting, setPendingDeleteExiting] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [isLandingWaitlistViewport, setIsLandingWaitlistViewport] = useState(() =>
-    window.matchMedia(LANDING_WAITLIST_QUERY).matches
-  );
   const [checkoutResult, setCheckoutResult] = useState<"success" | "canceled" | "">("");
   const [speechHighlight, setSpeechHighlight] = useState<SpeechHighlight | null>(null);
   const [readerImageMode, setReaderImageMode] = useState(false);
@@ -8193,6 +8192,7 @@ function App() {
   const [readerImageStyleOpen, setReaderImageStyleOpen] = useState(false);
   const [readerImageUpgradeOpen, setReaderImageUpgradeOpen] = useState(false);
   const [chapterDrawerOpen, setChapterDrawerOpen] = useState(() => window.matchMedia(CHAPTER_SIDEBAR_DESKTOP_QUERY).matches);
+  const [readerSidebarDocked, setReaderSidebarDocked] = useState(() => window.matchMedia(CHAPTER_SIDEBAR_DESKTOP_QUERY).matches);
   const [tocExpanded, setTocExpanded] = useState<Set<number>>(() => new Set());
   const tocBookIdRef = useRef<string | null>(null);
   const parsedBooks = useRef(new Map<string, ReaderBook>());
@@ -8202,6 +8202,7 @@ function App() {
   const paragraphRefs = useRef(new Map<string, HTMLElement>());
   const chapterRefs = useRef(new Map<number, HTMLButtonElement>());
   const imageRequestsRef = useRef(new Set<number>());
+  const readerPromptPrewarmRef = useRef(new Set<string>());
   const displayedReaderImageChunkIndexRef = useRef<number | null>(null);
   const readerImageSettleTimerRef = useRef<number | null>(null);
   const readerImageModeRef = useRef(false);
@@ -8500,15 +8501,6 @@ function App() {
   const navigateDashboard = useCallback((path: string) => {
     window.history.pushState({}, "", path);
     setDashboardPath(window.location.pathname);
-  }, []);
-
-  useEffect(() => {
-    const mediaQuery = window.matchMedia(LANDING_WAITLIST_QUERY);
-    const updateViewport = () => setIsLandingWaitlistViewport(mediaQuery.matches);
-
-    updateViewport();
-    mediaQuery.addEventListener("change", updateViewport);
-    return () => mediaQuery.removeEventListener("change", updateViewport);
   }, []);
 
   useEffect(() => {
@@ -8860,6 +8852,17 @@ function App() {
     desktopQuery.addEventListener("change", syncChapterSidebar);
     return () => desktopQuery.removeEventListener("change", syncChapterSidebar);
   }, [hasChapterSidebarEntries, isPdfBook, openingBook]);
+
+  useEffect(() => {
+    const dockedQuery = window.matchMedia(CHAPTER_SIDEBAR_DESKTOP_QUERY);
+    const syncDocked = (event: MediaQueryListEvent | MediaQueryList) => {
+      setReaderSidebarDocked(event.matches);
+    };
+
+    syncDocked(dockedQuery);
+    dockedQuery.addEventListener("change", syncDocked);
+    return () => dockedQuery.removeEventListener("change", syncDocked);
+  }, []);
 
   useEffect(() => {
     window.localStorage.setItem("reader-font-mode", readerFontMode);
@@ -9231,6 +9234,14 @@ function App() {
     const runId = readerImageRunRef.current;
     if (readerImageModeRef.current && runId === readerImageRunRef.current) {
       void ensureReaderImage(chunkIndex, runId);
+      // Pre-write prompts for upcoming sections now (free, no image quota)
+      // so the next renders skip the Muse step.
+      if (book && activeBookId) {
+        const upcoming = [1, 2, 3, 4]
+          .map((offset) => readerImageChunkByIndex.get(chunkIndex + offset))
+          .filter((chunk): chunk is ReaderImageChunk => Boolean(chunk));
+        prewarmReaderPrompts(activeBookId, book, upcoming);
+      }
     }
 
     readerImageSettleTimerRef.current = window.setTimeout(() => {
@@ -9305,6 +9316,13 @@ function App() {
       body: JSON.stringify({ ...requestBody, stream: true })
     });
     if (!response.ok || !response.body) throw new Error("Image streaming is unavailable.");
+    // Server returns plain JSON (not SSE) for instant cache hits.
+    const contentType = response.headers.get("Content-Type") ?? "";
+    if (contentType.includes("application/json")) {
+      const data = await response.json();
+      if (data?.error && !data?.imageUrl && !data?.cached) throw new Error(data.error);
+      return { data };
+    }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -9453,45 +9471,8 @@ function App() {
         return "ready";
       }
 
-      const { data: storedData, error: storedError } = await supabase.functions.invoke("generate-reader-image", {
-        method: "POST",
-        body: {
-          ...requestBody,
-          checkOnly: true
-        }
-      });
-
-      if (!isReaderImageRunActive(runId)) return "skipped";
-      if (storedError) throw storedError;
-      if (typeof storedData?.imageCount === "number") setReaderImageCount(storedData.imageCount);
-      if (storedData?.imageUrl) {
-        await finishCheckFeedback();
-        if (!isReaderImageRunActive(runId)) return "skipped";
-        const prompt = typeof storedData.prompt === "string" ? storedData.prompt : undefined;
-        void cacheReaderImage({
-          bookId,
-          createdAt: new Date().toISOString(),
-          endWord: chunk.endWord,
-          key: readerImageCacheKey(bookId, chunk, style),
-          prompt,
-          src: storedData.imageUrl,
-          startWord: chunk.startWord,
-          style
-        });
-        setReaderImages((items) => ({
-          ...items,
-          [chunk.index]: {
-            prompt,
-            imageCount: typeof storedData.imageCount === "number" ? storedData.imageCount : undefined,
-            imageLimit: typeof storedData.imageLimit === "number" ? storedData.imageLimit : undefined,
-            src: storedData.imageUrl,
-            status: "ready",
-            style
-          }
-        }));
-        return "ready";
-      }
-
+      // Single server round-trip: the generate call itself returns cached
+      // images instantly (JSON) without spending quota, so no checkOnly call.
       await finishCheckFeedback();
       if (!isReaderImageRunActive(runId)) return "skipped";
       setGeneratingReaderImageChunkIndex(chunk.index);
@@ -9665,6 +9646,12 @@ function App() {
     const nextChunk = readerImageChunkByIndex.get(activeReaderImageChunkIndex + 1);
     if (chunk) void generateReaderImage(chunk, runId, style);
     if (nextChunk) void generateReaderImage(nextChunk, runId, style);
+    if (activeBookId) {
+      const upcoming = [2, 3, 4, 5]
+        .map((offset) => readerImageChunkByIndex.get(activeReaderImageChunkIndex + offset))
+        .filter((entry): entry is ReaderImageChunk => Boolean(entry));
+      prewarmReaderPrompts(activeBookId, book, upcoming, style);
+    }
   };
 
   const toggleReaderImageMode = () => {
@@ -10010,12 +9997,6 @@ function App() {
     setSpeechHighlight(null);
   };
 
-  useEffect(() => {
-    if (!isLandingWaitlistViewport) return;
-    stopAudio();
-    setPlayback("idle");
-  }, [isLandingWaitlistViewport]);
-
   const adjustReaderTextScale = (delta: number) => {
     setReaderTextScale((scale) => clampReaderTextScale(Number((scale + delta / 16).toFixed(4))));
   };
@@ -10301,44 +10282,6 @@ function App() {
     }
 
     setBusy(false);
-  };
-
-  const joinLaunchWaitlist = async (waitlistEmail: string) => {
-    const trimmedEmail = waitlistEmail.trim().toLowerCase();
-    if (!trimmedEmail) {
-      setNotice("Add your email to join the launch list.");
-      return false;
-    }
-
-    setBusy(true);
-    setNotice("");
-
-    const { error } = await supabase
-      .from("launch_waitlist_signups")
-      .insert({
-        email: trimmedEmail,
-        source: "landing_mobile_tablet",
-        launch_context: {
-          viewport_width: window.innerWidth,
-          viewport_height: window.innerHeight,
-          color_scheme: readerThemeMode
-        }
-      });
-
-    setBusy(false);
-
-    if (!error) {
-      setNotice("");
-      return true;
-    }
-
-    if (error.code === "23505") {
-      setNotice("");
-      return true;
-    }
-
-    setNotice(error.message || "Could not join the launch list. Please try again.");
-    return false;
   };
 
   const signInWithGoogle = async () => {
@@ -10659,6 +10602,12 @@ function App() {
       } catch (error) {
         console.warn("Could not prepare the first reader image during upload:", error);
       }
+      // Pre-write prompts for the next sections in the background so later
+      // images skip the Muse step. No quota spent, never blocks upload.
+      const firstIndex = imageContext.chunks.findIndex(
+        (chunk) => chunk.startWord === imageContext.firstChunk?.startWord && chunk.endWord === imageContext.firstChunk?.endWord
+      );
+      prewarmReaderPrompts(row.id, parsed, imageContext.chunks.slice(firstIndex + 1));
     }
 
     setCatalogBooks((items) => sortBooksByRecentActivity([row, ...items]));
@@ -10833,6 +10782,44 @@ function App() {
     return { chunks, firstChunk, initialPage, safeIndex, start, startOffset };
   };
 
+  // Fire-and-forget prompt pre-warm: writes Muse Spark prompts for upcoming
+  // chunks without rendering images or spending image quota, so later renders
+  // skip the LLM step and start instantly.
+  const prewarmReaderPrompts = (
+    bookId: string,
+    parsed: ReaderBook,
+    chunks: ReaderImageChunk[],
+    style = readerImageStyle
+  ) => {
+    const pending = chunks
+      .filter((chunk) => {
+        const key = `${bookId}:${style}:${chunk.startWord}:${chunk.endWord}`;
+        if (readerPromptPrewarmRef.current.has(key)) return false;
+        readerPromptPrewarmRef.current.add(key);
+        return true;
+      })
+      .slice(0, READER_IMAGE_PROMPT_PREWARM_COUNT);
+    if (!pending.length) return;
+    void Promise.allSettled(
+      pending.map((chunk) =>
+        supabase.functions.invoke("generate-reader-image", {
+          method: "POST",
+          body: {
+            author: parsed.author,
+            bookId,
+            bookTitle: parsed.title,
+            endWord: chunk.endWord,
+            imageStyle: style,
+            promptOnly: true,
+            startWord: chunk.startWord,
+            style,
+            text: chunk.text.slice(0, READER_IMAGE_PROMPT_PREWARM_CHARS)
+          }
+        })
+      )
+    );
+  };
+
   const preGenerateReaderImageForBook = async (
     row: BookRow,
     parsed: ReaderBook,
@@ -10986,7 +10973,7 @@ function App() {
     const readerPreferences = readerPreferencesForBook(row.id, readerThemeMode);
     setReaderFontMode(readerPreferences.fontMode);
     setReaderThemeMode(readerPreferences.themeMode);
-    setReaderTheme(readerPreferences.theme);
+    setReaderTheme("flexoki");
     setReaderTextScale(readerPreferences.textScale);
     setReaderLineHeight(readerPreferences.lineHeight);
     setReaderLineWidth(readerPreferences.lineWidth);
@@ -11047,7 +11034,7 @@ function App() {
     const readerPreferences = readerPreferencesForBook(row.id, readerThemeMode);
     setReaderFontMode(readerPreferences.fontMode);
     setReaderThemeMode(readerPreferences.themeMode);
-    setReaderTheme(readerPreferences.theme);
+    setReaderTheme("flexoki");
     setReaderTextScale(readerPreferences.textScale);
     setReaderLineHeight(readerPreferences.lineHeight);
     setReaderLineWidth(readerPreferences.lineWidth);
@@ -11086,6 +11073,12 @@ function App() {
         ? await prepareOpeningReaderImage(row, cached, imageContext.firstChunk)
         : null;
       if (runId !== bookOpenRunRef.current) return;
+      if (imageContext.firstChunk) {
+        const firstIndex = imageContext.chunks.findIndex(
+          (chunk) => chunk.startWord === imageContext.firstChunk?.startWord && chunk.endWord === imageContext.firstChunk?.endWord
+        );
+        prewarmReaderPrompts(row.id, cached, imageContext.chunks.slice(firstIndex + 1));
+      }
       setOpeningBookProgress(100);
       setBusy(false);
       openParsedBook(row, cached, undefined, cachedFile, { initialReaderImage, updateHistory: false });
@@ -11169,6 +11162,12 @@ function App() {
         ? await prepareOpeningReaderImage(row, parsed, imageContext.firstChunk)
         : null;
       if (runId !== bookOpenRunRef.current) return;
+      if (imageContext.firstChunk) {
+        const firstIndex = imageContext.chunks.findIndex(
+          (chunk) => chunk.startWord === imageContext.firstChunk?.startWord && chunk.endWord === imageContext.firstChunk?.endWord
+        );
+        prewarmReaderPrompts(row.id, parsed, imageContext.chunks.slice(firstIndex + 1));
+      }
       setOpeningBookProgress(100);
       openParsedBook(row, parsed, undefined, file, { initialReaderImage, updateHistory: false });
     } catch (error) {
@@ -12098,12 +12097,12 @@ function App() {
     const isEditing = Boolean(row && readerRenameTarget?.id === row.id);
 
     if (!row) {
-      return <div className="top-title">{title}</div>;
+      return <div className="sidebar-title">{title}</div>;
     }
 
     if (isEditing) {
       return (
-        <form className="top-title reader-title-editor" onSubmit={renameReaderBook}>
+        <form className="sidebar-title reader-title-editor" onSubmit={renameReaderBook}>
           <input
             aria-label="Document title"
             disabled={isReaderRenamingBook}
@@ -12139,7 +12138,7 @@ function App() {
     }
 
     return (
-      <div className="top-title reader-title-rename-trigger">
+      <div className="sidebar-title reader-title-rename-trigger">
         <span>{title}</span>
         <button
           className="reader-title-icon"
@@ -12153,41 +12152,7 @@ function App() {
     );
   };
 
-  const renderOpeningHeader = (row: BookRow) => (
-    <header className="topbar">
-      <div className="reader-top-actions">
-        <button className="top-icon" type="button" title="Back to library" onClick={() => openCatalog()}>
-          <ChevronLeft size={22} aria-hidden="true" />
-        </button>
-        <button
-          aria-controls="reader-chapter-sidebar"
-          aria-expanded={chapterDrawerOpen}
-          className="top-icon toc-toggle-button"
-          onClick={() => setChapterDrawerOpen((isOpen) => !isOpen)}
-          title={bookFormat(row) === "pdf" ? "Table of contents" : "Chapters"}
-          type="button"
-        >
-          <PanelLeft size={18} aria-hidden="true" />
-        </button>
-      </div>
-      {renderReaderBookTitle(row, openingPdfPreview?.title || row.title)}
-      <div className="settings-button-wrapper" style={{ position: "relative", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <button
-          aria-expanded={settingsOpen}
-          className="top-icon typography-trigger"
-          onClick={() => {
-            setSettingsOpen((isOpen) => !isOpen);
-            setReaderMenuOpen(null);
-          }}
-          title={bookFormat(row) === "pdf" ? "PDF page settings" : "Typography"}
-          type="button"
-        >
-          <CaseSensitive size={18} aria-hidden="true" />
-        </button>
-        {settingsOpen && renderOpeningSettingsPopover(bookFormat(row) === "pdf")}
-      </div>
-    </header>
-  );
+  const renderOpeningHeader = (_row: BookRow) => null;
 
   const renderOpeningTocSkeleton = (length = 8) => (
     Array.from({ length }).map((_, index) => (
@@ -12305,11 +12270,10 @@ function App() {
     );
   }
 
-  if (!session || isLandingWaitlistViewport) {
+  if (!session) {
     return (
       <LandingPage
         handleAuth={handleAuth}
-        joinLaunchWaitlist={joinLaunchWaitlist}
         signInWithGoogle={signInWithGoogle}
         email={email}
         setEmail={setEmail}
@@ -12328,7 +12292,7 @@ function App() {
   if (view === "catalog") {
     return (
       <main className="app-shell catalog-shell" data-reader-mode={readerThemeMode} data-reader-theme={readerTheme}>
-        <header className="topbar catalog-topbar" style={{ position: "relative" }}>
+        <aside className="catalog-sidebar" aria-label="Library controls">
           <div className="catalog-storage-summary">
             <div className="library-brand-mark" aria-label={`illume ${isPro ? "Pro" : "Free"}`}>
               <img src="/landing/logo.webp" alt="" aria-hidden="true" />
@@ -12473,7 +12437,7 @@ function App() {
               )}
             </div>
           </div>
-        </header>
+        </aside>
 
         {pendingDelete && (
           <div className={pendingDeleteExiting ? "undo-delete-toast leaving" : "undo-delete-toast"} role="status" aria-live="polite">
@@ -12811,6 +12775,129 @@ function App() {
     )
   );
 
+  const voiceControl = (
+    <div className="narration-voice-control" title="Narration voice: Geffen (Speechify)">
+      <span className="narration-voice-trigger" aria-label="Narration voice Geffen">
+        ✨
+      </span>
+    </div>
+  );
+
+  const prevNarrationButton = (
+    <button
+      className="rail-icon"
+      type="button"
+      onClick={() => isPdfPageOnlyMode ? moveToPdfPageAndNarrate(currentPage - 1) : moveToAndNarrate(currentIndex - 1)}
+      disabled={isPdfPageOnlyMode ? currentPage <= 1 : currentIndex <= 0}
+      title={isPdfPageOnlyMode ? "Previous page" : "Previous paragraph"}
+    >
+      <RotateCcw size={21} aria-hidden="true" />
+    </button>
+  );
+
+  const playNarrationButton = (
+    <button className="play-button" type="button" onClick={togglePlayback} title="Play or pause">
+      {playback === "playing" ? (
+        <Pause size={28} aria-hidden="true" />
+      ) : (
+        <Play size={28} aria-hidden="true" />
+      )}
+    </button>
+  );
+
+  const nextNarrationButton = (
+    <button
+      className="rail-icon"
+      type="button"
+      onClick={() => isPdfPageOnlyMode ? moveToPdfPageAndNarrate(currentPage + 1) : moveToAndNarrate(currentIndex + 1)}
+      disabled={isPdfPageOnlyMode ? currentPage >= pdfPageCount : currentIndex >= book.paragraphs.length - 1}
+      title={isPdfPageOnlyMode ? "Next page" : "Next paragraph"}
+    >
+      <RotateCw size={21} aria-hidden="true" />
+    </button>
+  );
+
+  const speedControl = (
+    <div className="narration-speed-control" ref={speedControlRef}>
+      <button
+        aria-expanded={speedPopoverOpen}
+        aria-haspopup="dialog"
+        className="narration-speed-trigger"
+        onClick={(event) => {
+          if (event.detail === 0) {
+            setSpeedPopoverOpen((open) => !open);
+          }
+        }}
+        onPointerDown={(event) => {
+          event.preventDefault();
+          setSpeedPopoverOpen((open) => !open);
+        }}
+        title="Narration speed"
+        type="button"
+      >
+        {formatNarrationRate(speedPreviewRate ?? narrationRate)}
+      </button>
+      {speedPopoverOpen && (
+        <div className="narration-speed-popover" role="dialog" aria-label="Narration speed">
+          <div
+            aria-label="Narration speed"
+            aria-valuemax={NARRATION_RATE_MAX}
+            aria-valuemin={NARRATION_RATE_MIN}
+            aria-valuenow={narrationRate}
+            className="narration-speed-picker"
+            onKeyDown={handleSpeedPickerKey}
+            onPointerDown={(event) => {
+              event.currentTarget.setPointerCapture(event.pointerId);
+              selectNarrationRateFromPointer(event);
+            }}
+            onPointerLeave={() => setSpeedPreviewRate(null)}
+            onPointerMove={(event) => {
+              previewNarrationRate(event);
+              if (event.buttons === 1) selectNarrationRateFromPointer(event);
+            }}
+            role="slider"
+            style={{
+              "--speed-active": `${((narrationRate - NARRATION_RATE_MIN) / (NARRATION_RATE_MAX - NARRATION_RATE_MIN)) * 100}%`,
+              "--speed-preview": `${(((speedPreviewRate ?? narrationRate) - NARRATION_RATE_MIN) / (NARRATION_RATE_MAX - NARRATION_RATE_MIN)) * 100}%`
+            } as CSSProperties}
+            tabIndex={0}
+          >
+            {Array.from({ length: 27 }).map((_, index) => (
+              (() => {
+                const barRate = NARRATION_RATE_MIN + (index / 26) * (NARRATION_RATE_MAX - NARRATION_RATE_MIN);
+                const distance = Math.abs(barRate - (speedPreviewRate ?? narrationRate)) / (NARRATION_RATE_MAX - NARRATION_RATE_MIN);
+                const scale = 1 + Math.max(0, 1 - distance * 18) * 0.45;
+                const isSelected = Math.abs(barRate - (speedPreviewRate ?? narrationRate)) < 0.026;
+                return (
+                  <span
+                    aria-hidden="true"
+                    className={isSelected ? "narration-speed-bar selected" : "narration-speed-bar"}
+                    key={index}
+                    style={{
+                      "--bar-scale": scale.toFixed(2)
+                    } as CSSProperties}
+                  />
+                );
+              })()
+            ))}
+          </div>
+          <div className="narration-speed-presets" aria-label="Preset speeds">
+            {NARRATION_RATE_PRESETS.map((preset) => (
+              <button
+                className={Math.abs(narrationRate - preset) < 0.01 ? "active" : ""}
+                key={preset}
+                onClick={() => chooseNarrationRate(preset)}
+                type="button"
+              >
+                {formatNarrationRate(preset)}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <main
       className="app-shell reader-themed-shell"
@@ -12828,7 +12915,54 @@ function App() {
           {renderOpeningBookStage(openingBook)}
         </div>
       )}
-      <header className="topbar" style={{ position: "relative" }}>
+      {/* topbar removed — controls live in the sidebar */}
+
+
+      {(returnPoint || progressNotice) && (
+        <div className="reader-back-anchor">
+          {returnPoint ? (
+            <button className="reader-back-button" onClick={goBackToReturnPoint} type="button">
+              <ChevronLeft size={15} aria-hidden="true" />
+              <span>Back</span>
+            </button>
+          ) : (
+            <span className="reader-progress-notice" role="status" aria-live="polite">
+              Continuing where you left off
+            </span>
+          )}
+        </div>
+      )}
+
+      <section className={["reader-frame", chapterDrawerOpen ? "chapter-sidebar-open" : "chapter-sidebar-collapsed", isPdfBook ? "pdf-reader-frame" : ""].filter(Boolean).join(" ")}>
+        {!chapterDrawerOpen && (
+          <button
+            aria-label="Open table of contents"
+            className="sidebar-reopen"
+            onClick={() => setChapterDrawerOpen(true)}
+            title={isPdfBook ? "Table of contents" : "Chapters"}
+            type="button"
+          >
+            <PanelLeft size={18} aria-hidden="true" />
+          </button>
+        )}
+        <button
+          aria-hidden={!chapterDrawerOpen}
+          aria-label="Close table of contents"
+          className={["chapter-drawer-scrim", chapterDrawerOpen ? "open" : ""].filter(Boolean).join(" ")}
+          onClick={(event) => event.preventDefault()}
+          onPointerDown={(event) => {
+            event.preventDefault();
+            setChapterDrawerOpen(false);
+          }}
+          tabIndex={chapterDrawerOpen ? 0 : -1}
+          type="button"
+        />
+        <aside
+          className={["chapter-sidebar", chapterDrawerOpen ? "open" : ""].filter(Boolean).join(" ")}
+          id="reader-chapter-sidebar"
+        >
+          <div className="sidebar-reader-top">
+
         <div className="reader-top-actions">
           <button className="top-icon" type="button" title="Back to library" onClick={() => openCatalog()}>
             <ChevronLeft size={22} aria-hidden="true" />
@@ -12854,19 +12988,90 @@ function App() {
           </button>
         </div>
         {renderReaderBookTitle(activeReaderRow, book.title)}
-        <div className="settings-button-wrapper" style={{ position: "relative", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <button
-            aria-expanded={settingsOpen}
-            className="top-icon typography-trigger"
-            onClick={() => {
-              setSettingsOpen((isOpen) => !isOpen);
-              setReaderMenuOpen(null);
-            }}
-            title={isPdfBook ? "PDF page settings" : "Typography"}
-            type="button"
-          >
-            <CaseSensitive size={18} aria-hidden="true" />
-          </button>
+        <div className="reader-top-right">
+          <div className="image-mode-control topbar-image-controls">
+            <button
+              className={readerImageMode ? "top-icon active" : "top-icon"}
+              disabled={!readerImageMode && activeReaderImageChunkIndex < 0}
+              onClick={toggleReaderImageMode}
+              title={
+                isPdfBook && !pdfHasText
+                  ? "Text extraction is required for PDF image mode"
+                  : isPdfBook && activeReaderImageChunkIndex < 0
+                    ? "No page text is available for image mode here"
+                  : readerImageMode
+                    ? "Stop generating reading images"
+                    : "Show reader images"
+              }
+              type="button"
+            >
+              {isReaderImageLoading ? (
+                <Loader2 className="spin" size={18} aria-hidden="true" />
+              ) : (
+                <ImageIcon size={18} aria-hidden="true" />
+              )}
+            </button>
+            <div className="image-style-menu-anchor" ref={imageStyleMenuRef}>
+              <button
+                aria-controls="image-style-menu"
+                aria-expanded={readerImageStyleOpen}
+                className="top-icon"
+                disabled={!readerImageMode}
+                onClick={(event) => {
+                  if (event.detail === 0) setReaderImageStyleOpen((isOpen) => !isOpen);
+                }}
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  setReaderImageStyleOpen((isOpen) => !isOpen);
+                }}
+                title="Choose image style"
+                type="button"
+              >
+                <Palette size={18} aria-hidden="true" />
+              </button>
+              {readerImageStyleOpen && (
+                <section
+                  aria-label="Image style"
+                  className="image-style-menu topbar-image-style-menu"
+                  id="image-style-menu"
+                >
+                  <div className="image-style-menu-heading">
+                    <strong>Styles</strong>
+                  </div>
+                  <div className="image-style-options">
+                    {READER_IMAGE_STYLES.map((style) => (
+                      <button
+                        aria-pressed={readerImageStyle === style.id}
+                        className={readerImageStyle === style.id ? "image-style-option active" : "image-style-option"}
+                        key={style.id}
+                        onClick={() => selectReaderImageStyle(style.id)}
+                        type="button"
+                      >
+                        <img className="image-style-preview" src={style.previewSrc} alt={style.previewAlt} />
+                        <span className="image-style-option-copy">
+                          <strong>{style.label}</strong>
+                          <small>{style.summary}</small>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
+            </div>
+          </div>
+          <div className="settings-button-wrapper" style={{ position: "relative", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <button
+              aria-expanded={settingsOpen}
+              className="top-icon typography-trigger"
+              onClick={() => {
+                setSettingsOpen((isOpen) => !isOpen);
+                setReaderMenuOpen(null);
+              }}
+              title={isPdfBook ? "PDF page settings" : "Typography"}
+              type="button"
+            >
+              <CaseSensitive size={18} aria-hidden="true" />
+            </button>
 
           {settingsOpen && (
             <>
@@ -13013,42 +13218,6 @@ function App() {
                         </div>
 
                         <div className="typography-theme-menu">
-                      <Palette size={14} aria-hidden="true" />
-                      <button
-                        aria-expanded={readerMenuOpen === "theme"}
-                        aria-haspopup="listbox"
-                        aria-label="Reader theme"
-                        className="typography-menu-trigger"
-                        onClick={() => setReaderMenuOpen(readerMenuOpen === "theme" ? null : "theme")}
-                        title="Reader theme"
-                        type="button"
-                      >
-                        <span>{READER_THEMES.find((theme) => theme.value === readerTheme)?.label ?? "Default"}</span>
-                        <ChevronDown size={14} aria-hidden="true" />
-                      </button>
-                      {readerMenuOpen === "theme" && (
-                        <div className="typography-menu-list" role="listbox" aria-label="Reader theme">
-                          {READER_THEMES.map((theme) => (
-                            <button
-                              aria-selected={readerTheme === theme.value}
-                              className={readerTheme === theme.value ? "active" : undefined}
-                              key={theme.value}
-                              onClick={() => {
-                                setReaderTheme(theme.value);
-                                setReaderMenuOpen(null);
-                              }}
-                              role="option"
-                              type="button"
-                            >
-                              <span>{theme.label}</span>
-                              {readerTheme === theme.value && <Check size={13} aria-hidden="true" />}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                        </div>
-
-                        <div className="typography-theme-menu">
                       <Moon size={14} aria-hidden="true" />
                       <button
                         aria-expanded={readerMenuOpen === "appearance"}
@@ -13093,41 +13262,9 @@ function App() {
               </div>
             </>
           )}
+          </div>
         </div>
-      </header>
-
-      {(returnPoint || progressNotice) && (
-        <div className="reader-back-anchor">
-          {returnPoint ? (
-            <button className="reader-back-button" onClick={goBackToReturnPoint} type="button">
-              <ChevronLeft size={15} aria-hidden="true" />
-              <span>Back</span>
-            </button>
-          ) : (
-            <span className="reader-progress-notice" role="status" aria-live="polite">
-              Continuing where you left off
-            </span>
-          )}
-        </div>
-      )}
-
-      <section className={["reader-frame", chapterDrawerOpen ? "chapter-sidebar-open" : "chapter-sidebar-collapsed", isPdfBook ? "pdf-reader-frame" : ""].filter(Boolean).join(" ")}>
-        <button
-          aria-hidden={!chapterDrawerOpen}
-          aria-label="Close table of contents"
-          className={["chapter-drawer-scrim", chapterDrawerOpen ? "open" : ""].filter(Boolean).join(" ")}
-          onClick={(event) => event.preventDefault()}
-          onPointerDown={(event) => {
-            event.preventDefault();
-            setChapterDrawerOpen(false);
-          }}
-          tabIndex={chapterDrawerOpen ? 0 : -1}
-          type="button"
-        />
-        <aside
-          className={["chapter-sidebar", chapterDrawerOpen ? "open" : ""].filter(Boolean).join(" ")}
-          id="reader-chapter-sidebar"
-        >
+          </div>
           {(book.coverUrl || book.title) && (
             <div className="toc-book-card">
               {book.coverUrl ? (
@@ -13201,6 +13338,19 @@ function App() {
               <span className="chapter-empty">{isPdfBook ? "No table of contents found." : "No chapters found."}</span>
             )}
           </nav>
+          {readerSidebarDocked && (
+            <div className="sidebar-player" aria-label="Narration controls">
+              <div className="sidebar-player-main">
+                {prevNarrationButton}
+                {playNarrationButton}
+                {nextNarrationButton}
+              </div>
+              <div className="sidebar-player-sub">
+                {voiceControl}
+                {speedControl}
+              </div>
+            </div>
+          )}
         </aside>
 
         <div className={[
@@ -13234,216 +13384,17 @@ function App() {
         </div>
       </section>
 
-      <div
-        className="progress-wrap"
-        aria-label="Reading progress"
-        aria-valuemax={isPdfPageOnlyMode ? pdfPageCount : book.paragraphs.length}
-        aria-valuemin={1}
-        aria-valuenow={isPdfPageOnlyMode ? currentPage : currentIndex + 1}
-        onKeyDown={handleProgressKey}
-        onPointerDown={(event) => {
-          event.currentTarget.setPointerCapture(event.pointerId);
-          scrubToPointer(event, { remember: true });
-        }}
-        onPointerMove={(event) => {
-          if (event.buttons === 1) scrubToPointer(event);
-        }}
-        role="slider"
-        tabIndex={0}
-        title="Click or drag to jump through the book"
-      >
-        <span style={{ width: `${progress}%` }} />
-      </div>
-
-      <footer className="control-rail">
-        <div className="control-rail-left" aria-hidden="true" />
-        <div className="transport">
-          <div className="narration-voice-control" title="Narration voice: Geffen (Speechify)">
-            <span className="narration-voice-trigger" aria-label="Narration voice Geffen">
-              ✨
-            </span>
+      {!readerSidebarDocked && (
+        <footer className="control-rail floating-player">
+          <div className="transport">
+            {voiceControl}
+            {prevNarrationButton}
+            {playNarrationButton}
+            {nextNarrationButton}
+            {speedControl}
           </div>
-          <button
-            className="rail-icon"
-            type="button"
-            onClick={() => isPdfPageOnlyMode ? moveToPdfPageAndNarrate(currentPage - 1) : moveToAndNarrate(currentIndex - 1)}
-            disabled={isPdfPageOnlyMode ? currentPage <= 1 : currentIndex <= 0}
-            title={isPdfPageOnlyMode ? "Previous page" : "Previous paragraph"}
-          >
-            <RotateCcw size={21} aria-hidden="true" />
-          </button>
-          <button className="play-button" type="button" onClick={togglePlayback} title="Play or pause">
-            {playback === "playing" ? (
-              <Pause size={28} aria-hidden="true" />
-            ) : (
-              <Play size={28} aria-hidden="true" />
-            )}
-          </button>
-          <button
-            className="rail-icon"
-            type="button"
-            onClick={() => isPdfPageOnlyMode ? moveToPdfPageAndNarrate(currentPage + 1) : moveToAndNarrate(currentIndex + 1)}
-            disabled={isPdfPageOnlyMode ? currentPage >= pdfPageCount : currentIndex >= book.paragraphs.length - 1}
-            title={isPdfPageOnlyMode ? "Next page" : "Next paragraph"}
-          >
-            <RotateCw size={21} aria-hidden="true" />
-          </button>
-          <div className="narration-speed-control" ref={speedControlRef}>
-            <button
-              aria-expanded={speedPopoverOpen}
-              aria-haspopup="dialog"
-              className="narration-speed-trigger"
-              onClick={(event) => {
-                if (event.detail === 0) {
-                  setSpeedPopoverOpen((open) => !open);
-                }
-              }}
-              onPointerDown={(event) => {
-                event.preventDefault();
-                setSpeedPopoverOpen((open) => !open);
-              }}
-              title="Narration speed"
-              type="button"
-            >
-              {formatNarrationRate(speedPreviewRate ?? narrationRate)}
-            </button>
-            {speedPopoverOpen && (
-              <div className="narration-speed-popover" role="dialog" aria-label="Narration speed">
-                <div
-                  aria-label="Narration speed"
-                  aria-valuemax={NARRATION_RATE_MAX}
-                  aria-valuemin={NARRATION_RATE_MIN}
-                  aria-valuenow={narrationRate}
-                  className="narration-speed-picker"
-                  onKeyDown={handleSpeedPickerKey}
-                  onPointerDown={(event) => {
-                    event.currentTarget.setPointerCapture(event.pointerId);
-                    selectNarrationRateFromPointer(event);
-                  }}
-                  onPointerLeave={() => setSpeedPreviewRate(null)}
-                  onPointerMove={(event) => {
-                    previewNarrationRate(event);
-                    if (event.buttons === 1) selectNarrationRateFromPointer(event);
-                  }}
-                  role="slider"
-                  style={{
-                    "--speed-active": `${((narrationRate - NARRATION_RATE_MIN) / (NARRATION_RATE_MAX - NARRATION_RATE_MIN)) * 100}%`,
-                    "--speed-preview": `${(((speedPreviewRate ?? narrationRate) - NARRATION_RATE_MIN) / (NARRATION_RATE_MAX - NARRATION_RATE_MIN)) * 100}%`
-                  } as CSSProperties}
-                  tabIndex={0}
-                >
-                  {Array.from({ length: 27 }).map((_, index) => (
-                    (() => {
-                      const barRate = NARRATION_RATE_MIN + (index / 26) * (NARRATION_RATE_MAX - NARRATION_RATE_MIN);
-                      const distance = Math.abs(barRate - (speedPreviewRate ?? narrationRate)) / (NARRATION_RATE_MAX - NARRATION_RATE_MIN);
-                      const scale = 1 + Math.max(0, 1 - distance * 18) * 0.45;
-                      const isSelected = Math.abs(barRate - (speedPreviewRate ?? narrationRate)) < 0.026;
-                      return (
-                        <span
-                          aria-hidden="true"
-                          className={isSelected ? "narration-speed-bar selected" : "narration-speed-bar"}
-                          key={index}
-                          style={{
-                            "--bar-scale": scale.toFixed(2)
-                          } as CSSProperties}
-                        />
-                      );
-                    })()
-                  ))}
-                </div>
-                <div className="narration-speed-presets" aria-label="Preset speeds">
-                  {NARRATION_RATE_PRESETS.map((preset) => (
-                    <button
-                      className={Math.abs(narrationRate - preset) < 0.01 ? "active" : ""}
-                      key={preset}
-                      onClick={() => chooseNarrationRate(preset)}
-                      type="button"
-                    >
-                      {formatNarrationRate(preset)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-        <div className="control-rail-right">
-          <div className="image-mode-control">
-            <button
-              className={readerImageMode ? "secondary-button active" : "secondary-button"}
-              disabled={!readerImageMode && activeReaderImageChunkIndex < 0}
-              onClick={toggleReaderImageMode}
-              title={
-                isPdfBook && !pdfHasText
-                  ? "Text extraction is required for PDF image mode"
-                  : isPdfBook && activeReaderImageChunkIndex < 0
-                    ? "No page text is available for image mode here"
-                  : readerImageMode
-                    ? "Stop generating reading images"
-                    : "Show reader images"
-              }
-              type="button"
-            >
-              {isReaderImageLoading ? (
-                <Loader2 className="spin" size={16} aria-hidden="true" />
-              ) : (
-                <ImageIcon size={16} aria-hidden="true" />
-              )}
-              <span>Image mode</span>
-            </button>
-            {readerImageMode && (
-              <div className="image-style-menu-anchor" ref={imageStyleMenuRef}>
-                <button
-                  aria-controls="image-style-menu"
-                  aria-expanded={readerImageStyleOpen}
-                  className="secondary-button image-style-button"
-                  onClick={(event) => {
-                    if (event.detail === 0) setReaderImageStyleOpen((isOpen) => !isOpen);
-                  }}
-                  onPointerDown={(event) => {
-                    event.preventDefault();
-                    setReaderImageStyleOpen((isOpen) => !isOpen);
-                  }}
-                  title="Choose image style"
-                  type="button"
-                >
-                  <Palette size={16} aria-hidden="true" />
-                  <span>Styles</span>
-                  <ChevronDown size={14} aria-hidden="true" />
-                </button>
-                {readerImageStyleOpen && (
-                  <section
-                    aria-label="Image style"
-                    className="image-style-menu"
-                    id="image-style-menu"
-                  >
-                    <div className="image-style-menu-heading">
-                      <strong>Styles</strong>
-                    </div>
-                    <div className="image-style-options">
-                      {READER_IMAGE_STYLES.map((style) => (
-                        <button
-                          aria-pressed={readerImageStyle === style.id}
-                          className={readerImageStyle === style.id ? "image-style-option active" : "image-style-option"}
-                          key={style.id}
-                          onClick={() => selectReaderImageStyle(style.id)}
-                          type="button"
-                        >
-                          <img className="image-style-preview" src={style.previewSrc} alt={style.previewAlt} />
-                          <span className="image-style-option-copy">
-                            <strong>{style.label}</strong>
-                            <small>{style.summary}</small>
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </section>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      </footer>
+        </footer>
+      )}
 
       {notice && <div className="notice">{notice}</div>}
 

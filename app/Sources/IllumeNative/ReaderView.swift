@@ -356,123 +356,139 @@ struct ReaderView: View {
                 let isShowingImageMode = imageModeEnabled && imageParagraph(in: book) != nil
                 let hideBottomControls = shouldHideReaderButtons
 
-                VStack {
-                    Spacer()
-                    GeometryReader { geometry in
-                        let useCompactControls = isShowingImageMode || controlsCollapsed || geometry.size.width < 430
+                GeometryReader { geometry in
+                    let useCompactControls = isShowingImageMode || controlsCollapsed || geometry.size.width < 430
 
-                        VStack(spacing: (speedPickerExpanded || quickMenuOpen) ? (useCompactControls ? 12 : 14) : (useCompactControls ? 7 : 9)) {
-                            if !speedPickerExpanded && !quickMenuOpen {
-                                ReaderProgressStrip(
-                                    currentIndex: currentIndex,
-                                    totalCount: book.paragraphs.count,
-                                    chapterTitle: currentChapterTitle(in: book)
-                                )
-                                    .padding(.horizontal, useCompactControls ? 2 : 6)
-                                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    ZStack {
+                        VStack {
+                            Spacer()
+                            VStack(spacing: 7) {
+                                if !speedPickerExpanded && !quickMenuOpen {
+                                    ReaderProgressStrip(
+                                        currentIndex: currentIndex,
+                                        totalCount: book.paragraphs.count,
+                                        chapterTitle: currentChapterTitle(in: book)
+                                    )
+                                        .padding(.horizontal, useCompactControls ? 2 : 6)
+                                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                                }
                             }
+                            .padding(.leading, 18)
+                            .padding(.trailing, 88)
+                            .frame(maxWidth: 560, alignment: .bottom)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                        }
+                        .frame(width: geometry.size.width, height: geometry.size.height, alignment: .bottom)
+                        .padding(.bottom, useCompactControlsBottomPadding(isShowingImageMode: isShowingImageMode))
 
-                            if speedPickerExpanded {
-                                ReaderNarrationSpeedPickerPanel(
-                                    rate: app.readerSettings.narrationRate,
-                                    isCollapsed: useCompactControls,
-                                    onDarkBackground: isShowingImageMode,
-                                    selectRate: { rate in
-                                        app.setNarrationRate(rate)
-                                        revealReaderButtons(autohide: false)
-                                    }
-                                )
-                                .frame(width: min(geometry.size.width - 28, useCompactControls ? 336 : 386))
-                                .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottom)))
-                            }
+                        HStack(spacing: 0) {
+                            Spacer(minLength: 0)
+                            VStack(spacing: (speedPickerExpanded || quickMenuOpen) ? (useCompactControls ? 12 : 14) : (useCompactControls ? 8 : 10)) {
+                                Spacer(minLength: 0)
 
-                            if quickMenuOpen {
-                                ReaderQuickMenuOverlay(
-                                    progressPercent: readingProgressPercent(in: book),
-                                    hasTableOfContents: !tableOfContentsEntries(for: book).isEmpty,
-                                    imageModeEnabled: $imageModeEnabled,
-                                    imageModeLoading: app.readerImagePhase == .checking || app.readerImagePhase == .generating,
-                                    imageModeDisabled: imageParagraph(in: book) == nil,
-                                    activeDestination: activeReaderSheet,
-                                    isCollapsed: useCompactControls,
-                                    onDarkBackground: isShowingImageMode,
-                                    openContents: {
-                                        openQuickMenuDestination(.contents)
-                                    },
-                                    openImageStyles: {
-                                        openQuickMenuDestination(.imageStyles)
-                                    },
-                                    openFontSettings: {
-                                        openQuickMenuDestination(.fontSettings)
-                                    },
-                                    openVoices: {
-                                        openQuickMenuDestination(.voices)
-                                    },
-                                    toggleImageMode: { toggleImageMode(for: book) },
-                                    closeDestination: {
-                                        closeQuickMenuDestination()
-                                    },
-                                    destinationContent: { destination in
-                                        readerMenuPanel(for: destination)
-                                    }
-                                )
-                                .frame(width: min(geometry.size.width - 28, useCompactControls ? 336 : 386))
-                                .transition(.readerQuickMenuBubble)
-                            }
-
-                            if !speedPickerExpanded && !quickMenuOpen {
-                                HStack(alignment: .bottom, spacing: useCompactControls ? 8 : 10) {
-                                    ReaderNarrationSpeedPickerButton(
+                                if speedPickerExpanded {
+                                    ReaderNarrationSpeedPickerPanel(
                                         rate: app.readerSettings.narrationRate,
-                                        isExpanded: speedPickerExpanded,
                                         isCollapsed: useCompactControls,
                                         onDarkBackground: isShowingImageMode,
-                                        toggleExpansion: {
-                                            readerButtonsAutohideTask?.cancel()
-                                            withAnimation(IllumeTheme.spring) {
-                                                quickMenuOpen = false
-                                                speedPickerExpanded.toggle()
-                                            }
+                                        selectRate: { rate in
+                                            app.setNarrationRate(rate)
                                             revealReaderButtons(autohide: false)
                                         }
                                     )
+                                    .frame(width: min(geometry.size.width - 96, useCompactControls ? 300 : 340))
+                                    .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .trailing)))
+                                }
 
-                                    ReaderTransportRail(
-                                        book: book,
-                                        currentIndex: currentIndex,
-                                        isPlaying: app.narration.isPlaying,
-                                        isPreparing: app.narration.isPreparing,
+                                if quickMenuOpen {
+                                    ReaderQuickMenuOverlay(
+                                        progressPercent: readingProgressPercent(in: book),
+                                        hasTableOfContents: !tableOfContentsEntries(for: book).isEmpty,
+                                        imageModeEnabled: $imageModeEnabled,
+                                        imageModeLoading: app.readerImagePhase == .checking || app.readerImagePhase == .generating,
+                                        imageModeDisabled: imageParagraph(in: book) == nil,
+                                        activeDestination: activeReaderSheet,
                                         isCollapsed: useCompactControls,
                                         onDarkBackground: isShowingImageMode,
-                                        playPause: {
-                                            let wordStart = isShowingImageMode ? narrationPreviewSnippet(in: book)?.visibleWordStart ?? 0 : 0
-                                            app.toggleNarration(for: book, from: currentIndex, wordStart: wordStart)
+                                        openContents: {
+                                            openQuickMenuDestination(.contents)
                                         },
-                                        moveToAndNarrate: { index in
-                                            moveToAndNarrate(index, in: book)
+                                        openImageStyles: {
+                                            openQuickMenuDestination(.imageStyles)
+                                        },
+                                        openFontSettings: {
+                                            openQuickMenuDestination(.fontSettings)
+                                        },
+                                        openVoices: {
+                                            openQuickMenuDestination(.voices)
+                                        },
+                                        toggleImageMode: { toggleImageMode(for: book) },
+                                        closeDestination: {
+                                            closeQuickMenuDestination()
+                                        },
+                                        destinationContent: { destination in
+                                            readerMenuPanel(for: destination)
                                         }
                                     )
-                                    .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottom)))
-
-                                    ReaderTypographySettingsButton(
-                                        isCollapsed: useCompactControls,
-                                        onDarkBackground: isShowingImageMode
-                                    ) {
-                                        toggleQuickMenu()
-                                    }
-                                    .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottom)))
+                                    .frame(width: min(geometry.size.width - 96, useCompactControls ? 300 : 340))
+                                    .transition(.readerQuickMenuBubble)
                                 }
-                                .frame(maxWidth: .infinity, alignment: .center)
+
+                                if !speedPickerExpanded && !quickMenuOpen {
+                                    VStack(spacing: useCompactControls ? 8 : 10) {
+                                        ReaderNarrationSpeedPickerButton(
+                                            rate: app.readerSettings.narrationRate,
+                                            isExpanded: speedPickerExpanded,
+                                            isCollapsed: useCompactControls,
+                                            onDarkBackground: isShowingImageMode,
+                                            toggleExpansion: {
+                                                readerButtonsAutohideTask?.cancel()
+                                                withAnimation(IllumeTheme.spring) {
+                                                    quickMenuOpen = false
+                                                    speedPickerExpanded.toggle()
+                                                }
+                                                revealReaderButtons(autohide: false)
+                                            }
+                                        )
+
+                                        ReaderTransportRail(
+                                            book: book,
+                                            currentIndex: currentIndex,
+                                            isPlaying: app.narration.isPlaying,
+                                            isPreparing: app.narration.isPreparing,
+                                            isCollapsed: useCompactControls,
+                                            isVertical: true,
+                                            onDarkBackground: isShowingImageMode,
+                                            playPause: {
+                                                let wordStart = isShowingImageMode ? narrationPreviewSnippet(in: book)?.visibleWordStart ?? 0 : 0
+                                                app.toggleNarration(for: book, from: currentIndex, wordStart: wordStart)
+                                            },
+                                            moveToAndNarrate: { index in
+                                                moveToAndNarrate(index, in: book)
+                                            }
+                                        )
+                                        .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .trailing)))
+
+                                        ReaderTypographySettingsButton(
+                                            isCollapsed: useCompactControls,
+                                            onDarkBackground: isShowingImageMode
+                                        ) {
+                                            toggleQuickMenu()
+                                        }
+                                        .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .trailing)))
+                                    }
+                                }
+
+                                Spacer(minLength: 0)
                             }
+                            .padding(.trailing, 12)
+                            .padding(.vertical, 84)
                         }
-                        .padding(.horizontal, 18)
-                        .frame(width: geometry.size.width, height: geometry.size.height, alignment: .bottom)
+                        .frame(width: geometry.size.width, height: geometry.size.height, alignment: .trailing)
                     }
-                    .frame(height: readerControlsHeight(isShowingImageMode: isShowingImageMode, speedPickerExpanded: speedPickerExpanded, quickMenuOpen: quickMenuOpen, activeMenuDestination: activeReaderSheet))
-                    .padding(.bottom, useCompactControlsBottomPadding(isShowingImageMode: isShowingImageMode))
                     .opacity(hideBottomControls ? 0 : 1)
                     .blur(radius: hideBottomControls ? 14 : 0)
-                    .scaleEffect(hideBottomControls ? 0.96 : 1, anchor: .bottom)
+                    .scaleEffect(hideBottomControls ? 0.96 : 1, anchor: .trailing)
                     .allowsHitTesting(!hideBottomControls)
                     .zIndex(8)
                     .animation(.easeOut(duration: 0.16), value: hideBottomControls)
@@ -729,7 +745,7 @@ struct ReaderView: View {
             .frame(maxWidth: textColumnWidth)
             .padding(.horizontal, onImageBackground ? 24 : 18)
             .padding(.top, onImageBackground ? 104 : 12)
-            .padding(.bottom, controlsCollapsed ? 122 : 158)
+            .padding(.bottom, controlsCollapsed ? 84 : 96)
             .frame(maxWidth: .infinity)
         }
         .coordinateSpace(name: readerScrollSpaceName)
@@ -867,9 +883,18 @@ struct ReaderView: View {
         let passedDistance = translation.height >= readerMiniplayerDismissTranslation
         let passedFlickDistance = predictedTranslation.height >= readerMiniplayerDismissPredictedTranslation
 
-        guard isMostlyVertical, passedDistance || passedFlickDistance else { return }
-        readerButtonsAutohideTask?.cancel()
-        hideReaderButtons(allowDuringPreparation: true)
+        if isMostlyVertical, passedDistance || passedFlickDistance {
+            readerButtonsAutohideTask?.cancel()
+            hideReaderButtons(allowDuringPreparation: true)
+            return
+        }
+
+        let isSidebarDismiss = translation.width >= readerMiniplayerDismissTranslation
+            || predictedTranslation.width >= readerMiniplayerDismissPredictedTranslation
+        if isSidebarDismiss {
+            readerButtonsAutohideTask?.cancel()
+            hideReaderButtons(allowDuringPreparation: true)
+        }
     }
 
     private func toggleQuickMenu() {
@@ -1404,26 +1429,6 @@ struct ReaderView: View {
             readerNarrationPreviewMaximumCharacters,
             max(readerNarrationPreviewMinimumCharacters, estimatedCharacters)
         )
-    }
-
-    private func useCompactControlsHeight(isShowingImageMode: Bool) -> CGFloat {
-        (isShowingImageMode || controlsCollapsed) ? 92 : 112
-    }
-
-    private func readerControlsHeight(isShowingImageMode: Bool, speedPickerExpanded: Bool, quickMenuOpen: Bool, activeMenuDestination: ReaderSheetDestination?) -> CGFloat {
-        guard speedPickerExpanded || quickMenuOpen else {
-            return useCompactControlsHeight(isShowingImageMode: isShowingImageMode)
-        }
-
-        if quickMenuOpen {
-            if activeMenuDestination != nil {
-                let expandedHeight: CGFloat = (isShowingImageMode || controlsCollapsed) ? 560 : 640
-                return min(UIScreen.main.bounds.height * 0.72, expandedHeight)
-            }
-            return (isShowingImageMode || controlsCollapsed) ? 392 : 420
-        }
-
-        return (isShowingImageMode || controlsCollapsed) ? 248 : 280
     }
 
     private func useCompactControlsBottomPadding(isShowingImageMode: Bool) -> CGFloat {
@@ -2404,55 +2409,21 @@ struct ReaderTransportRail: View {
     let isPlaying: Bool
     let isPreparing: Bool
     let isCollapsed: Bool
+    var isVertical = false
     var onDarkBackground = false
     let playPause: () -> Void
     let moveToAndNarrate: (Int) -> Void
 
     var body: some View {
         IllumeGlassEffectGroup(spacing: railSpacing) {
-            HStack(spacing: railSpacing) {
-                ReaderRailIconButton(
-                    systemName: "arrow.counterclockwise",
-                    isDisabled: currentIndex <= 0,
-                    onDarkBackground: onDarkBackground,
-                    isCompact: isCollapsed
-                ) {
-                    moveToAndNarrate(currentIndex - 1)
-                }
-                .accessibilityLabel("Previous paragraph")
-
-                ReaderNarrationButton(
-                    isPlaying: isPlaying,
-                    isPreparing: isPreparing,
-                    isCompact: isCollapsed,
-                    onDarkBackground: onDarkBackground,
-                    action: playPause
-                )
-
-                ReaderRailIconButton(
-                    systemName: "arrow.clockwise",
-                    isDisabled: currentIndex >= book.paragraphs.count - 1,
-                    onDarkBackground: onDarkBackground,
-                    isCompact: isCollapsed
-                ) {
-                    moveToAndNarrate(currentIndex + 1)
-                }
-                .accessibilityLabel("Next paragraph")
-
-                if !isCollapsed {
-                    Button {
-                        speedPopoverOpen.toggle()
-                    } label: {
-                        Text(Self.formatRate(app.readerSettings.narrationRate))
-                            .font(IllumeTypography.sans(12, weight: .heavy))
-                            .foregroundStyle(onDarkBackground ? .white : IllumeTheme.ink)
-                            .frame(width: 40, height: compactButtonSize)
+            Group {
+                if isVertical {
+                    VStack(spacing: railSpacing) {
+                        railButtons
                     }
-                    .illumeNativeGlassButton(tint: buttonTint, controlSize: .small, fallback: ReaderGlassCapsuleButtonStyle(tint: buttonTint))
-                    .accessibilityLabel("Narration speed")
-                    .popover(isPresented: $speedPopoverOpen, attachmentAnchor: .point(.top), arrowEdge: .bottom) {
-                        NarrationSpeedPopover()
-                            .presentationCompactAdaptation(.popover)
+                } else {
+                    HStack(spacing: railSpacing) {
+                        railButtons
                     }
                 }
             }
@@ -2468,6 +2439,54 @@ struct ReaderTransportRail: View {
 
     private var railSpacing: CGFloat {
         isCollapsed ? 6 : 8
+    }
+
+    @ViewBuilder
+    private var railButtons: some View {
+        ReaderRailIconButton(
+            systemName: "arrow.counterclockwise",
+            isDisabled: currentIndex <= 0,
+            onDarkBackground: onDarkBackground,
+            isCompact: isCollapsed
+        ) {
+            moveToAndNarrate(currentIndex - 1)
+        }
+        .accessibilityLabel("Previous paragraph")
+
+        ReaderNarrationButton(
+            isPlaying: isPlaying,
+            isPreparing: isPreparing,
+            isCompact: isCollapsed,
+            onDarkBackground: onDarkBackground,
+            action: playPause
+        )
+
+        ReaderRailIconButton(
+            systemName: "arrow.clockwise",
+            isDisabled: currentIndex >= book.paragraphs.count - 1,
+            onDarkBackground: onDarkBackground,
+            isCompact: isCollapsed
+        ) {
+            moveToAndNarrate(currentIndex + 1)
+        }
+        .accessibilityLabel("Next paragraph")
+
+        if !isCollapsed && !isVertical {
+            Button {
+                speedPopoverOpen.toggle()
+            } label: {
+                Text(Self.formatRate(app.readerSettings.narrationRate))
+                    .font(IllumeTypography.sans(12, weight: .heavy))
+                    .foregroundStyle(onDarkBackground ? .white : IllumeTheme.ink)
+                    .frame(width: 40, height: compactButtonSize)
+            }
+            .illumeNativeGlassButton(tint: buttonTint, controlSize: .small, fallback: ReaderGlassCapsuleButtonStyle(tint: buttonTint))
+            .accessibilityLabel("Narration speed")
+            .popover(isPresented: $speedPopoverOpen, attachmentAnchor: .point(.top), arrowEdge: .bottom) {
+                NarrationSpeedPopover()
+                    .presentationCompactAdaptation(.popover)
+            }
+        }
     }
 
     private var railInset: CGFloat {
