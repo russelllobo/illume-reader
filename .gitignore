@@ -6,10 +6,6 @@ dist/
 coverage/
 generated-images/
 
-# Large local native/TTS assets
-app/Sources/IllumeNative/Resources/KokoroTTS/
-app/Vendor/SherpaOnnx/
-
 # Local environment and tool state
 .env
 .env.*
@@ -24,3 +20,6 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 .DS_Store
+
+# Mac-mini agent notes (contains local-only credentials) - never publish
+illume-ios/agent.md
