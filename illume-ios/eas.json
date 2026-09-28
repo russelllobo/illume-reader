@@ -1,0 +1,34 @@
+{
+  "cli": {
+    "version": ">= 18.1.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "channel": "development"
+    },
+    "preview": {
+      "distribution": "internal",
+      "channel": "preview"
+    },
+    "production": {
+      "autoIncrement": true,
+      "channel": "production",
+      "ios": {
+        "credentialsSource": "local"
+      }
+    }
+  },
+  "submit": {
+    "production": {
+      "ios": {
+        "ascAppId": "6778575467",
+        "ascApiKeyPath": "/Users/russ/private_keys/AuthKey_66WZZP9YM6.p8",
+        "ascApiKeyIssuerId": "684ca00b-6308-4d13-abe8-d67b36f218d9",
+        "ascApiKeyId": "66WZZP9YM6"
+      }
+    }
+  }
+}

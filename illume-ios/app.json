@@ -1,0 +1,59 @@
+{
+  "expo": {
+    "name": "Illume",
+    "slug": "illume",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "com.illumereader.ios",
+    "userInterfaceStyle": "light",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/3bab2f5c-752b-410d-897f-d13fe6650fbb",
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0,
+      "channel": "production",
+      "requestHeaders": {
+        "expo-channel-name": "production"
+      }
+    },
+    "ios": {
+      "bundleIdentifier": "com.russellsystems.illume",
+      "appleTeamId": "SZ78KGUF6B",
+      "deploymentTarget": "16.4",
+      "supportsTablet": true,
+      "infoPlist": {
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLSchemes": [
+              "com.illumereader.ios",
+              "com.russellsystems.illume"
+            ]
+          }
+        ],
+        "NSFaceIDUsageDescription": "Face ID is used to keep your reading session secure.",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "buildNumber": "13"
+    },
+    "android": {
+      "package": "com.russellsystems.illume",
+      "adaptiveIcon": {
+        "backgroundColor": "#FBF8F1"
+      }
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-apple-authentication",
+      "expo-document-picker"
+    ],
+    "extra": {
+      "supabaseUrl": "https://hiswlrweciottgskunlc.supabase.co",
+      "eas": {
+        "projectId": "3bab2f5c-752b-410d-897f-d13fe6650fbb"
+      }
+    },
+    "owner": "russelllobo"
+  }
+}
