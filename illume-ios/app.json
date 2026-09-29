@@ -4,6 +4,7 @@
     "slug": "illume",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./assets/icon.png",
     "scheme": "com.illumereader.ios",
     "userInterfaceStyle": "light",
     "runtimeVersion": {
@@ -20,6 +21,7 @@
     },
     "ios": {
       "bundleIdentifier": "com.russellsystems.illume",
+      "icon": "./assets/icon.png",
       "appleTeamId": "SZ78KGUF6B",
       "deploymentTarget": "16.4",
       "supportsTablet": true,
@@ -40,7 +42,8 @@
     "android": {
       "package": "com.russellsystems.illume",
       "adaptiveIcon": {
-        "backgroundColor": "#FBF8F1"
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#F0B024"
       }
     },
     "plugins": [
