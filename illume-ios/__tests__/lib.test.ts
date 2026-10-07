@@ -18,6 +18,12 @@ describe('core ports', () => {
     expect(chapterIndexForPage(5, [{ pageNumber: 1, pageOffsetRatio: 0, title: 'A' }, { pageNumber: 6, pageOffsetRatio: 0, title: 'B' }])).toBe(0);
   });
 
+  test('splitPageText never throws on missing text (reopen crash guard)', () => {
+    expect(splitPageText(undefined as unknown as string)).toEqual([]);
+    expect(splitPageText(null as unknown as string)).toEqual([]);
+    expect(splitPageText('')).toEqual([]);
+  });
+
   test('billing + storage paths', () => {
     expect(hasProAccess(null)).toBe(false);
     expect(imageLimit(false)).toBe(25);

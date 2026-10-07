@@ -68,6 +68,21 @@ describe('supabase row mapping (live backend shape)', () => {
     expect(profile.cancelAtPeriodEnd).toBe(false);
   });
 
+  test('inserted snake_case row normalizes to openable book (split crash regression)', () => {
+    // insertBook used to return the raw snake_case row; openBook then read
+    // row.storagePath (undefined) and crashed in downloadDocument's split.
+    const rawInserted = {
+      ...liveRow,
+      storage_path: 'user-1/book-1/illume-playback-test.epub',
+      file_name: 'Illume Playback Test.epub',
+    };
+    const row = camelCaseKeys<BookRow>(rawInserted);
+    expect(row.storagePath).toBe('user-1/book-1/illume-playback-test.epub');
+    expect(row.fileName).toBe('Illume Playback Test.epub');
+    expect(row.documentType).toBe('pdf');
+    expect(() => row.storagePath.split('/')).not.toThrow();
+  });
+
   test('image usage without monthly columns never yields NaN', () => {
     const usage = camelCaseKeys<{ generatedCount: number }>({
       user_id: 'user-1',

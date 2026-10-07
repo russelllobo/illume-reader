@@ -11,7 +11,8 @@ import * as Backend from './supabase';
 import { buildGoogleAuthorizeUrl, parseOAuthCallbackParams } from './oauth';
 import { loadSession, saveSession, deleteSession } from './session';
 import { parseEpub, parseFileNameType, pdfBookFromPages } from './documents';
-import { documentPath, hasProAccess, imageLimit, imageUsageCount, libraryByRecentActivity } from './lib';
+import { classicDownloadUrl, type ClassicBook } from './classics';
+import { documentPath, hasProAccess, imageLimit, imageUsageCount, libraryByRecentActivity, safeDocumentFileName } from './lib';
 import { loadProducts, purchasePro as iapPurchase, restorePro as iapRestore } from './billing';
 import type {
   AuthSession,
@@ -54,6 +55,8 @@ interface Store {
   signOut: () => Promise<void>;
   reload: () => Promise<void>;
   importPickedDocument: () => Promise<void>;
+  importingClassicId: string | null;
+  importClassicBook: (classic: ClassicBook) => Promise<void>;
   openBook: (row: BookRow) => Promise<void>;
   closeReader: () => void;
   saveProgress: (index: number, page: number) => void;
@@ -85,6 +88,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [readerImageUsage, setReaderImageUsage] = useState<ReaderImageUsage | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [importingClassicId, setImportingClassicId] = useState<string | null>(null);
   const [authMode, setAuthMode] = useState<'signIn' | 'signUp'>('signIn');
   const [notice, setNotice] = useState('');
   const [readerSettings, setReaderSettings] = useState<ReaderSettings>(defaultReaderSettings);
@@ -239,7 +243,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         throw new Error('This upload would exceed your library storage limit.');
       }
       const { randomUUID } = await import('expo-crypto');
-      const bookId = randomUUID();
+      const bookId = randomUUID().toLowerCase();
       // Local parse for EPUB now; PDFs are processed server-side (queuePdfProcessing).
       let title = fileName;
       let author = '';
@@ -306,11 +310,85 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }
   }, [session, storageUsed]);
 
+  const importClassicBook = useCallback(
+    async (classic: ClassicBook) => {
+      const s = session;
+      if (!s || importingClassicId) return;
+      setImportingClassicId(classic.id);
+      setIsImporting(true);
+      setNotice('');
+      try {
+        const res = await fetch(classicDownloadUrl(classic.downloadUrl));
+        if (!res.ok) throw new Error('Could not download ebook from Standard Ebooks.');
+        const buf = new Uint8Array(await res.arrayBuffer());
+        if (!(buf[0] === 0x50 && buf[1] === 0x4b && buf[2] === 0x03 && buf[3] === 0x04)) {
+          throw new Error(`The download for ${classic.title} did not return an EPUB.`);
+        }
+        if (storageUsed + buf.length > Backend.STORAGE_QUOTA_BYTES) {
+          throw new Error('This upload would exceed your library storage limit.');
+        }
+        const { parseEpub } = await import('./documents');
+        const fileName = safeDocumentFileName(`${classic.title}.epub`, 'epub');
+        const parsed = await parseEpub(buf, fileName);
+        const title = parsed.book.title || classic.title;
+        const author = parsed.book.author || classic.author;
+        const coverUrl = parsed.coverDataUrl ?? classic.coverUrl;
+        const { randomUUID } = await import('expo-crypto');
+        const bookId = randomUUID().toLowerCase();
+        const storagePath = documentPath(s.user.id, bookId, fileName, 'epub');
+        await Backend.uploadDocument(buf, storagePath, 'application/epub+zip', s.accessToken);
+        try {
+          const inserted = await Backend.insertBook(
+            {
+              id: bookId,
+              userId: s.user.id,
+              title,
+              author,
+              coverUrl,
+              documentType: 'epub',
+              storagePath,
+              fileName,
+              fileSize: buf.length,
+              mimeType: 'application/epub+zip',
+              pageCount: null,
+              paragraphCount: parsed.book.paragraphs.length,
+              chapterCount: parsed.book.chapters.length,
+              pdfPageMetrics: [],
+              pdfToc: [],
+              processingStatus: 'ready',
+              processingError: null,
+              currentIndex: 0,
+              currentPage: 1,
+              lastOpenedAt: new Date().toISOString(),
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            },
+            s.accessToken
+          );
+          setBooks((prev) => libraryByRecentActivity([inserted, ...prev]));
+          setActiveBookRow(inserted);
+          setActiveBook({ ...parsed.book, title, author });
+        } catch (e) {
+          await Backend.deleteBook(bookId, s.accessToken).catch(() => {});
+          throw e;
+        }
+      } catch (e: any) {
+        setNotice(e?.message ?? String(e));
+      } finally {
+        setIsImporting(false);
+        setImportingClassicId(null);
+      }
+    },
+    [session, storageUsed, importingClassicId]
+  );
+
   const openBook = useCallback(
     async (row: BookRow) => {
       const s = session;
       if (!s) return;
       await runBusy(async () => {
+        if (!row?.storagePath) throw new Error('This book entry is missing its file reference. Try re-importing it.');
+        if (!row?.fileName) throw new Error('This book entry is missing its file name. Try re-importing it.');
         const data = await Backend.downloadDocument(row.storagePath, s.accessToken);
         let book: ReaderBook;
         if (row.documentType === 'pdf') {
@@ -393,18 +471,18 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const row = activeBookRow;
       const token = session?.accessToken;
       if (!row || !token) return;
-      const words = p.text.split(' ');
+      const words = (p?.text ?? '').split(' ').filter(Boolean);
       const endWord = Math.max(1, Math.min(words.length, 130));
       await runBusy(async () => {
         const res = await Backend.invokeReaderImage(
-          { bookId: row.id, startWord: 1, endWord, text: words.slice(0, endWord).join(' '), style: readerSettings.imageStyle },
+          { bookId: row.id, startWord: 1, endWord, text: words.slice(0, endWord).join(' '), style: readerSettings.imageStyle, bookTitle: activeBook?.title, author: activeBook?.author },
           token
         );
         setReaderImageResponse(res);
         await reload();
       });
     },
-    [activeBookRow, session, readerSettings.imageStyle, reload, runBusy]
+    [activeBook, activeBookRow, session, readerSettings.imageStyle, reload, runBusy]
   );
 
   const purchasePro = useCallback(async () => {
@@ -454,6 +532,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       signOut,
       reload,
       importPickedDocument,
+      importingClassicId,
+      importClassicBook,
       openBook,
       closeReader,
       saveProgress,
@@ -472,6 +552,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       readerImageUsage,
       isLoading,
       isImporting,
+      importingClassicId,
       authMode,
       notice,
       readerSettings,
@@ -488,6 +569,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       signOut,
       reload,
       importPickedDocument,
+      importClassicBook,
       openBook,
       closeReader,
       saveProgress,

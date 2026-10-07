@@ -120,12 +120,16 @@ export async function insertBook(book: BookRow, accessToken: string): Promise<Bo
     headers: { Prefer: 'return=representation' },
     body: JSON.stringify(toSnake(book)),
   });
-  const row = (rows as BookRow[])[0];
+  const row = (rows as unknown[])[0];
   if (!row) throw new Error('Insert failed');
-  return row;
+  // PostgREST returns snake_case; normalize so openBook/library see
+  // storagePath/fileName/documentType (previously reopening an inserted
+  // book crashed with "Cannot read property 'split' of undefined").
+  return camelCaseKeys<BookRow>(row);
 }
 
 export async function uploadDocument(data: Uint8Array, storagePath: string, mimeType: string, accessToken: string) {
+  if (!storagePath) throw new Error('Upload failed: missing storage path');
   const encoded = storagePath.split('/').map(encodeURIComponent).join('/');
   const res = await fetch(`${SUPABASE_URL}/storage/v1/object/epubs/${encoded}`, {
     method: 'POST',
@@ -141,6 +145,7 @@ export async function uploadDocument(data: Uint8Array, storagePath: string, mime
 }
 
 export async function downloadDocument(storagePath: string, accessToken: string): Promise<Uint8Array> {
+  if (!storagePath) throw new Error('Download failed: missing storage path');
   const encoded = storagePath.split('/').map(encodeURIComponent).join('/');
   const res = await fetch(`${SUPABASE_URL}/storage/v1/object/epubs/${encoded}`, {
     headers: { apikey: SUPABASE_PUBLISHABLE_KEY, Authorization: `Bearer ${accessToken}` },
@@ -150,12 +155,23 @@ export async function downloadDocument(storagePath: string, accessToken: string)
 }
 
 export async function invokeReaderImage(
-  payload: { bookId: string; startWord: number; endWord: number; text: string; style: ReaderImageStyle },
+  payload: { bookId: string; startWord: number; endWord: number; text: string; style: ReaderImageStyle; bookTitle?: string; author?: string },
   accessToken: string
 ): Promise<ReaderImageFunctionResponse> {
+  // Keys must be camelCase to match generate-reader-image (and the web app):
+  // the function reads payload.bookId / payload.startWord / payload.endWord.
   return (await authed('/functions/v1/generate-reader-image', accessToken, {
     method: 'POST',
-    body: JSON.stringify({ book_id: payload.bookId, start_word: payload.startWord, end_word: payload.endWord, text: payload.text, style: payload.style }),
+    body: JSON.stringify({
+      author: payload.author ?? '',
+      bookId: payload.bookId,
+      bookTitle: payload.bookTitle ?? '',
+      endWord: payload.endWord,
+      imageStyle: payload.style,
+      style: payload.style,
+      startWord: payload.startWord,
+      text: payload.text,
+    }),
   })) as ReaderImageFunctionResponse;
 }
 

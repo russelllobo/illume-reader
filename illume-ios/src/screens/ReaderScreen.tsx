@@ -1,64 +1,268 @@
-import React, { useState } from 'react';
-import { View, Text, Pressable, ScrollView, StyleSheet, Modal, Image, Switch } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { View, Text, Pressable, StyleSheet, Modal, Image, ActivityIndicator, PanResponder } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { useStore } from '../store';
-import { IllumeTheme, radius } from '../theme';
+import * as Backend from '../supabase';
+import { IllumeTheme } from '../theme';
+import type { ReaderParagraph } from '../types';
 
-function themeColors(theme: string) {
-  if (theme === 'Night') return { bg: IllumeTheme.night, fg: IllumeTheme.nightInk };
-  if (theme === 'Mint') return { bg: IllumeTheme.mint, fg: IllumeTheme.ink };
-  return { bg: IllumeTheme.paper, fg: IllumeTheme.ink };
+// Single paragraph at a time on a mostly-transparent black card, floating
+// over the full-screen picture.
+const CARD_BG = 'rgba(0,0,0,0.55)';
+const CARD_INK = '#F5F2E9';
+
+// Same chunking as the web app: ~750 words per generated image so mobile
+// requests hit the same server-side cache (user/book/style/start-end).
+const IMAGE_CHUNK_WORDS = 750;
+
+function wordsOf(text: string | null | undefined): string[] {
+  if (!text) return [];
+  return text.split(/\s+/).filter(Boolean);
 }
 
+interface ImageChunk {
+  index: number;
+  startWord: number;
+  endWord: number;
+  text: string;
+  startParaIndex: number;
+  endParaIndex: number;
+}
+
+function buildImageChunks(paragraphs: ReaderParagraph[]): ImageChunk[] {
+  const chunks: ImageChunk[] = [];
+  let wordOffset = 0;
+  let chunkWords: string[] = [];
+  let chunkStartWord = 1;
+  let chunkStartPara = 0;
+
+  const push = (endParaIndex: number) => {
+    if (!chunkWords.length) return;
+    chunks.push({
+      index: chunks.length,
+      startWord: chunkStartWord,
+      endWord: wordOffset,
+      text: chunkWords.join(' '),
+      startParaIndex: chunkStartPara,
+      endParaIndex,
+    });
+    chunkWords = [];
+    chunkStartWord = wordOffset + 1;
+  };
+
+  paragraphs.forEach((p, paraIndex) => {
+    const words = wordsOf(p.text);
+    if (!words.length) return;
+    if (!chunkWords.length) chunkStartPara = paraIndex;
+    for (const w of words) {
+      chunkWords.push(w);
+      wordOffset += 1;
+      if (chunkWords.length >= IMAGE_CHUNK_WORDS) {
+        push(paraIndex);
+        chunkStartPara = paraIndex;
+      }
+    }
+    if (!chunkWords.length) chunkStartPara = paraIndex + 1;
+  });
+  push(paragraphs.length - 1);
+  return chunks;
+}
+
+type ChunkEntry = { status: 'loading' | 'ready' | 'error'; url?: string; message?: string };
+
 export function ReaderScreen() {
-  const { activeBook, activeBookRow, closeReader, saveProgress, speak, generateImage, readerSettings, setReaderSettings, readerImageResponse, clearReaderImage } = useStore();
+  const { activeBook, activeBookRow, closeReader, saveProgress, speak, readerSettings, setReaderSettings, session } = useStore();
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const { bg, fg } = themeColors(readerSettings.theme);
+
+  const bookId = activeBookRow?.id ?? null;
+  const paragraphs = activeBook?.paragraphs ?? [];
+  const initialPara = Math.min(Math.max(activeBookRow?.currentIndex ?? 0, 0), Math.max(paragraphs.length - 1, 0));
+  const [activeParaIndex, setActiveParaIndex] = useState(initialPara);
+  const [chunkCache, setChunkCache] = useState<Record<string, ChunkEntry>>({});
+  const [retryNonce, setRetryNonce] = useState(0);
+  const requestRef = useRef(0);
+
+  // Reset per-book state when opening a different book.
+  useEffect(() => {
+    requestRef.current += 1;
+    setChunkCache({});
+    setActiveParaIndex(Math.min(Math.max(activeBookRow?.currentIndex ?? 0, 0), Math.max((activeBook?.paragraphs.length ?? 1) - 1, 0)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bookId]);
+
+  const paraOffsets = useMemo(() => {
+    const offsets: number[] = [];
+    let total = 0;
+    for (const p of paragraphs) {
+      offsets.push(total);
+      total += wordsOf(p.text).length;
+    }
+    return offsets;
+  }, [paragraphs]);
+
+  const chunks = useMemo(() => buildImageChunks(paragraphs), [paragraphs]);
+
+  const activeChunkIndex = useMemo(() => {
+    if (!chunks.length) return -1;
+    const offset = paraOffsets[activeParaIndex] ?? 0;
+    const hit = chunks.find((c) => c.startWord - 1 <= offset && c.endWord > offset);
+    return hit ? hit.index : chunks[chunks.length - 1].index;
+  }, [chunks, paraOffsets, activeParaIndex]);
+
+  const activeChunk = activeChunkIndex >= 0 ? chunks[activeChunkIndex] : null;
+  const cacheKey = activeChunk ? `${activeChunk.index}:${readerSettings.imageStyle}` : null;
+  const current = cacheKey ? chunkCache[cacheKey] : undefined;
+
+  // Fetch (and cache) the image for the visible chunk, like the web stage does.
+  useEffect(() => {
+    if (!activeChunk || !cacheKey || !bookId) return;
+    if (chunkCache[cacheKey]) return;
+    const token = session?.accessToken;
+    if (!token) {
+      setChunkCache((prev) => ({ ...prev, [cacheKey]: { status: 'error', message: 'Please sign in again to generate images.' } }));
+      return;
+    }
+    const requestId = requestRef.current + 1;
+    requestRef.current = requestId;
+    setChunkCache((prev) => ({ ...prev, [cacheKey]: { status: 'loading' } }));
+    let cancelled = false;
+    Backend.invokeReaderImage(
+      {
+        author: activeBook?.author,
+        bookId,
+        bookTitle: activeBook?.title,
+        startWord: activeChunk.startWord,
+        endWord: activeChunk.endWord,
+        text: activeChunk.text,
+        style: readerSettings.imageStyle,
+      },
+      token
+    ).then(
+      (res) => {
+        if (cancelled || requestRef.current !== requestId) return;
+        if (res?.imageUrl) {
+          setChunkCache((prev) => ({ ...prev, [cacheKey]: { status: 'ready', url: res.imageUrl as string } }));
+        } else if (res?.limitReached) {
+          setChunkCache((prev) => ({ ...prev, [cacheKey]: { status: 'error', message: 'Monthly image allowance reached.' } }));
+        } else {
+          setChunkCache((prev) => ({ ...prev, [cacheKey]: { status: 'error', message: 'Could not generate this image.' } }));
+        }
+      },
+      (e: unknown) => {
+        if (cancelled || requestRef.current !== requestId) return;
+        setChunkCache((prev) => ({ ...prev, [cacheKey]: { status: 'error', message: e instanceof Error ? e.message : 'Could not generate this image.' } }));
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cacheKey, bookId, readerSettings.imageStyle, retryNonce]);
+
   if (!activeBook) return null;
 
+  // One paragraph at a time: step the visible paragraph, persist progress,
+  // and let the picture follow via the chunk derived from activeParaIndex.
+  // Refs mirror the state read inside the pan responder (created once).
+  const goToParaRef = useRef((delta: number) => {});
+  const goToPara = (delta: number) => {
+    if (!paragraphs.length) return;
+    const next = Math.min(Math.max(activeParaIndex + delta, 0), paragraphs.length - 1);
+    if (next === activeParaIndex) return;
+    setActiveParaIndex(next);
+    const p = paragraphs[next];
+    if (p) saveProgress(next, p.pageNumber ?? 1);
+  };
+  goToParaRef.current = goToPara;
+
+  // Vertical swipe anywhere on the card turns the section. The responder
+  // only claims the touch once it moves vertically, so taps and long-press
+  // (speak) on the text keep working.
+  const cardResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dy) > 12 && Math.abs(g.dy) > Math.abs(g.dx),
+      onPanResponderRelease: (_, g) => {
+        if (g.dy < -24) goToParaRef.current(1);
+        else if (g.dy > 24) goToParaRef.current(-1);
+      },
+    })
+  ).current;
+
+  const retryChunk = () => {
+    if (!cacheKey) return;
+    setChunkCache((prev) => {
+      const next = { ...prev };
+      delete next[cacheKey];
+      return next;
+    });
+    setRetryNonce((n) => n + 1);
+  };
+
+  const visiblePara: ReaderParagraph | null = paragraphs.length
+    ? paragraphs[Math.min(activeParaIndex, paragraphs.length - 1)]
+    : null;
+
+  const renderParagraphText = (p: ReaderParagraph) => (
+    <Text
+      onLongPress={() => speak(p.text)}
+      style={[
+        p.kind === 'heading' ? styles.heading : p.kind === 'quote' ? styles.quote : styles.body,
+        {
+          color: CARD_INK,
+          fontSize: (p.kind === 'heading' ? 30 : 20) * readerSettings.textScale,
+          lineHeight: (p.kind === 'heading' ? 34 : 28) * readerSettings.lineHeight * 0.85,
+        },
+      ]}
+    >
+      {p.text}
+    </Text>
+  );
+
   return (
-    <View style={[styles.root, { backgroundColor: bg }]}>
-      <View style={styles.toolbar}>
-        <Pressable style={styles.iconBtn} onPress={closeReader}>
-          <Text style={styles.iconTxt}>↓</Text>
+    <View style={[styles.root, { backgroundColor: '#000' }]}>
+      {/* Full-screen picture; the text floats over it in a translucent card */}
+      <View style={StyleSheet.absoluteFill}>
+        {current?.status === 'ready' && current.url ? (
+          <Image source={{ uri: current.url }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+        ) : (
+          <View style={[StyleSheet.absoluteFill, styles.imageFallback]}>
+            {current?.status === 'loading' || !current ? (
+              <>
+                <ActivityIndicator size="large" color="#fff" />
+                <Text style={styles.imageFallbackTxt}>Painting this passage…</Text>
+              </>
+            ) : (
+              <>
+                <Text style={styles.imageFallbackTxt}>{current.message ?? 'No image for this passage yet.'}</Text>
+                <Pressable style={styles.retryBtn} onPress={retryChunk}>
+                  <Text style={styles.retryTxt}>Retry</Text>
+                </Pressable>
+              </>
+            )}
+          </View>
+        )}
+      </View>
+
+      <View style={styles.imageToolbar}>
+        <Pressable style={styles.darkBtn} onPress={closeReader}>
+          <Text style={styles.darkBtnTxt}>↓</Text>
         </Pressable>
         <View style={{ flex: 1 }} />
-        <Pressable style={styles.iconBtn} onPress={() => setSettingsOpen(true)}>
-          <Text style={styles.iconTxt}>A⁺</Text>
+        <Pressable style={styles.darkBtn} onPress={() => setSettingsOpen(true)}>
+          <Text style={styles.darkBtnTxt}>A⁺</Text>
         </Pressable>
       </View>
 
-      <ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingBottom: 120, maxWidth: readerSettings.lineWidth * 12, alignSelf: 'center', width: '100%' }}>
-        {activeBook.paragraphs.map((p, index) => (
-          <View key={p.id} style={{ marginVertical: p.kind === 'heading' ? 22 : 4 }}>
-            <Text
-              selectable
-              onLongPress={() => speak(p.text)}
-              style={[
-                p.kind === 'heading' ? styles.heading : p.kind === 'quote' ? styles.quote : styles.body,
-                {
-                  color: fg,
-                  fontSize: (p.kind === 'heading' ? 30 : 20) * readerSettings.textScale,
-                  lineHeight: (p.kind === 'heading' ? 34 : 28) * readerSettings.lineHeight * 0.85,
-                },
-              ]}
-            >
-              {p.text}
-            </Text>
-            {p.kind !== 'heading' && (
-              <View style={{ flexDirection: 'row', gap: 10, marginTop: 8, opacity: 0.8 }}>
-                <Pressable style={styles.mini} onPress={() => { saveProgress(index, p.pageNumber ?? 1); speak(p.text); }}>
-                  <Text style={styles.miniTxt}>▶ Speak</Text>
-                </Pressable>
-                <Pressable style={styles.mini} onPress={() => generateImage(p)}>
-                  <Text style={styles.miniTxt}>✦ Image</Text>
-                </Pressable>
-              </View>
-            )}
-            <View onLayout={() => {}} />
-          </View>
-        ))}
-      </ScrollView>
+      {/* One paragraph on a black translucent card; swipe up/down to move */}
+      <View style={styles.sheetWrap} pointerEvents="box-none">
+        <View style={styles.sheet} {...cardResponder.panHandlers}>
+          {visiblePara ? (
+            <View key={visiblePara.id}>{renderParagraphText(visiblePara)}</View>
+          ) : (
+            <Text style={styles.emptyTxt}>No text in this book yet.</Text>
+          )}
+        </View>
+      </View>
 
       <Modal visible={settingsOpen} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setSettingsOpen(false)}>
         <View style={{ flex: 1, backgroundColor: IllumeTheme.paper, padding: 24 }}>
@@ -88,35 +292,27 @@ export function ReaderScreen() {
           </Pressable>
         </View>
       </Modal>
-
-      <Modal visible={!!readerImageResponse?.imageUrl} transparent animationType="slide" onRequestClose={clearReaderImage}>
-        <Pressable style={styles.overlay} onPress={clearReaderImage}>
-          <View style={styles.card}>
-            {readerImageResponse?.imageUrl && <Image source={{ uri: readerImageResponse.imageUrl }} style={{ width: '100%', height: 320, borderRadius: 16 }} resizeMode="contain" />}
-            <Pressable style={[styles.iconBtn, { position: 'absolute', top: 24, right: 24 }]} onPress={clearReaderImage}>
-              <Text style={styles.iconTxt}>✕</Text>
-            </Pressable>
-          </View>
-        </Pressable>
-      </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  toolbar: { flexDirection: 'row', paddingHorizontal: 18, paddingTop: 60, paddingBottom: 8 },
-  iconBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.8)', alignItems: 'center', justifyContent: 'center' },
-  iconTxt: { fontSize: 16, fontWeight: '800' },
   heading: { fontWeight: '900' },
   quote: { fontStyle: 'italic', fontWeight: '500' },
   body: { fontWeight: '400' },
-  mini: { backgroundColor: 'rgba(255,255,255,0.6)', borderRadius: 999, paddingHorizontal: 12, paddingVertical: 8 },
-  miniTxt: { fontSize: 12, fontWeight: '800' },
+  emptyTxt: { fontSize: 14, fontWeight: '700', color: CARD_INK, opacity: 0.6 },
   label: { fontWeight: '700', marginTop: 12 },
   seg: { flex: 1, borderRadius: 12, padding: 12, alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.06)' },
   segActive: { backgroundColor: '#fff', borderWidth: 1, borderColor: 'rgba(0,0,0,0.1)' },
   pill: { borderRadius: 999, height: 52, alignItems: 'center', justifyContent: 'center' },
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.2)', justifyContent: 'flex-end', padding: 18 },
-  card: { backgroundColor: '#fff', borderRadius: 28, padding: 12 },
+  imageFallback: { backgroundColor: '#101214', alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 },
+  imageFallbackTxt: { color: '#fff', fontWeight: '700', textAlign: 'center' },
+  retryBtn: { backgroundColor: 'rgba(255,255,255,0.16)', borderRadius: 999, paddingHorizontal: 18, paddingVertical: 10 },
+  retryTxt: { color: '#fff', fontWeight: '800' },
+  imageToolbar: { flexDirection: 'row', paddingHorizontal: 18, paddingTop: 60, paddingBottom: 8, gap: 10, zIndex: 10 },
+  darkBtn: { minWidth: 44, height: 44, paddingHorizontal: 12, borderRadius: 22, backgroundColor: 'rgba(0,0,0,0.55)', alignItems: 'center', justifyContent: 'center' },
+  darkBtnTxt: { fontSize: 15, fontWeight: '800', color: '#fff' },
+  sheetWrap: { flex: 1, justifyContent: 'flex-end', paddingHorizontal: 12, paddingBottom: 12 },
+  sheet: { borderRadius: 24, paddingVertical: 20, paddingHorizontal: 20, backgroundColor: CARD_BG, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 16, shadowOffset: { width: 0, height: -4 }, elevation: 12 },
 });

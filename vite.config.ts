@@ -662,7 +662,8 @@ const reelsDevApi = () => ({
 export default defineConfig({
   plugins: [edgeTtsDevProxy(), reelsDevApi(), react()],
   server: {
-    allowedHosts: [".trycloudflare.com"],
+    allowedHosts: [".trycloudflare.com", ".ts.net"],
+    host: "0.0.0.0",
     port: 5173
   }
 });

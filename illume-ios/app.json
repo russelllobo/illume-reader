@@ -25,6 +25,9 @@
       "appleTeamId": "SZ78KGUF6B",
       "deploymentTarget": "16.4",
       "supportsTablet": true,
+      "entitlements": {
+        "keychain-access-groups": ["$(AppIdentifierPrefix)com.russellsystems.illume"]
+      },
       "infoPlist": {
         "CFBundleURLTypes": [
           {

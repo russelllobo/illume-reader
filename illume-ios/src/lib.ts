@@ -111,6 +111,7 @@ export function chapterIndexForPage(pageNumber: number, toc: PdfTocEntry[]): num
 }
 
 export function splitPageText(text: string): string[] {
+  if (!text) return [];
   return text
     .split(/\r?\n/)
     .map(normaliseSpace)
