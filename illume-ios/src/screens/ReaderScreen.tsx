@@ -1,14 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, Pressable, StyleSheet, Modal, Image, ActivityIndicator, PanResponder } from 'react-native';
+import { View, Text, Pressable, StyleSheet, Modal, Image, ActivityIndicator, Animated, PanResponder } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import Slider from '@react-native-community/slider';
 import { useStore } from '../store';
 import * as Backend from '../supabase';
 import { IllumeTheme } from '../theme';
 import type { ReaderParagraph } from '../types';
 
-// Single paragraph at a time on a mostly-transparent black card, floating
-// over the full-screen picture.
-const CARD_BG = 'rgba(0,0,0,0.55)';
+// Single paragraph at a time, set directly on a bottom fade that darkens
+// the picture behind the text — no card.
 const CARD_INK = '#F5F2E9';
 
 // Same chunking as the web app: ~750 words per generated image so mobile
@@ -82,9 +82,16 @@ export function ReaderScreen() {
   const [retryNonce, setRetryNonce] = useState(0);
   const requestRef = useRef(0);
 
+  // Crossfade layers for the picture when the section image changes.
+  const [shownImageUrl, setShownImageUrl] = useState<string | null>(null);
+  const [fadingImageUrl, setFadingImageUrl] = useState<string | null>(null);
+  const imageFade = useRef(new Animated.Value(0)).current;
+
   // Reset per-book state when opening a different book.
   useEffect(() => {
     requestRef.current += 1;
+    setShownImageUrl(null);
+    setFadingImageUrl(null);
     setChunkCache({});
     setActiveParaIndex(Math.min(Math.max(activeBookRow?.currentIndex ?? 0, 0), Math.max((activeBook?.paragraphs.length ?? 1) - 1, 0)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -112,6 +119,24 @@ export function ReaderScreen() {
   const activeChunk = activeChunkIndex >= 0 ? chunks[activeChunkIndex] : null;
   const cacheKey = activeChunk ? `${activeChunk.index}:${readerSettings.imageStyle}` : null;
   const current = cacheKey ? chunkCache[cacheKey] : undefined;
+
+  // Crossfade the picture when the section image changes; the previous
+  // image stays mounted on top while it fades out.
+  const readyUrl = current?.status === 'ready' && current.url ? (current.url as string) : null;
+  useEffect(() => {
+    if (!readyUrl || readyUrl === shownImageUrl) return;
+    setFadingImageUrl(shownImageUrl);
+    setShownImageUrl(readyUrl);
+    imageFade.setValue(1);
+    const fade = Animated.timing(imageFade, { toValue: 0, duration: 450, useNativeDriver: true });
+    fade.start(({ finished }) => {
+      if (finished) setFadingImageUrl(null);
+    });
+    return () => {
+      fade.stop();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readyUrl]);
 
   // Fetch (and cache) the image for the visible chunk, like the web stage does.
   useEffect(() => {
@@ -161,19 +186,46 @@ export function ReaderScreen() {
 
   if (!activeBook) return null;
 
-  // One paragraph at a time: step the visible paragraph, persist progress,
-  // and let the picture follow via the chunk derived from activeParaIndex.
-  // Refs mirror the state read inside the pan responder (created once).
-  const goToParaRef = useRef((delta: number) => {});
-  const goToPara = (delta: number) => {
-    if (!paragraphs.length) return;
-    const next = Math.min(Math.max(activeParaIndex + delta, 0), paragraphs.length - 1);
-    if (next === activeParaIndex) return;
-    setActiveParaIndex(next);
-    const p = paragraphs[next];
-    if (p) saveProgress(next, p.pageNumber ?? 1);
+  // One paragraph at a time: the card follows the finger, then settles
+  // with a directional slide-and-fade. Progress persists and the picture
+  // follows via the chunk derived from activeParaIndex.
+  const slideAnim = useRef(new Animated.Value(0)).current;
+  const animatingRef = useRef(false);
+  const indexRef = useRef(activeParaIndex);
+  indexRef.current = activeParaIndex;
+
+  const cardTranslateY = slideAnim.interpolate({ inputRange: [-1, 1], outputRange: [-64, 64] });
+  const cardOpacity = slideAnim.interpolate({ inputRange: [-1, 0, 1], outputRange: [0.35, 1, 0.35] });
+
+  const settleBack = () => {
+    Animated.spring(slideAnim, { toValue: 0, useNativeDriver: true }).start();
   };
-  goToParaRef.current = goToPara;
+
+  const stepRef = useRef((delta: number) => {});
+  const step = (delta: number) => {
+    if (!paragraphs.length || animatingRef.current) return;
+    const from = indexRef.current;
+    const next = Math.min(Math.max(from + delta, 0), paragraphs.length - 1);
+    if (next === from) {
+      // Gentle bounce at the first/last section.
+      Animated.sequence([
+        Animated.timing(slideAnim, { toValue: -Math.sign(delta) * 0.25, duration: 90, useNativeDriver: true }),
+        Animated.spring(slideAnim, { toValue: 0, useNativeDriver: true }),
+      ]).start();
+      return;
+    }
+    animatingRef.current = true;
+    Animated.timing(slideAnim, { toValue: -Math.sign(delta), duration: 150, useNativeDriver: true }).start(() => {
+      setActiveParaIndex(next);
+      const p = paragraphs[next];
+      if (p) saveProgress(next, p.pageNumber ?? 1);
+      slideAnim.setValue(Math.sign(delta));
+      Animated.timing(slideAnim, { toValue: 0, duration: 240, useNativeDriver: true }).start(() => {
+        animatingRef.current = false;
+      });
+    });
+  };
+  stepRef.current = step;
 
   // Vertical swipe anywhere on the card turns the section. The responder
   // only claims the touch once it moves vertically, so taps and long-press
@@ -181,9 +233,21 @@ export function ReaderScreen() {
   const cardResponder = useRef(
     PanResponder.create({
       onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dy) > 12 && Math.abs(g.dy) > Math.abs(g.dx),
+      onPanResponderMove: (_, g) => {
+        if (animatingRef.current) return;
+        slideAnim.setValue(Math.max(-1, Math.min(1, g.dy / 140)));
+      },
       onPanResponderRelease: (_, g) => {
-        if (g.dy < -24) goToParaRef.current(1);
-        else if (g.dy > 24) goToParaRef.current(-1);
+        if (animatingRef.current) {
+          settleBack();
+          return;
+        }
+        if (g.dy < -24) stepRef.current(1);
+        else if (g.dy > 24) stepRef.current(-1);
+        else settleBack();
+      },
+      onPanResponderTerminate: () => {
+        settleBack();
       },
     })
   ).current;
@@ -210,7 +274,7 @@ export function ReaderScreen() {
         {
           color: CARD_INK,
           fontSize: (p.kind === 'heading' ? 30 : 20) * readerSettings.textScale,
-          lineHeight: (p.kind === 'heading' ? 34 : 28) * readerSettings.lineHeight * 0.85,
+          lineHeight: (p.kind === 'heading' ? 34 : 28) * readerSettings.lineHeight * 0.7,
         },
       ]}
     >
@@ -222,8 +286,17 @@ export function ReaderScreen() {
     <View style={[styles.root, { backgroundColor: '#000' }]}>
       {/* Full-screen picture; the text floats over it in a translucent card */}
       <View style={StyleSheet.absoluteFill}>
-        {current?.status === 'ready' && current.url ? (
-          <Image source={{ uri: current.url }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+        {shownImageUrl ? (
+          <>
+            <Image source={{ uri: shownImageUrl }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+            {fadingImageUrl && (
+              <Animated.Image
+                source={{ uri: fadingImageUrl }}
+                style={[StyleSheet.absoluteFill, { opacity: imageFade }]}
+                resizeMode="cover"
+              />
+            )}
+          </>
         ) : (
           <View style={[StyleSheet.absoluteFill, styles.imageFallback]}>
             {current?.status === 'loading' || !current ? (
@@ -253,15 +326,25 @@ export function ReaderScreen() {
         </Pressable>
       </View>
 
-      {/* One paragraph on a black translucent card; swipe up/down to move */}
+      {/* One paragraph on a bottom fade that darkens the picture; swipe up/down to move */}
       <View style={styles.sheetWrap} pointerEvents="box-none">
-        <View style={styles.sheet} {...cardResponder.panHandlers}>
+        <LinearGradient
+          colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.35)', 'rgba(0,0,0,0.8)']}
+          locations={[0, 0.45, 1]}
+          style={styles.fade}
+          {...cardResponder.panHandlers}
+        >
           {visiblePara ? (
-            <View key={visiblePara.id}>{renderParagraphText(visiblePara)}</View>
+            <Animated.View
+              key={visiblePara.id}
+              style={{ transform: [{ translateY: cardTranslateY }], opacity: cardOpacity }}
+            >
+              {renderParagraphText(visiblePara)}
+            </Animated.View>
           ) : (
             <Text style={styles.emptyTxt}>No text in this book yet.</Text>
           )}
-        </View>
+        </LinearGradient>
       </View>
 
       <Modal visible={settingsOpen} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setSettingsOpen(false)}>
@@ -313,6 +396,6 @@ const styles = StyleSheet.create({
   imageToolbar: { flexDirection: 'row', paddingHorizontal: 18, paddingTop: 60, paddingBottom: 8, gap: 10, zIndex: 10 },
   darkBtn: { minWidth: 44, height: 44, paddingHorizontal: 12, borderRadius: 22, backgroundColor: 'rgba(0,0,0,0.55)', alignItems: 'center', justifyContent: 'center' },
   darkBtnTxt: { fontSize: 15, fontWeight: '800', color: '#fff' },
-  sheetWrap: { flex: 1, justifyContent: 'flex-end', paddingHorizontal: 12, paddingBottom: 12 },
-  sheet: { borderRadius: 24, paddingVertical: 20, paddingHorizontal: 20, backgroundColor: CARD_BG, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 16, shadowOffset: { width: 0, height: -4 }, elevation: 12 },
+  sheetWrap: { flex: 1, justifyContent: 'flex-end' },
+  fade: { width: '100%', paddingTop: 110, paddingHorizontal: 24, paddingBottom: 44 },
 });
