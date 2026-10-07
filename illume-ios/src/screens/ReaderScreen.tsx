@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, Pressable, StyleSheet, Modal, Image, ActivityIndicator, Animated, PanResponder } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import Slider from '@react-native-community/slider';
 import { useStore } from '../store';
 import * as Backend from '../supabase';
@@ -10,6 +9,12 @@ import type { ReaderParagraph } from '../types';
 // Single paragraph at a time, set directly on a bottom fade that darkens
 // the picture behind the text — no card.
 const CARD_INK = '#F5F2E9';
+
+// Alpha ramp for the banded fade (transparent top → near-opaque bottom).
+const FADE_BANDS = Array.from({ length: 12 }, (_, i) => {
+  const t = i / 11;
+  return Math.round(0.8 * t * t * 100) / 100;
+});
 
 // Same chunking as the web app: ~750 words per generated image so mobile
 // requests hit the same server-side cache (user/book/style/start-end).
@@ -326,25 +331,30 @@ export function ReaderScreen() {
         </Pressable>
       </View>
 
-      {/* One paragraph on a bottom fade that darkens the picture; swipe up/down to move */}
+      {/* One paragraph on a bottom fade that darkens the picture; swipe up/down to move.
+          Pure-RN banded fade (no native dependency) so this ships as an OTA update. */}
       <View style={styles.sheetWrap} pointerEvents="box-none">
-        <LinearGradient
-          colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.35)', 'rgba(0,0,0,0.8)']}
-          locations={[0, 0.45, 1]}
-          style={styles.fade}
-          {...cardResponder.panHandlers}
-        >
-          {visiblePara ? (
-            <Animated.View
-              key={visiblePara.id}
-              style={{ transform: [{ translateY: cardTranslateY }], opacity: cardOpacity }}
-            >
-              {renderParagraphText(visiblePara)}
-            </Animated.View>
-          ) : (
-            <Text style={styles.emptyTxt}>No text in this book yet.</Text>
-          )}
-        </LinearGradient>
+        <View style={styles.fade} {...cardResponder.panHandlers}>
+          {FADE_BANDS.map((alpha, i) => (
+            <View
+              key={i}
+              pointerEvents="none"
+              style={[styles.fadeBand, { top: `${(i * 100) / FADE_BANDS.length}%`, backgroundColor: `rgba(0,0,0,${alpha})` }]}
+            />
+          ))}
+          <View style={styles.fadeText}>
+            {visiblePara ? (
+              <Animated.View
+                key={visiblePara.id}
+                style={{ transform: [{ translateY: cardTranslateY }], opacity: cardOpacity }}
+              >
+                {renderParagraphText(visiblePara)}
+              </Animated.View>
+            ) : (
+              <Text style={styles.emptyTxt}>No text in this book yet.</Text>
+            )}
+          </View>
+        </View>
       </View>
 
       <Modal visible={settingsOpen} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setSettingsOpen(false)}>
@@ -397,5 +407,7 @@ const styles = StyleSheet.create({
   darkBtn: { minWidth: 44, height: 44, paddingHorizontal: 12, borderRadius: 22, backgroundColor: 'rgba(0,0,0,0.55)', alignItems: 'center', justifyContent: 'center' },
   darkBtnTxt: { fontSize: 15, fontWeight: '800', color: '#fff' },
   sheetWrap: { flex: 1, justifyContent: 'flex-end' },
-  fade: { width: '100%', paddingTop: 110, paddingHorizontal: 24, paddingBottom: 44 },
+  fade: { width: '100%', paddingTop: 110, paddingBottom: 44 },
+  fadeBand: { position: 'absolute', left: 0, right: 0, bottom: 0, height: '8.5%' },
+  fadeText: { paddingHorizontal: 24 },
 });
