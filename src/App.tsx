@@ -12292,7 +12292,7 @@ function App() {
   if (view === "catalog") {
     return (
       <main className="app-shell catalog-shell" data-reader-mode={readerThemeMode} data-reader-theme={readerTheme}>
-        <aside className="catalog-sidebar" aria-label="Library controls">
+        <header className="catalog-topbar" aria-label="Library controls">
           <div className="catalog-storage-summary">
             <div className="library-brand-mark" aria-label={`illume ${isPro ? "Pro" : "Free"}`}>
               <img src="/landing/logo.webp" alt="" aria-hidden="true" />
@@ -12310,12 +12310,6 @@ function App() {
             </div>
           </div>
           <div className="top-actions">
-            <label className="catalog-upload" title="Upload document">
-              {isBookImporting ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Upload size={16} aria-hidden="true" />}
-              <span>Upload</span>
-              <input disabled={isBookImporting} type="file" accept={DOCUMENT_UPLOAD_ACCEPT} multiple onChange={handleCatalogUpload} />
-            </label>
-
             <div className="profile-button-wrapper" style={{ position: "relative", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
               <button
                 className="profile-avatar-btn"
@@ -12437,7 +12431,7 @@ function App() {
               )}
             </div>
           </div>
-        </aside>
+        </header>
 
         {pendingDelete && (
           <div className={pendingDeleteExiting ? "undo-delete-toast leaving" : "undo-delete-toast"} role="status" aria-live="polite">

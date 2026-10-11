@@ -156,47 +156,25 @@ button:disabled {
 }
 
 .catalog-shell {
-  grid-template-rows: minmax(0, 1fr);
-  grid-template-columns: 264px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   animation: pageBlurFadeIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-.catalog-sidebar {
-  min-height: 0;
-  height: 100vh;
-  height: 100dvh;
-  position: sticky;
-  top: 0;
+.catalog-topbar {
+  position: relative;
+  z-index: 220;
   display: flex;
-  flex-direction: column;
-  gap: 18px;
-  padding: 20px 16px;
-  border-right: 1px solid var(--ui-border, #dedede);
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 36px;
+  border-bottom: 1px solid var(--ui-border, #dedede);
   background: var(--ui-bg-surface, #fbfbfb);
-  overflow-y: auto;
 }
 
-.catalog-sidebar .catalog-storage-summary {
+.catalog-topbar .catalog-storage-summary {
   padding: 0;
-}
-
-.catalog-sidebar .library-brand-mark {
-  height: auto;
-}
-
-.catalog-sidebar .top-actions {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 10px;
-}
-
-.catalog-sidebar .catalog-upload {
-  height: 36px;
-  justify-content: center;
-}
-
-.catalog-sidebar .profile-button-wrapper {
-  justify-content: flex-start !important;
 }
 
 /* Reader sidebar now hosts former topbar controls */
@@ -589,10 +567,6 @@ button:disabled {
   --reader-theme-border: #19414b;
   --reader-theme-selection: rgba(15, 81, 98, 0.3);
   --reader-theme-accent: #268bd2;
-}
-
-.catalog-shell {
-  grid-template-rows: minmax(0, 1fr);
 }
 
 .topbar {
@@ -5359,21 +5333,8 @@ button:disabled {
     grid-template-rows: auto minmax(0, 1fr);
   }
 
-  .catalog-sidebar {
-    height: auto;
-    position: static;
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
+  .catalog-topbar {
     padding: 12px 14px;
-    border-right: 0;
-    border-bottom: 1px solid var(--ui-border, #dedede);
-  }
-
-  .catalog-sidebar .top-actions {
-    flex-direction: row;
-    align-items: center;
   }
 
   .toc-toggle-button {
