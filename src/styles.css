@@ -1895,6 +1895,14 @@ button:disabled {
   border-radius: 7px;
   background: #ede7dc;
   box-shadow: 0 10px 24px rgba(20, 20, 20, 0.1);
+  transition: box-shadow 0.35s ease, border-color 0.35s ease;
+}
+
+.catalog-book.is-title-hovering .catalog-cover-art {
+  border-color: rgba(150, 150, 150, 0.8);
+  box-shadow:
+    0 14px 34px rgba(20, 20, 20, 0.18),
+    0 0 22px rgba(130, 130, 140, 0.4);
 }
 
 .catalog-cover-art img,
@@ -2015,6 +2023,31 @@ button:disabled {
 .catalog-book-copy {
   min-width: 0;
   display: block;
+  transform: translate3d(0, 0, 0);
+  transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.catalog-book-main {
+  transform: translate3d(0, 0, 0);
+  transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.catalog-book.is-title-hovering .catalog-book-copy {
+  will-change: transform;
+  transition: transform 0.08s linear;
+}
+
+.catalog-book.is-title-hovering .catalog-book-main {
+  will-change: transform;
+  transition: transform 0.08s linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .catalog-book-copy,
+  .catalog-book-main {
+    transform: none !important;
+    transition: none;
+  }
 }
 
 .catalog-book-title-row {

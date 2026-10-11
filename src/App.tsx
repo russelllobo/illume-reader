@@ -8140,6 +8140,66 @@ const libraryAbortSignal = () => {
   return controller.signal;
 };
 
+const BOOK_TITLE_HOVER_MAX_X = 3;
+const BOOK_TITLE_HOVER_MAX_Y = 2.5;
+const BOOK_COVER_HOVER_MAX_X = 5;
+const BOOK_COVER_HOVER_MAX_Y = 4;
+const bookTitleHoverFrame = new WeakMap<HTMLElement, number>();
+
+const canAnimateBookTitleHover = () =>
+  typeof window !== "undefined" &&
+  typeof window.matchMedia === "function" &&
+  window.matchMedia("(hover: hover) and (pointer: fine)").matches &&
+  !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+const applyBookTitleHover = (card: HTMLElement) => {
+  bookTitleHoverFrame.delete(card);
+  const copy = card.querySelector<HTMLElement>(":scope .catalog-book-open > .catalog-book-copy");
+  const cover = card.querySelector<HTMLElement>(":scope .catalog-book-open > .catalog-book-main");
+  const x = Number(card.dataset.hoverX ?? 0);
+  const y = Number(card.dataset.hoverY ?? 0);
+  if (copy) {
+    copy.style.transform =
+      x === 0 && y === 0 ? "" : `translate3d(${x.toFixed(2)}px, ${y.toFixed(2)}px, 0)`;
+  }
+  if (cover) {
+    const coverX = (x / BOOK_TITLE_HOVER_MAX_X) * BOOK_COVER_HOVER_MAX_X;
+    const coverY = (y / BOOK_TITLE_HOVER_MAX_Y) * BOOK_COVER_HOVER_MAX_Y;
+    cover.style.transform =
+      x === 0 && y === 0 ? "" : `translate3d(${coverX.toFixed(2)}px, ${coverY.toFixed(2)}px, 0)`;
+  }
+};
+
+const handleCatalogBookPointerMove = (event: PointerEvent<HTMLDivElement>) => {
+  if (event.pointerType !== "mouse" || !canAnimateBookTitleHover()) return;
+  const card = event.currentTarget;
+  const rect = card.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const nx = (event.clientX - rect.left) / rect.width - 0.5;
+  const ny = (event.clientY - rect.top) / rect.height - 0.5;
+  card.dataset.hoverX = String(nx * 2 * BOOK_TITLE_HOVER_MAX_X);
+  card.dataset.hoverY = String(ny * 2 * BOOK_TITLE_HOVER_MAX_Y);
+  card.classList.add("is-title-hovering");
+  if (bookTitleHoverFrame.has(card)) return;
+  bookTitleHoverFrame.set(card, window.requestAnimationFrame(() => applyBookTitleHover(card)));
+};
+
+const clearCatalogBookPointerHover = (event: PointerEvent<HTMLDivElement>) => {
+  const card = event.currentTarget;
+  const frame = bookTitleHoverFrame.get(card);
+  if (frame !== undefined) window.cancelAnimationFrame(frame);
+  bookTitleHoverFrame.delete(card);
+  delete card.dataset.hoverX;
+  delete card.dataset.hoverY;
+  card.classList.remove("is-title-hovering");
+  card
+    .querySelector<HTMLElement>(":scope .catalog-book-open > .catalog-book-copy")
+    ?.style.removeProperty("transform");
+  card
+    .querySelector<HTMLElement>(":scope .catalog-book-open > .catalog-book-main")
+    ?.style.removeProperty("transform");
+};
+
 function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -12548,6 +12608,9 @@ function App() {
                     <div
                       className={catalogBook.id === activeBookId ? "catalog-book active" : "catalog-book"}
                       key={catalogBook.id}
+                      onPointerCancel={clearCatalogBookPointerHover}
+                      onPointerLeave={clearCatalogBookPointerHover}
+                      onPointerMove={handleCatalogBookPointerMove}
                     >
                       <div className="catalog-book-open">
                         <button
