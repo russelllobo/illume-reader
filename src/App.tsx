@@ -1065,6 +1065,42 @@ const buildParagraphWordMetrics = (book: ReaderBook) => {
   return { counts, offsets, total };
 };
 
+// Single-pass EPUB word model: tokenizes each paragraph once and derives both
+// the per-paragraph offsets and the fixed-size image chunks. Replaces calling
+// buildParagraphWordMetrics + buildReaderImageChunks (which tokenize twice).
+const buildEpubWordModel = (book: ReaderBook, chunkSize = READER_IMAGE_CHUNK_WORDS) => {
+  const offsets: number[] = [];
+  const counts: number[] = [];
+  const allWords: string[] = [];
+  let total = 0;
+
+  for (const paragraph of book.paragraphs) {
+    offsets.push(total);
+    if (paragraph.kind === "image") {
+      counts.push(0);
+      continue;
+    }
+    const words = wordsFromText(paragraph.text);
+    counts.push(words.length);
+    total += words.length;
+    for (const word of words) allWords.push(word);
+  }
+
+  const chunks: ReaderImageChunk[] = [];
+  for (let offset = 0; offset < allWords.length; offset += chunkSize) {
+    const words = allWords.slice(offset, offset + chunkSize);
+    if (!words.length) break;
+    chunks.push({
+      endWord: offset + words.length,
+      index: chunks.length,
+      startWord: offset + 1,
+      text: words.join(" ")
+    });
+  }
+
+  return { chunks, counts, offsets, total };
+};
+
 const readerImageChunkIndexForWordOffset = (chunks: ReaderImageChunk[], wordOffset: number) => {
   if (!chunks.length) return -1;
 
@@ -10829,14 +10865,16 @@ function App() {
     const safeIndex = parsed.paragraphs.length ? Math.max(0, Math.min(start.index, parsed.paragraphs.length - 1)) : 0;
     const pageFromIndex = parsed.paragraphs[safeIndex]?.pageNumber ?? 1;
     const initialPage = Math.max(1, Math.min(start.page || pageFromIndex, parsed.pageCount ?? pageFromIndex));
+    // EPUB: single tokenize pass feeds both the start offset and the chunks.
+    const epubModel = parsed.format === "pdf" ? null : buildEpubWordModel(parsed);
     const startOffset =
       parsed.format === "pdf"
         ? 0
-        : buildParagraphWordMetrics(parsed).offsets[safeIndex] ?? 0;
+        : epubModel?.offsets[safeIndex] ?? 0;
     const chunks =
       parsed.format === "pdf"
         ? buildPdfReaderImageChunks(parsed)
-        : buildReaderImageChunks(parsed);
+        : epubModel?.chunks ?? [];
     const pdfStartOffset = parsed.format === "pdf" ? pdfWordOffsetBeforePage(parsed, initialPage) : 0;
     const firstChunk =
       parsed.format === "pdf"
@@ -11062,6 +11100,25 @@ function App() {
     setCurrentIndex(imageContext.safeIndex);
     pendingScrollIndex.current = parsed.paragraphs.length ? imageContext.safeIndex : null;
     isInitialOpenRef.current = true;
+    // Start first-audio synthesis now, not 350ms after paint. The idle
+    // prefetch effect stays as a backstop for navigation; this covers the
+    // cold open-to-instant-play path where the debounce never fires in time.
+    // Fire-and-forget: failures stay unreported until the real play retries.
+    try {
+      const first = parsed.paragraphs[imageContext.safeIndex];
+      if (first && first.kind !== "image" && first.text.trim()) {
+        prefetchSpeechifyAudio(first.text, SPEECHIFY_SERVER_VOICE_ID);
+      }
+      let queued = 0;
+      for (let i = imageContext.safeIndex + 1; i < parsed.paragraphs.length && queued < 2; i += 1) {
+        const upcoming = parsed.paragraphs[i];
+        if (!upcoming || upcoming.kind === "image" || !upcoming.text.trim()) continue;
+        prefetchSpeechifyAudio(upcoming.text, SPEECHIFY_SERVER_VOICE_ID);
+        queued += 1;
+      }
+    } catch {
+      // Prefetch must never break book open.
+    }
     if (!imageContext.start.usedSmartStart && (imageContext.safeIndex > 0 || imageContext.initialPage > 1)) {
       setProgressNoticeToken((token) => token + 1);
       setProgressNotice(true);
@@ -11125,7 +11182,8 @@ function App() {
     await waitForOpeningPaint();
     if (runId !== bookOpenRunRef.current) return;
     if (row.cover_url) {
-      await preloadLibraryCover(row.cover_url);
+      // Don't let a hung cover stall the open: cap the preload wait.
+      await Promise.race([preloadLibraryCover(row.cover_url), new Promise((resolve) => setTimeout(resolve, 800))]);
       if (runId !== bookOpenRunRef.current) return;
     }
     setOpeningBookProgress(18);
@@ -11133,9 +11191,17 @@ function App() {
     if (cached && !cachedPdfNeedsProcessedText && (cached.format !== "pdf" || cachedFile)) {
       const imageContext = readerImageOpenContext(row, cached);
       if (imageContext.firstChunk) setOpeningBookProgress(96);
-      const initialReaderImage = imageContext.firstChunk
-        ? await prepareOpeningReaderImage(row, cached, imageContext.firstChunk)
-        : null;
+      // Image lookup runs in the background so text and play unblock.
+      // It patches the image state when it resolves.
+      if (imageContext.firstChunk) {
+        const chunkIndex = imageContext.firstChunk.index;
+        const chunk = imageContext.firstChunk;
+        void prepareOpeningReaderImage(row, cached, chunk).then((img) => {
+          if (runId !== bookOpenRunRef.current || !img) return;
+          setReaderImages((prev) => ({ ...prev, [chunkIndex]: img }));
+          setDisplayedReaderImageChunkIndex(chunkIndex);
+        });
+      }
       if (runId !== bookOpenRunRef.current) return;
       if (imageContext.firstChunk) {
         const firstIndex = imageContext.chunks.findIndex(
@@ -11145,7 +11211,7 @@ function App() {
       }
       setOpeningBookProgress(100);
       setBusy(false);
-      openParsedBook(row, cached, undefined, cachedFile, { initialReaderImage, updateHistory: false });
+      openParsedBook(row, cached, undefined, cachedFile, { initialReaderImage: null, updateHistory: false });
       return;
     }
 
@@ -11222,9 +11288,16 @@ function App() {
       parsedBookFiles.current.set(row.id, file);
       const imageContext = readerImageOpenContext(row, parsed);
       if (imageContext.firstChunk) setOpeningBookProgress(96);
-      const initialReaderImage = imageContext.firstChunk
-        ? await prepareOpeningReaderImage(row, parsed, imageContext.firstChunk)
-        : null;
+      // Same non-blocking image lookup as the cached path above.
+      if (imageContext.firstChunk) {
+        const chunkIndex = imageContext.firstChunk.index;
+        const chunk = imageContext.firstChunk;
+        void prepareOpeningReaderImage(row, parsed, chunk).then((img) => {
+          if (runId !== bookOpenRunRef.current || !img) return;
+          setReaderImages((prev) => ({ ...prev, [chunkIndex]: img }));
+          setDisplayedReaderImageChunkIndex(chunkIndex);
+        });
+      }
       if (runId !== bookOpenRunRef.current) return;
       if (imageContext.firstChunk) {
         const firstIndex = imageContext.chunks.findIndex(
@@ -11233,7 +11306,7 @@ function App() {
         prewarmReaderPrompts(row.id, parsed, imageContext.chunks.slice(firstIndex + 1));
       }
       setOpeningBookProgress(100);
-      openParsedBook(row, parsed, undefined, file, { initialReaderImage, updateHistory: false });
+      openParsedBook(row, parsed, undefined, file, { initialReaderImage: null, updateHistory: false });
     } catch (error) {
       if (runId !== bookOpenRunRef.current) return;
       setNotice(error instanceof Error ? error.message : "Could not open this book.");
