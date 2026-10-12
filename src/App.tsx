@@ -1,4 +1,4 @@
-import type { Session, User } from "@supabase/supabase-js";
+import type { Session, User } from "./api";
 import {
   AlignJustify,
   BookOpen,
@@ -41,6 +41,7 @@ import { ChangeEvent, Component, CSSProperties, DragEvent, FormEvent, Fragment, 
 import { parseEpub, ReaderBook, ReaderParagraph } from "./epub";
 import { parsePdf, pdfPreviewToBook, pdfjsLib, readPdfPreview, type PdfPreview, type StoredPdfPage } from "./pdf";
 import { createSpeechifyPlayer, prefetchSpeechifyAudio, SPEECHIFY_DEFAULT_VOICE_ID, SPEECHIFY_SERVER_VOICE_ID, SpeechifyPlayer } from "./speechifyTts";
+import { api } from "./api";
 import { supabase, supabaseFunctionUrl, supabasePublishableKey } from "./supabase";
 import { LandingPage } from "./LandingPage";
 
@@ -526,7 +527,6 @@ type ReaderDashboardData = {
   waitlist?: ReaderDashboardWaitlistSignup[];
 };
 
-const EPUB_BUCKET = "epubs";
 const DOCUMENT_UPLOAD_ACCEPT = ".epub,application/epub+zip,.pdf,application/pdf";
 const BOOK_CACHE_NAME = "epub-vision-reader-books-v1";
 const READER_IMAGE_DB_NAME = "epub-vision-reader-images";
@@ -1521,17 +1521,6 @@ const safeFileName = (name: string) => {
     .replace(/^-|-$/g, "");
 
   return safeName || "document";
-};
-
-const safeDocumentFileName = (name: string, format: "epub" | "pdf") => {
-  const extension = `.${format}`;
-  const safeName = safeFileName(name);
-  const withoutExtension = safeName.toLowerCase().endsWith(extension)
-    ? safeName.slice(0, -extension.length)
-    : safeName.replace(/\.[^.]*$/, "");
-  const safeBaseName = safeFileName(withoutExtension).slice(0, 120 - extension.length).replace(/[._-]+$/g, "");
-
-  return `${safeBaseName || "document"}${extension}`;
 };
 
 const blobLooksLikeEpub = async (blob: Blob) => {
@@ -8582,17 +8571,19 @@ function App() {
   }, []);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
+    api.auth.getSession().then(({ data }) => {
       setSession(data.session);
       setAuthLoading(false);
     });
 
-    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data } = api.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession);
       setAuthLoading(false);
     });
 
-    return () => data.subscription.unsubscribe();
+    return () => {
+      data.subscription.unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -8815,7 +8806,7 @@ function App() {
         if (!coverUrl) continue;
 
         coverUpdates.set(catalogBook.id, coverUrl);
-        const { error: updateError } = await supabase.from("books").update({ cover_url: coverUrl }).eq("id", catalogBook.id);
+        const { error: updateError } = await api.library.update(catalogBook.id, { cover_url: coverUrl });
         if (updateError) {
           console.error("Failed to save Open Library cover to database:", updateError);
         }
@@ -9708,12 +9699,7 @@ function App() {
     setNotice("");
 
     try {
-      const { data, error } = await supabase
-        .from("books")
-        .select("*")
-        .order("last_opened_at", { ascending: false, nullsFirst: false })
-        .order("created_at", { ascending: false })
-        .abortSignal(libraryAbortSignal());
+      const { data, error } = await api.library.list(libraryAbortSignal());
 
       if (runId !== libraryLoadRunRef.current) return;
 
@@ -9789,44 +9775,26 @@ function App() {
   };
 
   const loadBillingProfile = async (_user: User) => {
-    const { data, error } = await supabase
-      .from("billing_profiles")
-      .select("*")
-      .maybeSingle();
-
-    if (!error) setBillingProfile(data as BillingProfile | null);
+    const { data, error } = await api.account.summary();
+    if (!error) setBillingProfile(data?.billing_profile ?? null);
   };
 
   const loadReaderImageUsage = async () => {
     const currentMonthStart = new Date().toISOString().slice(0, 7) + "-01";
-    const usageRequest = supabase
-      .from("reader_image_usage")
-      .select("generated_count, monthly_generated_count, monthly_period_start")
-      .maybeSingle();
-    let imageRowsRequest = supabase
-      .from("reader_images")
-      .select("id", { count: "exact", head: true });
-
-    if (isPro) imageRowsRequest = imageRowsRequest.gte("created_at", currentMonthStart);
-
-    const [{ data, error }, { count, error: imageRowsError }] = await Promise.all([
-      usageRequest,
-      imageRowsRequest
-    ]);
-    const savedImageCount = imageRowsError ? 0 : count ?? 0;
-
-    if (error) {
-      setReaderImageCount(savedImageCount);
+    const { data, error } = await api.account.summary();
+    if (error || !data) {
+      setReaderImageCount(0);
       return;
     }
 
+    const savedImageCount = isPro ? data.monthly_saved_image_count : data.saved_image_count;
     if (isPro) {
-      const usageCount = data?.monthly_period_start === currentMonthStart ? data?.monthly_generated_count ?? 0 : 0;
+      const usageCount = data.image_usage?.monthly_period_start === currentMonthStart ? data.image_usage.monthly_generated_count : 0;
       setReaderImageCount(Math.max(usageCount, savedImageCount));
       return;
     }
 
-    setReaderImageCount(Math.max(data?.generated_count ?? 0, savedImageCount));
+    setReaderImageCount(Math.max(data.image_usage?.generated_count ?? 0, savedImageCount));
   };
 
   const loadReaderDashboard = async () => {
@@ -9848,10 +9816,7 @@ function App() {
 
   const saveReadingProgress = async (bookId: string, index: number, page = currentPage) => {
     const savedAt = new Date().toISOString();
-    const { error } = await supabase
-      .from("books")
-      .update({ current_index: index, current_page: Math.max(1, page), last_opened_at: savedAt })
-      .eq("id", bookId);
+    const { error } = await api.library.update(bookId, { current_index: index, current_page: Math.max(1, page), last_opened_at: savedAt });
 
     if (error) return;
 
@@ -9871,7 +9836,7 @@ function App() {
         item.id === bookId ? { ...item, last_opened_at: openedAt, updated_at: openedAt } : item
       ))
     );
-    void supabase.from("books").update({ last_opened_at: openedAt }).eq("id", bookId);
+    void api.library.update(bookId, { last_opened_at: openedAt });
   };
 
   const openRenameDialog = (row: BookRow) => {
@@ -9951,14 +9916,7 @@ function App() {
     setReaderRenameError("");
     setNotice("");
 
-    const updatedAt = new Date().toISOString();
-    const { data, error } = await supabase
-      .from("books")
-      .update({ title: nextTitle, updated_at: updatedAt })
-      .eq("id", readerRenameTarget.id)
-      .eq("user_id", user.id)
-      .select("*")
-      .single();
+    const { data, error } = await api.library.update(readerRenameTarget.id, { title: nextTitle });
 
     if (error) {
       setReaderRenameError(error.message);
@@ -9996,14 +9954,7 @@ function App() {
     setRenameError("");
     setNotice("");
 
-    const updatedAt = new Date().toISOString();
-    const { data, error } = await supabase
-      .from("books")
-      .update({ title: nextTitle, updated_at: updatedAt })
-      .eq("id", renameTarget.id)
-      .eq("user_id", user.id)
-      .select("*")
-      .single();
+    const { data, error } = await api.library.update(renameTarget.id, { title: nextTitle });
 
     if (error) {
       setRenameError(error.message);
@@ -10293,13 +10244,8 @@ function App() {
     const credentials = { email, password };
     const { error } =
       authMode === "sign-in"
-        ? await supabase.auth.signInWithPassword(credentials)
-        : await supabase.auth.signUp({
-            ...credentials,
-            options: {
-              emailRedirectTo: authRedirectUrl()
-            }
-          });
+        ? await api.auth.signInWithPassword(credentials)
+        : await api.auth.signUp(credentials);
 
     if (error) {
       setNotice(error.message);
@@ -10314,11 +10260,8 @@ function App() {
     setBusy(true);
     setNotice("");
 
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo: authRedirectUrl()
-      }
+    const { error } = await api.auth.signInWithOAuth({
+      redirectTo: authRedirectUrl()
     });
 
     if (error) {
@@ -10329,7 +10272,7 @@ function App() {
 
   const signOut = async () => {
     stopAudio();
-    await supabase.auth.signOut();
+    await api.auth.signOut();
   };
 
   const startCheckout = async () => {
@@ -10500,11 +10443,7 @@ function App() {
   };
 
   const loadStoredPdfPages = async (bookId: string): Promise<StoredPdfPage[]> => {
-    const { data, error } = await supabase
-      .from("book_pages")
-      .select("page_number, text")
-      .eq("book_id", bookId)
-      .order("page_number", { ascending: true });
+    const { data, error } = await api.library.pages(bookId);
 
     if (error) {
       console.warn("Could not load processed PDF pages.", error);
@@ -10519,10 +10458,7 @@ function App() {
       items.map((item) => item.id === bookId ? { ...item, processing_status: "queued" } : item)
     );
 
-    void supabase.functions.invoke("process-reader-document", {
-      method: "POST",
-      body: { bookId }
-    }).then(({ error }) => {
+    void api.library.process(bookId).then(({ error }) => {
       if (error) {
         console.error("Could not queue PDF processing:", error);
         setCatalogBooks((items) =>
@@ -10544,7 +10480,6 @@ function App() {
     }
 
     const format = isPdfFile(file) ? "pdf" : "epub";
-    const mimeType = documentMimeType(format);
     updatePendingImportProgress(pendingImportId, 12);
     const pdfPreview = format === "pdf" ? await readPdfPreview(file) : null;
     updatePendingImportProgress(pendingImportId, 25);
@@ -10559,37 +10494,16 @@ function App() {
       title: parsed.title
     });
     updatePendingImportProgress(pendingImportId, 58);
-    const id = crypto.randomUUID();
-    const storagePath = `${user.id}/${id}/${safeDocumentFileName(file.name, format)}`;
-
     updatePendingImportProgress(pendingImportId, 68);
-    const upload = await supabase.storage.from(EPUB_BUCKET).upload(storagePath, file, {
-      contentType: mimeType,
-      upsert: false
-    });
-
-    if (upload.error) {
-      if (format === "pdf" && /mime type .*not supported/i.test(upload.error.message)) {
-        throw new Error("PDF uploads are not enabled in Supabase Storage yet. Apply the PDF support migration so the epubs bucket allows application/pdf.");
-      }
-      throw upload.error;
-    }
-    updatePendingImportProgress(pendingImportId, 82);
-
-    const newBook = {
-      id,
-      user_id: user.id,
+    const { data, error } = await api.library.create(file, {
       title: parsed.title,
       author: parsed.author,
       cover_url: coverUrl || null,
       document_type: format,
-      storage_path: storagePath,
       file_name: file.name,
-      file_size: file.size,
-      mime_type: mimeType,
-      page_count: parsed.pageCount ?? null,
       paragraph_count: parsed.paragraphs.length,
       chapter_count: parsed.chapters.length,
+      page_count: parsed.pageCount ?? null,
       pdf_page_metrics: pdfPreview?.pageMetrics ?? [],
       pdf_toc: pdfPreview
         ? pdfPreview.chapters.map((title, index) => ({
@@ -10599,17 +10513,17 @@ function App() {
             title
           }))
         : [],
-      processing_status: format === "pdf" ? "queued" : "ready",
       current_index: 0,
       current_page: 1,
       last_opened_at: new Date().toISOString()
-    };
-    const { data, error } = await supabase.from("books").insert(newBook).select("*").single();
+    });
     updatePendingImportProgress(pendingImportId, 90);
 
-    if (error) {
-      await supabase.storage.from(EPUB_BUCKET).remove([storagePath]);
-      throw error;
+    if (error || !data) {
+      if (format === "pdf" && error && /mime type .*not supported/i.test(error.message)) {
+        throw new Error("PDF uploads are not enabled yet.");
+      }
+      throw new Error(error?.message || "Could not save this book.");
     }
 
     const row = data as BookRow;
@@ -11097,10 +11011,8 @@ function App() {
       setOpeningBookProgress(file ? 56 : 28);
 
       if (!file) {
-        const { data, error } = await supabase.storage.from(EPUB_BUCKET).download(row.storage_path);
-        if (error) throw error;
+        file = await api.library.file(row.id, row.file_name, documentMimeType(bookFormat(row)));
         if (runId !== bookOpenRunRef.current) return;
-        file = new File([data], row.file_name, { type: documentMimeType(bookFormat(row)) });
         void cacheBookFile(row, file);
         setOpeningBookProgress(56);
       }
@@ -11138,14 +11050,11 @@ function App() {
             pageOffsetRatio: preview?.chapterPageOffsets[index] ?? 0,
             title
           }));
-          void supabase
-            .from("books")
-            .update({
-              page_count: parsed.pageCount ?? null,
-              pdf_page_metrics: preview?.pageMetrics ?? [],
-              pdf_toc: pdfToc
-            })
-            .eq("id", row.id);
+          void api.library.update(row.id, {
+            page_count: parsed.pageCount ?? null,
+            pdf_page_metrics: preview?.pageMetrics ?? [],
+            pdf_toc: pdfToc
+          });
         }
         if (row.processing_status === "queued" || row.processing_status === "failed") {
           queuePdfProcessing(row.id);
@@ -11155,7 +11064,7 @@ function App() {
         const coverUrl = await shrinkCoverDataUrl(parsed.coverUrl);
         row = { ...row, cover_url: coverUrl };
         setCatalogBooks((items) => sortBooksByRecentActivity(items.map((item) => (item.id === row.id ? row : item))));
-        const { error: updateError } = await supabase.from("books").update({ cover_url: coverUrl }).eq("id", row.id);
+        const { error: updateError } = await api.library.update(row.id, { cover_url: coverUrl });
         if (updateError) {
           console.error("Failed to save book cover to database:", updateError);
         }
@@ -11195,29 +11104,8 @@ function App() {
   };
 
   const permanentlyDeleteBook = async (row: BookRow) => {
-    const { error } = await supabase.functions.invoke("delete-reader-book", {
-      method: "POST",
-      body: { bookId: row.id }
-    });
-
-    if (error) {
-      console.warn("delete-reader-book Edge Function failed, falling back to direct delete:", error);
-
-      const { error: storageError } = await supabase.storage.from(EPUB_BUCKET).remove([row.storage_path]);
-      if (storageError) {
-        throw storageError;
-      }
-
-      const { error: deleteError } = await supabase
-        .from("books")
-        .delete()
-        .eq("id", row.id)
-        .eq("user_id", row.user_id);
-
-      if (deleteError) {
-        throw deleteError;
-      }
-    }
+    const { error } = await api.library.remove(row.id);
+    if (error) throw new Error(error.message);
 
     void deleteCachedBookFile(row.id);
     void deleteCachedReaderImagesForBook(row.id);
@@ -11691,8 +11579,6 @@ function App() {
 
   const renderGeneratedReaderImage = useCallback((chunk: ReaderImageChunk) => {
     const image = readerImages[chunk.index];
-    const checkingImageSrc =
-      image?.status === "checking" ? image.fallbackSrc || fallbackReaderImageSrc(chunk.index) : "";
     const prevSrc = image?.fallbackSrc || fallbackReaderImageSrc(chunk.index);
     const isLimit = Boolean(image?.limitReached);
     const label = chunk.pageNumber ? `Page ${chunk.pageNumber}` : `Words ${chunk.startWord}-${chunk.endWord}`;
@@ -11707,11 +11593,7 @@ function App() {
             alt={chunk.pageNumber ? `Generated visual for page ${chunk.pageNumber}` : `Generated visual for words ${chunk.startWord} to ${chunk.endWord}`}
             src={image.src}
           />
-        ) : image?.status === "checking" ? (
-          <div className="reader-generated-placeholder checking">
-            {checkingImageSrc && <img alt="" aria-hidden="true" src={checkingImageSrc} />}
-          </div>
-        ) : image?.status === "loading" && prevSrc ? (
+        ) : (image?.status === "loading" || image?.status === "checking") && prevSrc ? (
           <img
             alt={chunk.pageNumber ? `Generated visual for page ${chunk.pageNumber}` : `Generated visual for words ${chunk.startWord} to ${chunk.endWord}`}
             src={prevSrc}
@@ -11785,8 +11667,6 @@ function App() {
     const isLimit = Boolean(image?.limitReached);
     const isError = image?.status === "error";
     const isReady = image?.status === "ready" && image.src;
-    const checkingImageSrc =
-      image?.status === "checking" ? image.fallbackSrc || fallbackReaderImageSrc(chunk.index) : "";
     const prevSrc = image?.fallbackSrc || fallbackReaderImageSrc(chunk.index);
 
     return (
@@ -11797,11 +11677,7 @@ function App() {
               alt={`Generated visual for words ${chunk?.startWord} to ${chunk?.endWord}`}
               src={image.src}
             />
-          ) : image?.status === "checking" ? (
-            <div className="reader-image-hero-checking">
-              {checkingImageSrc && <img alt="" aria-hidden="true" src={checkingImageSrc} />}
-            </div>
-          ) : image?.status === "loading" && prevSrc ? (
+          ) : (image?.status === "loading" || image?.status === "checking") && prevSrc ? (
             <img
               alt={`Generated visual for words ${chunk?.startWord} to ${chunk?.endWord}`}
               src={prevSrc}
