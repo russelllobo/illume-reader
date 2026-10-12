@@ -8253,6 +8253,7 @@ function App() {
   const [readerImageUpgradeOpen, setReaderImageUpgradeOpen] = useState(false);
   const [chapterDrawerOpen, setChapterDrawerOpen] = useState(() => window.matchMedia(CHAPTER_SIDEBAR_DESKTOP_QUERY).matches);
   const [readerSidebarDocked, setReaderSidebarDocked] = useState(() => window.matchMedia(CHAPTER_SIDEBAR_DESKTOP_QUERY).matches);
+  const [readerToolsMenuOpen, setReaderToolsMenuOpen] = useState(false);
   const [tocExpanded, setTocExpanded] = useState<Set<number>>(() => new Set());
   const tocBookIdRef = useRef<string | null>(null);
   const parsedBooks = useRef(new Map<string, ReaderBook>());
@@ -9041,15 +9042,18 @@ function App() {
   }, [speedPopoverOpen]);
 
   useEffect(() => {
-    if (!readerImageStyleOpen) return;
+    if (!readerImageStyleOpen && !readerToolsMenuOpen) return;
 
     const closeOnOutsidePointer = (event: globalThis.PointerEvent) => {
       if (event.target instanceof Node && imageStyleMenuRef.current?.contains(event.target)) return;
       setReaderImageStyleOpen(false);
+      setReaderToolsMenuOpen(false);
     };
 
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") setReaderImageStyleOpen(false);
+      if (event.key !== "Escape") return;
+      setReaderImageStyleOpen(false);
+      setReaderToolsMenuOpen(false);
     };
 
     window.addEventListener("pointerdown", closeOnOutsidePointer);
@@ -9059,7 +9063,7 @@ function App() {
       window.removeEventListener("pointerdown", closeOnOutsidePointer);
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [readerImageStyleOpen]);
+  }, [readerImageStyleOpen, readerToolsMenuOpen]);
 
   useEffect(() => {
     if (!catalogActionBookId) return;
@@ -12955,6 +12959,448 @@ function App() {
     </div>
   );
 
+  const sidebarTocLabel = isPdfBook ? "Table of contents" : "Chapters";
+  const sidebarBackButton = (
+    <button aria-label="Back to library" className="rs-icon" onClick={() => openCatalog()} title="Back to library" type="button">
+      <ChevronLeft size={20} aria-hidden="true" />
+    </button>
+  );
+
+  const sidebarToggleButton = (
+    <button
+      aria-controls="reader-chapter-sidebar"
+      aria-expanded={chapterDrawerOpen}
+      aria-label="Hide sidebar"
+      className="rs-icon toc-toggle-button"
+      onClick={(event) => event.preventDefault()}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        setChapterDrawerOpen((isOpen) => !isOpen);
+      }}
+      onPointerDown={(event) => {
+        event.preventDefault();
+        setChapterDrawerOpen((isOpen) => !isOpen);
+      }}
+      title="Hide sidebar"
+      type="button"
+    >
+      <PanelLeft size={18} aria-hidden="true" />
+    </button>
+  );
+
+  const sidebarImageButton = (
+    <button
+      aria-checked={readerImageMode}
+      className="rs-menu-item"
+      disabled={!readerImageMode && activeReaderImageChunkIndex < 0}
+      role="menuitemcheckbox"
+      onClick={toggleReaderImageMode}
+      title={
+        isPdfBook && !pdfHasText
+          ? "Text extraction is required for PDF image mode"
+          : isPdfBook && activeReaderImageChunkIndex < 0
+            ? "No page text is available for image mode here"
+          : readerImageMode
+            ? "Stop generating reading images"
+            : "Show reader images"
+      }
+      type="button"
+    >
+      {isReaderImageLoading ? (
+        <Loader2 className="spin" size={16} aria-hidden="true" />
+      ) : (
+        <ImageIcon size={16} aria-hidden="true" />
+      )}
+      <span className="rs-menu-label">Images</span>
+      <span className={readerImageMode ? "rs-switch on" : "rs-switch"} aria-hidden="true" />
+    </button>
+  );
+
+  const sidebarStylePopover = (
+    <>
+      {readerImageStyleOpen && (
+        <section aria-label="Image style" className="image-style-menu rs-popover" id="image-style-menu">
+          <div className="image-style-menu-heading">
+            <strong>Styles</strong>
+          </div>
+          <div className="image-style-options">
+            {READER_IMAGE_STYLES.map((style) => (
+              <button
+                aria-pressed={readerImageStyle === style.id}
+                className={readerImageStyle === style.id ? "image-style-option active" : "image-style-option"}
+                key={style.id}
+                onClick={() => selectReaderImageStyle(style.id)}
+                type="button"
+              >
+                <img className="image-style-preview" src={style.previewSrc} alt={style.previewAlt} />
+                <span className="image-style-option-copy">
+                  <strong>{style.label}</strong>
+                  <small>{style.summary}</small>
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+    </>
+  );
+
+  const sidebarTypographyPopover = (
+    <>
+      {settingsOpen && (
+        <>
+          <div
+            className="settings-popover-overlay"
+            onClick={() => {
+              setSettingsOpen(false);
+              setReaderMenuOpen(null);
+            }}
+          />
+          <div className="settings-popover-card reader-typography-popover rs-popover">
+            <div className="settings-popover-body">
+              <div className="settings-section typography-settings-section" aria-label={isPdfBook ? "PDF page settings" : "Typography settings"}>
+                {isPdfBook ? (
+                  <>
+                    <div className="typography-font-group pdf-page-layout-group" aria-label="PDF pages visible">
+                      <button
+                        aria-pressed={pdfPageLayout === "single"}
+                        className={pdfPageLayout === "single" ? "active" : undefined}
+                        onClick={() => setPdfPageLayout("single")}
+                        title="Show one page"
+                        type="button"
+                      >
+                        1 Page
+                      </button>
+                      <button
+                        aria-pressed={pdfPageLayout === "double"}
+                        className={pdfPageLayout === "double" ? "active" : undefined}
+                        onClick={() => setPdfPageLayout("double")}
+                        title="Show two pages"
+                        type="button"
+                      >
+                        2 Pages
+                      </button>
+                    </div>
+
+                    <div className="typography-button-group" aria-label="PDF page size">
+                      <button
+                        aria-label="Decrease page size"
+                        disabled={pdfPageScale <= PDF_PAGE_SCALE_MIN}
+                        onClick={() => adjustPdfPageScale(-0.1)}
+                        title="Decrease page size"
+                        type="button"
+                      >
+                        <Minus size={14} aria-hidden="true" />
+                      </button>
+                      <button
+                        aria-label="Increase page size"
+                        disabled={pdfPageScale >= PDF_PAGE_SCALE_MAX}
+                        onClick={() => adjustPdfPageScale(0.1)}
+                        title="Increase page size"
+                        type="button"
+                      >
+                        <Plus size={14} aria-hidden="true" />
+                      </button>
+                    </div>
+
+                    {renderReaderModeToggle()}
+                  </>
+                ) : (
+                  <>
+                    <div className="typography-button-group" aria-label="Text size">
+                  <button
+                    aria-label="Decrease text size"
+                    disabled={readerTextScale <= READER_TEXT_SCALE_MIN}
+                    onClick={() => adjustReaderTextScale(-1)}
+                    title="Decrease text size"
+                    type="button"
+                  >
+                    <Minus size={14} aria-hidden="true" />
+                  </button>
+                  <button
+                    aria-label="Increase text size"
+                    disabled={readerTextScale >= READER_TEXT_SCALE_MAX}
+                    onClick={() => adjustReaderTextScale(1)}
+                    title="Increase text size"
+                    type="button"
+                  >
+                    <Plus size={14} aria-hidden="true" />
+                  </button>
+                    </div>
+
+                    <div className="typography-button-group" aria-label="Line width">
+                  <button
+                    aria-label="Narrow line width"
+                    disabled={readerLineWidth <= READER_LINE_WIDTH_MIN}
+                    onClick={() => adjustReaderLineWidth(-1)}
+                    title="Narrow line width"
+                    type="button"
+                  >
+                    <MoveHorizontal className="narrow-width-icon" size={17} aria-hidden="true" />
+                  </button>
+                  <button
+                    aria-label="Widen line width"
+                    disabled={readerLineWidth >= READER_LINE_WIDTH_MAX}
+                    onClick={() => adjustReaderLineWidth(1)}
+                    title="Widen line width"
+                    type="button"
+                  >
+                    <MoveHorizontal size={17} aria-hidden="true" />
+                  </button>
+                    </div>
+
+                    <div className="typography-button-group" aria-label="Line height">
+                  <button
+                    aria-label="Decrease line height"
+                    disabled={readerLineHeight <= READER_LINE_HEIGHT_MIN}
+                    onClick={() => adjustReaderLineHeight(-0.1)}
+                    title="Decrease line height"
+                    type="button"
+                  >
+                    <AlignJustify className="compact-lines-icon" size={16} aria-hidden="true" />
+                  </button>
+                  <button
+                    aria-label="Increase line height"
+                    disabled={readerLineHeight >= READER_LINE_HEIGHT_MAX}
+                    onClick={() => adjustReaderLineHeight(0.1)}
+                    title="Increase line height"
+                    type="button"
+                  >
+                    <AlignJustify size={16} aria-hidden="true" />
+                  </button>
+                    </div>
+
+                    <div className="typography-font-group" aria-label="Reader font">
+                  <button
+                    aria-pressed={readerFontMode === "sans"}
+                    className={readerFontMode === "sans" ? "active" : undefined}
+                    onClick={() => setReaderFontMode("sans")}
+                    title="Sans-serif font"
+                    type="button"
+                  >
+                    Sans
+                  </button>
+                  <button
+                    aria-pressed={readerFontMode === "serif"}
+                    className={readerFontMode === "serif" ? "active" : undefined}
+                    onClick={() => setReaderFontMode("serif")}
+                    title="Serif font"
+                    type="button"
+                  >
+                    Serif
+                  </button>
+                    </div>
+
+                    <div className="typography-theme-menu">
+                  <Moon size={14} aria-hidden="true" />
+                  <button
+                    aria-expanded={readerMenuOpen === "appearance"}
+                    aria-haspopup="listbox"
+                    aria-label="Reader appearance"
+                    className="typography-menu-trigger"
+                    onClick={() => setReaderMenuOpen(readerMenuOpen === "appearance" ? null : "appearance")}
+                    title="Reader appearance"
+                    type="button"
+                  >
+                    <span>{readerThemeMode === "dark" ? "Dark" : "Light"}</span>
+                    <ChevronDown size={14} aria-hidden="true" />
+                  </button>
+                  {readerMenuOpen === "appearance" && (
+                    <div className="typography-menu-list" role="listbox" aria-label="Reader appearance">
+                      {[
+                        { value: "light", label: "Light" },
+                        { value: "dark", label: "Dark" }
+                      ].map((option) => (
+                        <button
+                          aria-selected={readerThemeMode === option.value}
+                          className={readerThemeMode === option.value ? "active" : undefined}
+                          key={option.value}
+                          onClick={() => {
+                            setReaderThemeMode(option.value as ReaderThemeMode);
+                            setReaderMenuOpen(null);
+                          }}
+                          role="option"
+                          type="button"
+                        >
+                          <span>{option.label}</span>
+                          {readerThemeMode === option.value && <Check size={13} aria-hidden="true" />}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </>
+  );
+
+  const readerToolsActive = readerToolsMenuOpen || readerImageStyleOpen || settingsOpen;
+  const activeReaderImageStyleLabel = READER_IMAGE_STYLES.find((style) => style.id === readerImageStyle)?.label ?? "";
+  const sidebarTools = (
+    <div className="rs-more" ref={imageStyleMenuRef}>
+      <button
+        aria-expanded={readerToolsActive}
+        aria-haspopup="menu"
+        aria-label="Reader options"
+        className={readerToolsActive ? "rs-icon open" : "rs-icon"}
+        onClick={() => {
+          const nextOpen = !readerToolsActive;
+          setReaderImageStyleOpen(false);
+          setSettingsOpen(false);
+          setReaderMenuOpen(null);
+          setReaderToolsMenuOpen(nextOpen);
+        }}
+        title="Reader options"
+        type="button"
+      >
+        <MoreHorizontal size={18} aria-hidden="true" />
+      </button>
+      {readerToolsMenuOpen && (
+        <div className="rs-menu" role="menu" aria-label="Reader options">
+          {sidebarImageButton}
+          <button
+            className="rs-menu-item"
+            disabled={!readerImageMode}
+            onClick={() => {
+              setReaderToolsMenuOpen(false);
+              setReaderImageStyleOpen(true);
+            }}
+            role="menuitem"
+            type="button"
+          >
+            <Palette size={16} aria-hidden="true" />
+            <span className="rs-menu-label">Image style</span>
+            <span className="rs-menu-value">{activeReaderImageStyleLabel}</span>
+            <ChevronRight className="rs-menu-chevron" size={14} aria-hidden="true" />
+          </button>
+          <button
+            className="rs-menu-item"
+            onClick={() => {
+              setReaderToolsMenuOpen(false);
+              setReaderMenuOpen(null);
+              setSettingsOpen(true);
+            }}
+            role="menuitem"
+            type="button"
+          >
+            <CaseSensitive size={17} aria-hidden="true" />
+            <span className="rs-menu-label">{isPdfBook ? "Page settings" : "Text & theme"}</span>
+            <ChevronRight className="rs-menu-chevron" size={14} aria-hidden="true" />
+          </button>
+        </div>
+      )}
+      {sidebarStylePopover}
+      {sidebarTypographyPopover}
+    </div>
+  );
+
+  const sidebarCover = book.coverUrl ? (
+    <img alt="" className="rs-cover" src={book.coverUrl} />
+  ) : (
+    <span className="rs-cover rs-cover-fallback" aria-hidden="true">
+      <BookOpen size={16} />
+    </span>
+  );
+
+  const sidebarChapters = (
+    <>
+      <div className="chapter-heading">{sidebarTocLabel}</div>
+      <nav className="chapter-list" aria-label={isPdfBook ? "Table of contents" : "Chapters"}>
+        {tocRows.length ? (
+          visibleTocRows.map((row) => {
+            const isActive = row.index === activeTocIndex;
+            const hasChildren = tocHasChildren[row.index] ?? false;
+            const isExpanded = tocExpanded.has(row.index);
+            return (
+              <div
+                key={`${row.index}`}
+                className={["toc-row", isActive ? "active" : "", hasChildren ? "has-children" : ""].filter(Boolean).join(" ")}
+                style={{ paddingInlineStart: `${4 + Math.min(row.level, 5) * 12}px` }}
+                title={row.title}
+              >
+                {hasChildren && (
+                  <button
+                    aria-label={isExpanded ? `Collapse ${row.title}` : `Expand ${row.title}`}
+                    className={["toc-expander", isExpanded ? "expanded" : ""].filter(Boolean).join(" ")}
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setTocExpanded((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(row.index)) next.delete(row.index);
+                        else next.add(row.index);
+                        return next;
+                      });
+                    }}
+                  >
+                    <ChevronRight size={13} aria-hidden="true" />
+                  </button>
+                )}
+                <button
+                  className={isActive ? "chapter-item active toc-label" : "chapter-item toc-label"}
+                  ref={(node) => {
+                    if (node) {
+                      chapterRefs.current.set(row.index, node);
+                    } else {
+                      chapterRefs.current.delete(row.index);
+                    }
+                  }}
+                  type="button"
+                  onClick={() => moveToChapter(row.index)}
+                  title={row.title}
+                  aria-current={isActive ? "page" : undefined}
+                >
+                  <span className="toc-label-text">{row.title}</span>
+                  {isPdfBook && typeof row.pageNumber === "number" && (
+                    <span className="toc-page" aria-hidden="true">{row.pageNumber}</span>
+                  )}
+                </button>
+              </div>
+            );
+          })
+        ) : (
+          <span className="chapter-empty">{isPdfBook ? "No table of contents found." : "No chapters found."}</span>
+        )}
+      </nav>
+    </>
+  );
+
+  const sidebarPlayer = readerSidebarDocked ? (
+    <div className="rs-player" aria-label="Narration controls">
+      {prevNarrationButton}
+      {playNarrationButton}
+      {nextNarrationButton}
+      {speedControl}
+    </div>
+  ) : null;
+
+  const sidebarContent = (
+    <>
+      <div className="rs-header">
+        {sidebarBackButton}
+        <div className="rs-header-actions">
+          {sidebarTools}
+          {sidebarToggleButton}
+        </div>
+      </div>
+      <div className="rs-book">
+        {sidebarCover}
+        <div className="rs-book-meta">
+          {renderReaderBookTitle(activeReaderRow, book.title)}
+          {book.author && <span className="rs-book-author" title={book.author}>{book.author}</span>}
+        </div>
+      </div>
+      {sidebarChapters}
+      {sidebarPlayer}
+    </>
+  );
+
   return (
     <main
       className="app-shell reader-themed-shell"
@@ -13015,399 +13461,10 @@ function App() {
           type="button"
         />
         <aside
-          className={["chapter-sidebar", chapterDrawerOpen ? "open" : ""].filter(Boolean).join(" ")}
+          className={["chapter-sidebar", "rs-sidebar", chapterDrawerOpen ? "open" : ""].filter(Boolean).join(" ")}
           id="reader-chapter-sidebar"
         >
-          <div className="sidebar-reader-top">
-
-        <div className="reader-top-actions">
-          <button className="top-icon" type="button" title="Back to library" onClick={() => openCatalog()}>
-            <ChevronLeft size={22} aria-hidden="true" />
-          </button>
-          <button
-            aria-controls="reader-chapter-sidebar"
-            aria-expanded={chapterDrawerOpen}
-            className="top-icon toc-toggle-button"
-            onClick={(event) => event.preventDefault()}
-            onKeyDown={(event) => {
-              if (event.key !== "Enter" && event.key !== " ") return;
-              event.preventDefault();
-              setChapterDrawerOpen((isOpen) => !isOpen);
-            }}
-            onPointerDown={(event) => {
-              event.preventDefault();
-              setChapterDrawerOpen((isOpen) => !isOpen);
-            }}
-            title={isPdfBook ? "Table of contents" : "Chapters"}
-            type="button"
-          >
-            <PanelLeft size={18} aria-hidden="true" />
-          </button>
-        </div>
-        {renderReaderBookTitle(activeReaderRow, book.title)}
-        <div className="reader-top-right">
-          <div className="image-mode-control topbar-image-controls">
-            <button
-              className={readerImageMode ? "top-icon active" : "top-icon"}
-              disabled={!readerImageMode && activeReaderImageChunkIndex < 0}
-              onClick={toggleReaderImageMode}
-              title={
-                isPdfBook && !pdfHasText
-                  ? "Text extraction is required for PDF image mode"
-                  : isPdfBook && activeReaderImageChunkIndex < 0
-                    ? "No page text is available for image mode here"
-                  : readerImageMode
-                    ? "Stop generating reading images"
-                    : "Show reader images"
-              }
-              type="button"
-            >
-              {isReaderImageLoading ? (
-                <Loader2 className="spin" size={18} aria-hidden="true" />
-              ) : (
-                <ImageIcon size={18} aria-hidden="true" />
-              )}
-            </button>
-            <div className="image-style-menu-anchor" ref={imageStyleMenuRef}>
-              <button
-                aria-controls="image-style-menu"
-                aria-expanded={readerImageStyleOpen}
-                className="top-icon"
-                disabled={!readerImageMode}
-                onClick={(event) => {
-                  if (event.detail === 0) setReaderImageStyleOpen((isOpen) => !isOpen);
-                }}
-                onPointerDown={(event) => {
-                  event.preventDefault();
-                  setReaderImageStyleOpen((isOpen) => !isOpen);
-                }}
-                title="Choose image style"
-                type="button"
-              >
-                <Palette size={18} aria-hidden="true" />
-              </button>
-              {readerImageStyleOpen && (
-                <section
-                  aria-label="Image style"
-                  className="image-style-menu topbar-image-style-menu"
-                  id="image-style-menu"
-                >
-                  <div className="image-style-menu-heading">
-                    <strong>Styles</strong>
-                  </div>
-                  <div className="image-style-options">
-                    {READER_IMAGE_STYLES.map((style) => (
-                      <button
-                        aria-pressed={readerImageStyle === style.id}
-                        className={readerImageStyle === style.id ? "image-style-option active" : "image-style-option"}
-                        key={style.id}
-                        onClick={() => selectReaderImageStyle(style.id)}
-                        type="button"
-                      >
-                        <img className="image-style-preview" src={style.previewSrc} alt={style.previewAlt} />
-                        <span className="image-style-option-copy">
-                          <strong>{style.label}</strong>
-                          <small>{style.summary}</small>
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </section>
-              )}
-            </div>
-          </div>
-          <div className="settings-button-wrapper" style={{ position: "relative", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <button
-              aria-expanded={settingsOpen}
-              className="top-icon typography-trigger"
-              onClick={() => {
-                setSettingsOpen((isOpen) => !isOpen);
-                setReaderMenuOpen(null);
-              }}
-              title={isPdfBook ? "PDF page settings" : "Typography"}
-              type="button"
-            >
-              <CaseSensitive size={18} aria-hidden="true" />
-            </button>
-
-          {settingsOpen && (
-            <>
-              <div
-                className="settings-popover-overlay"
-                onClick={() => {
-                  setSettingsOpen(false);
-                  setReaderMenuOpen(null);
-                }}
-              />
-              <div className="settings-popover-card reader-typography-popover">
-                <div className="settings-popover-body">
-                  <div className="settings-section typography-settings-section" aria-label={isPdfBook ? "PDF page settings" : "Typography settings"}>
-                    {isPdfBook ? (
-                      <>
-                        <div className="typography-font-group pdf-page-layout-group" aria-label="PDF pages visible">
-                          <button
-                            aria-pressed={pdfPageLayout === "single"}
-                            className={pdfPageLayout === "single" ? "active" : undefined}
-                            onClick={() => setPdfPageLayout("single")}
-                            title="Show one page"
-                            type="button"
-                          >
-                            1 Page
-                          </button>
-                          <button
-                            aria-pressed={pdfPageLayout === "double"}
-                            className={pdfPageLayout === "double" ? "active" : undefined}
-                            onClick={() => setPdfPageLayout("double")}
-                            title="Show two pages"
-                            type="button"
-                          >
-                            2 Pages
-                          </button>
-                        </div>
-
-                        <div className="typography-button-group" aria-label="PDF page size">
-                          <button
-                            aria-label="Decrease page size"
-                            disabled={pdfPageScale <= PDF_PAGE_SCALE_MIN}
-                            onClick={() => adjustPdfPageScale(-0.1)}
-                            title="Decrease page size"
-                            type="button"
-                          >
-                            <Minus size={14} aria-hidden="true" />
-                          </button>
-                          <button
-                            aria-label="Increase page size"
-                            disabled={pdfPageScale >= PDF_PAGE_SCALE_MAX}
-                            onClick={() => adjustPdfPageScale(0.1)}
-                            title="Increase page size"
-                            type="button"
-                          >
-                            <Plus size={14} aria-hidden="true" />
-                          </button>
-                        </div>
-
-                        {renderReaderModeToggle()}
-                      </>
-                    ) : (
-                      <>
-                        <div className="typography-button-group" aria-label="Text size">
-                      <button
-                        aria-label="Decrease text size"
-                        disabled={readerTextScale <= READER_TEXT_SCALE_MIN}
-                        onClick={() => adjustReaderTextScale(-1)}
-                        title="Decrease text size"
-                        type="button"
-                      >
-                        <Minus size={14} aria-hidden="true" />
-                      </button>
-                      <button
-                        aria-label="Increase text size"
-                        disabled={readerTextScale >= READER_TEXT_SCALE_MAX}
-                        onClick={() => adjustReaderTextScale(1)}
-                        title="Increase text size"
-                        type="button"
-                      >
-                        <Plus size={14} aria-hidden="true" />
-                      </button>
-                        </div>
-
-                        <div className="typography-button-group" aria-label="Line width">
-                      <button
-                        aria-label="Narrow line width"
-                        disabled={readerLineWidth <= READER_LINE_WIDTH_MIN}
-                        onClick={() => adjustReaderLineWidth(-1)}
-                        title="Narrow line width"
-                        type="button"
-                      >
-                        <MoveHorizontal className="narrow-width-icon" size={17} aria-hidden="true" />
-                      </button>
-                      <button
-                        aria-label="Widen line width"
-                        disabled={readerLineWidth >= READER_LINE_WIDTH_MAX}
-                        onClick={() => adjustReaderLineWidth(1)}
-                        title="Widen line width"
-                        type="button"
-                      >
-                        <MoveHorizontal size={17} aria-hidden="true" />
-                      </button>
-                        </div>
-
-                        <div className="typography-button-group" aria-label="Line height">
-                      <button
-                        aria-label="Decrease line height"
-                        disabled={readerLineHeight <= READER_LINE_HEIGHT_MIN}
-                        onClick={() => adjustReaderLineHeight(-0.1)}
-                        title="Decrease line height"
-                        type="button"
-                      >
-                        <AlignJustify className="compact-lines-icon" size={16} aria-hidden="true" />
-                      </button>
-                      <button
-                        aria-label="Increase line height"
-                        disabled={readerLineHeight >= READER_LINE_HEIGHT_MAX}
-                        onClick={() => adjustReaderLineHeight(0.1)}
-                        title="Increase line height"
-                        type="button"
-                      >
-                        <AlignJustify size={16} aria-hidden="true" />
-                      </button>
-                        </div>
-
-                        <div className="typography-font-group" aria-label="Reader font">
-                      <button
-                        aria-pressed={readerFontMode === "sans"}
-                        className={readerFontMode === "sans" ? "active" : undefined}
-                        onClick={() => setReaderFontMode("sans")}
-                        title="Sans-serif font"
-                        type="button"
-                      >
-                        Sans
-                      </button>
-                      <button
-                        aria-pressed={readerFontMode === "serif"}
-                        className={readerFontMode === "serif" ? "active" : undefined}
-                        onClick={() => setReaderFontMode("serif")}
-                        title="Serif font"
-                        type="button"
-                      >
-                        Serif
-                      </button>
-                        </div>
-
-                        <div className="typography-theme-menu">
-                      <Moon size={14} aria-hidden="true" />
-                      <button
-                        aria-expanded={readerMenuOpen === "appearance"}
-                        aria-haspopup="listbox"
-                        aria-label="Reader appearance"
-                        className="typography-menu-trigger"
-                        onClick={() => setReaderMenuOpen(readerMenuOpen === "appearance" ? null : "appearance")}
-                        title="Reader appearance"
-                        type="button"
-                      >
-                        <span>{readerThemeMode === "dark" ? "Dark" : "Light"}</span>
-                        <ChevronDown size={14} aria-hidden="true" />
-                      </button>
-                      {readerMenuOpen === "appearance" && (
-                        <div className="typography-menu-list" role="listbox" aria-label="Reader appearance">
-                          {[
-                            { value: "light", label: "Light" },
-                            { value: "dark", label: "Dark" }
-                          ].map((option) => (
-                            <button
-                              aria-selected={readerThemeMode === option.value}
-                              className={readerThemeMode === option.value ? "active" : undefined}
-                              key={option.value}
-                              onClick={() => {
-                                setReaderThemeMode(option.value as ReaderThemeMode);
-                                setReaderMenuOpen(null);
-                              }}
-                              role="option"
-                              type="button"
-                            >
-                              <span>{option.label}</span>
-                              {readerThemeMode === option.value && <Check size={13} aria-hidden="true" />}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </>
-          )}
-          </div>
-        </div>
-          </div>
-          {(book.coverUrl || book.title) && (
-            <div className="toc-book-card">
-              {book.coverUrl ? (
-                <img alt="" className="toc-book-cover" src={book.coverUrl} />
-              ) : (
-                <span className="toc-book-cover toc-book-cover-fallback" aria-hidden="true">
-                  <BookOpen size={14} />
-                </span>
-              )}
-              <span className="toc-book-meta">
-                <span className="toc-book-title" title={book.title}>{book.title}</span>
-                {book.author && <span className="toc-book-author" title={book.author}>{book.author}</span>}
-              </span>
-            </div>
-          )}
-          <div className="chapter-heading">{isPdfBook ? "Table of contents" : "Chapters"}</div>
-          <nav className="chapter-list" aria-label={isPdfBook ? "Table of contents" : "Chapters"}>
-            {tocRows.length ? (
-              visibleTocRows.map((row) => {
-                const isActive = row.index === activeTocIndex;
-                const hasChildren = tocHasChildren[row.index] ?? false;
-                const isExpanded = tocExpanded.has(row.index);
-                return (
-                  <div
-                    key={`${row.index}`}
-                    className={["toc-row", isActive ? "active" : "", hasChildren ? "has-children" : ""].filter(Boolean).join(" ")}
-                    style={{ paddingInlineStart: `${4 + Math.min(row.level, 5) * 12}px` }}
-                    title={row.title}
-                  >
-                    {hasChildren && (
-                      <button
-                        aria-label={isExpanded ? `Collapse ${row.title}` : `Expand ${row.title}`}
-                        className={["toc-expander", isExpanded ? "expanded" : ""].filter(Boolean).join(" ")}
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setTocExpanded((prev) => {
-                            const next = new Set(prev);
-                            if (next.has(row.index)) next.delete(row.index);
-                            else next.add(row.index);
-                            return next;
-                          });
-                        }}
-                      >
-                        <ChevronRight size={13} aria-hidden="true" />
-                      </button>
-                    )}
-                    <button
-                      className={isActive ? "chapter-item active toc-label" : "chapter-item toc-label"}
-                      ref={(node) => {
-                        if (node) {
-                          chapterRefs.current.set(row.index, node);
-                        } else {
-                          chapterRefs.current.delete(row.index);
-                        }
-                      }}
-                      type="button"
-                      onClick={() => moveToChapter(row.index)}
-                      title={row.title}
-                      aria-current={isActive ? "page" : undefined}
-                    >
-                      <span className="toc-label-text">{row.title}</span>
-                      {isPdfBook && typeof row.pageNumber === "number" && (
-                        <span className="toc-page" aria-hidden="true">{row.pageNumber}</span>
-                      )}
-                    </button>
-                  </div>
-                );
-              })
-            ) : (
-              <span className="chapter-empty">{isPdfBook ? "No table of contents found." : "No chapters found."}</span>
-            )}
-          </nav>
-          {readerSidebarDocked && (
-            <div className="sidebar-player" aria-label="Narration controls">
-              <div className="sidebar-player-main">
-                {prevNarrationButton}
-                {playNarrationButton}
-                {nextNarrationButton}
-              </div>
-              <div className="sidebar-player-sub">
-                {voiceControl}
-                {speedControl}
-              </div>
-            </div>
-          )}
+          {sidebarContent}
         </aside>
 
         <div className={[

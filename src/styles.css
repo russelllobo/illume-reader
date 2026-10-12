@@ -13608,3 +13608,327 @@ html[data-color-scheme] .library-upgrade-button {
   fill: none;
   stroke: currentColor;
 }
+
+/* ==========================================================================
+   READER SIDEBAR
+   ========================================================================== */
+
+.app-shell .rs-sidebar {
+  padding: 14px 0 14px 14px;
+}
+
+@media (min-width: 981px) {
+  .app-shell .rs-sidebar {
+    position: relative;
+    z-index: 30;
+    overflow: visible;
+  }
+}
+
+.rs-sidebar .rs-header {
+  position: relative;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 0 14px 22px 0;
+}
+
+.rs-sidebar .rs-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.app-shell .rs-icon {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--reader-theme-muted);
+  transition: background 0.14s ease, color 0.14s ease, transform 0.14s ease;
+}
+
+.app-shell .rs-icon:hover,
+.app-shell .rs-icon.open {
+  background: color-mix(in srgb, var(--reader-theme-text) 7%, transparent);
+  color: var(--reader-theme-text);
+}
+
+.app-shell .rs-icon:active {
+  transform: scale(0.94);
+}
+
+/* Book */
+.rs-sidebar .rs-book {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 14px 20px 0;
+}
+
+.rs-sidebar .rs-cover {
+  width: 38px;
+  height: 57px;
+  flex: none;
+  border-radius: 3px;
+  object-fit: cover;
+  background: var(--reader-theme-border);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--reader-theme-text) 8%, transparent),
+    0 4px 10px color-mix(in srgb, var(--reader-theme-shadow) 110%, transparent);
+}
+
+.rs-sidebar .rs-cover-fallback {
+  display: grid;
+  place-items: center;
+  color: var(--reader-theme-muted);
+}
+
+.rs-sidebar .rs-book-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rs-sidebar .rs-book-meta .sidebar-title {
+  color: var(--reader-theme-text);
+  font-family: var(--font-serif);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.rs-sidebar .rs-book-author {
+  overflow: hidden;
+  color: var(--reader-theme-muted);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+
+/* Options menu (images / style / text) */
+.rs-sidebar .rs-more {
+  position: static;
+}
+
+.rs-sidebar .rs-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 160;
+  width: 212px;
+  padding: 5px;
+  display: grid;
+  gap: 1px;
+  border: 1px solid var(--reader-theme-border);
+  border-radius: 14px;
+  background: var(--reader-theme-panel);
+  box-shadow: 0 14px 34px color-mix(in srgb, var(--reader-theme-shadow) 170%, transparent);
+  animation: rs-menu-in 0.14s ease-out;
+  transform-origin: top right;
+}
+
+@keyframes rs-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+
+.app-shell .rs-menu-item {
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--reader-theme-text);
+  font-size: 0.84rem;
+  font-weight: 500;
+  text-align: left;
+}
+
+.app-shell .rs-menu-item svg {
+  flex: none;
+  color: var(--reader-theme-muted);
+}
+
+.app-shell .rs-menu-item:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--reader-theme-text) 6%, transparent);
+}
+
+.app-shell .rs-menu-item:disabled {
+  opacity: 0.4;
+}
+
+.rs-sidebar .rs-menu-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.rs-sidebar .rs-menu-value {
+  color: var(--reader-theme-muted);
+  font-size: 0.76rem;
+}
+
+.app-shell .rs-menu-item .rs-menu-chevron {
+  margin-left: -4px;
+  opacity: 0.7;
+}
+
+.rs-sidebar .rs-switch {
+  position: relative;
+  width: 28px;
+  height: 16px;
+  flex: none;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--reader-theme-text) 18%, transparent);
+  transition: background 0.16s ease;
+}
+
+.rs-sidebar .rs-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--reader-theme-panel);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: transform 0.16s ease;
+}
+
+.rs-sidebar .rs-switch.on {
+  background: var(--reader-theme-text);
+}
+
+.rs-sidebar .rs-switch.on::after {
+  transform: translateX(12px);
+}
+
+.rs-sidebar .rs-more .rs-popover {
+  left: 0;
+  right: auto;
+  top: calc(100% + 6px);
+  bottom: auto;
+  transform-origin: top left;
+}
+
+.rs-sidebar .rs-more .reader-typography-popover {
+  z-index: 150;
+}
+
+.rs-sidebar .rs-more .settings-popover-overlay {
+  z-index: 140;
+}
+
+/* Player: black pill, monochrome controls */
+.rs-sidebar {
+  --rs-pill-bg: var(--reader-theme-text);
+  --rs-pill-fg: var(--reader-theme-bg);
+}
+
+.reader-themed-shell[data-reader-mode="dark"] .rs-sidebar {
+  --rs-pill-bg: color-mix(in srgb, var(--reader-theme-bg) 55%, #000);
+  --rs-pill-fg: var(--reader-theme-text);
+}
+
+.reader-themed-shell[data-reader-mode="dark"] .rs-sidebar .rs-player {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--reader-theme-text) 10%, transparent);
+}
+
+.rs-sidebar .rs-player {
+  margin: 12px 14px 0 0;
+  padding: 4px 6px 4px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2px;
+  border-radius: 999px;
+  background: var(--rs-pill-bg);
+}
+
+.app-shell .rs-sidebar .rs-player .rail-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: transparent;
+  color: color-mix(in srgb, var(--rs-pill-fg) 60%, transparent);
+  transition: color 0.14s ease, background 0.14s ease;
+}
+
+.app-shell .rs-sidebar .rs-player .rail-icon:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--rs-pill-fg) 12%, transparent);
+  color: var(--rs-pill-fg);
+}
+
+.app-shell .rs-sidebar .rs-player .rail-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.app-shell .rs-sidebar .rs-player .play-button {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--rs-pill-fg);
+  color: var(--rs-pill-bg);
+  box-shadow: none;
+}
+
+.app-shell .rs-sidebar .rs-player .play-button:hover {
+  background: var(--rs-pill-fg);
+  transform: scale(1.04);
+}
+
+.app-shell .rs-sidebar .rs-player .play-button svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+.app-shell .rs-sidebar .rs-player .play-button svg.lucide-play {
+  margin-left: 1px;
+}
+
+
+.app-shell .rs-sidebar .rs-player .narration-speed-trigger {
+  width: 34px;
+  height: 28px;
+  border-radius: 999px;
+  background: transparent;
+  color: color-mix(in srgb, var(--rs-pill-fg) 60%, transparent);
+  font-size: 0.7rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.app-shell .rs-sidebar .rs-player .narration-speed-trigger:hover,
+.app-shell .rs-sidebar .rs-player .narration-speed-trigger[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--rs-pill-fg) 12%, transparent);
+  color: var(--rs-pill-fg);
+}
+
+.rs-sidebar .rs-player .narration-speed-popover {
+  left: auto;
+  right: -8px;
+}
+
+.rs-sidebar .rs-player .narration-speed-popover::after {
+  left: auto;
+  right: 22px;
+}
