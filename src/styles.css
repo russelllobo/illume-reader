@@ -2612,44 +2612,6 @@ button:disabled {
   box-shadow: 0 18px 54px rgba(0, 0, 0, 0.14);
 }
 
-.reader-image-crossfade {
-  position: relative;
-  width: 100%;
-  overflow: hidden;
-  border-radius: 8px;
-  background: #0a0d12;
-  box-shadow: 0 18px 54px rgba(0, 0, 0, 0.14);
-}
-
-.reader-generated-image .reader-image-crossfade {
-  aspect-ratio: 4 / 5;
-}
-
-.reader-image-crossfade .reader-image-prev {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.reader-image-crossfade .reader-image-next {
-  position: relative;
-  z-index: 1;
-  animation: readerImageFadeUp 0.65s cubic-bezier(0.22, 1, 0.36, 1) both;
-  box-shadow: none;
-}
-
-.reader-image-crossfade::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  border-radius: inherit;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
-  pointer-events: none;
-}
-
 .reader-generated-image figcaption {
   margin-top: 10px;
   color: #666;
@@ -2775,7 +2737,6 @@ button:disabled {
   justify-items: center;
   background: var(--pdf-image-mode-bg, var(--reader-theme-bg));
   color: #111;
-  animation: readerImagePanelIn 0.42s ease both;
 }
 
 .reader-image-stage-header,
@@ -2840,7 +2801,6 @@ button:disabled {
   border-radius: 14px;
   background: var(--pdf-image-mode-bg, var(--reader-theme-bg));
   box-shadow: none;
-  animation: imageStageIn 0.42s ease both;
 }
 
 .reader-image-hero img {
@@ -2850,24 +2810,6 @@ button:disabled {
   max-height: 100%;
   display: block;
   object-fit: contain;
-}
-
-.reader-image-hero .reader-image-crossfade {
-  height: 100%;
-  border-radius: 14px;
-  background: var(--pdf-image-mode-bg, var(--reader-theme-bg));
-  box-shadow: none;
-}
-
-.reader-image-hero .reader-image-crossfade .reader-image-prev {
-  object-fit: contain;
-}
-
-.reader-image-hero .reader-image-crossfade .reader-image-next {
-  height: 100%;
-  object-fit: contain;
-  border-radius: 0;
-  aspect-ratio: auto;
 }
 
 .reader-image-hero-checking {
@@ -3268,40 +3210,6 @@ button:disabled {
 .pdf-view-btn:disabled {
   opacity: 0.42;
 }
-
-@keyframes imageStageIn {
-  from {
-    opacity: 0;
-    transform: scale(0.985) translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
-}
-
-@keyframes readerImageFadeUp {
-  from {
-    opacity: 0;
-    transform: scale(1.04);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-@keyframes readerImagePanelIn {
-  from {
-    opacity: 0;
-    transform: translateX(18px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
 
 .progress-wrap {
   display: none;

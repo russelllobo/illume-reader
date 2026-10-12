@@ -11703,16 +11703,10 @@ function App() {
         key={`generated-${chunk.index}`}
       >
         {image?.status === "ready" && image.src ? (
-          <div className="reader-image-crossfade" key={`ready-${chunk.index}-${image.src}`}>
-            {prevSrc && prevSrc !== image.src && (
-              <img className="reader-image-prev" alt="" aria-hidden="true" src={prevSrc} />
-            )}
-            <img
-              alt={chunk.pageNumber ? `Generated visual for page ${chunk.pageNumber}` : `Generated visual for words ${chunk.startWord} to ${chunk.endWord}`}
-              className="reader-image-next"
-              src={image.src}
-            />
-          </div>
+          <img
+            alt={chunk.pageNumber ? `Generated visual for page ${chunk.pageNumber}` : `Generated visual for words ${chunk.startWord} to ${chunk.endWord}`}
+            src={image.src}
+          />
         ) : image?.status === "checking" ? (
           <div className="reader-generated-placeholder checking">
             {checkingImageSrc && <img alt="" aria-hidden="true" src={checkingImageSrc} />}
@@ -11799,16 +11793,10 @@ function App() {
       <aside className="reader-image-stage" aria-label="Current generated image">
         <div className="reader-image-hero">
           {isReady ? (
-            <div className="reader-image-crossfade" key={`stage-ready-${chunk.index}-${image.src}`}>
-              {prevSrc && prevSrc !== image.src && (
-                <img className="reader-image-prev" alt="" aria-hidden="true" src={prevSrc} />
-              )}
-              <img
-                alt={`Generated visual for words ${chunk?.startWord} to ${chunk?.endWord}`}
-                className="reader-image-next"
-                src={image.src}
-              />
-            </div>
+            <img
+              alt={`Generated visual for words ${chunk?.startWord} to ${chunk?.endWord}`}
+              src={image.src}
+            />
           ) : image?.status === "checking" ? (
             <div className="reader-image-hero-checking">
               {checkingImageSrc && <img alt="" aria-hidden="true" src={checkingImageSrc} />}
