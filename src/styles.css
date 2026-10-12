@@ -2638,6 +2638,35 @@ button:disabled {
   text-align: center;
 }
 
+.reader-generated-placeholder.checking {
+  border-style: solid;
+  border-color: rgba(208, 216, 212, 0.42);
+  background: #15191d;
+  isolation: isolate;
+}
+
+.reader-generated-placeholder.checking img {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  animation: none;
+  object-fit: cover;
+  opacity: 0.44;
+  filter: blur(8px) saturate(0.88) brightness(0.94);
+  transform: scale(1.04);
+}
+
+.reader-generated-placeholder.checking::after,
+.reader-image-hero-checking::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: rgba(255, 255, 255, 0.04);
+}
+
 .reader-generated-placeholder > svg,
 .reader-generated-placeholder > span,
 .reader-generated-placeholder > button,
@@ -2781,6 +2810,29 @@ button:disabled {
   max-height: 100%;
   display: block;
   object-fit: contain;
+}
+
+.reader-image-hero-checking {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: var(--reader-theme-bg);
+}
+
+.reader-image-hero-checking img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  animation: none;
+  object-fit: contain;
+  opacity: 0.46;
+  filter: blur(10px) saturate(0.88) brightness(0.94);
+  transform: scale(1.045);
+  transition: filter 0.22s ease, opacity 0.22s ease;
 }
 
 .reader-image-hero-placeholder {
