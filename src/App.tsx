@@ -16,7 +16,6 @@ import {
   MessageCircle,
   Moon,
   MoreHorizontal,
-  Palette,
   PanelLeft,
   Pencil,
   Pause,
@@ -532,12 +531,10 @@ const DOCUMENT_UPLOAD_ACCEPT = ".epub,application/epub+zip,.pdf,application/pdf"
 const BOOK_CACHE_NAME = "epub-vision-reader-books-v1";
 const READER_IMAGE_DB_NAME = "epub-vision-reader-images";
 const READER_IMAGE_STORE_NAME = "images";
-const READER_IMAGE_CHUNK_WORDS = 750;
+const READER_IMAGE_CHUNK_WORDS = 200;
 const READER_IMAGE_CHECK_FEEDBACK_MS = 200;
 const READER_IMAGE_GENERATION_FEEDBACK_MS = 500;
 const READER_IMAGE_SETTLE_DELAY_MS = 900;
-const READER_IMAGE_PROMPT_PREWARM_COUNT = 4;
-const READER_IMAGE_PROMPT_PREWARM_CHARS = 6000;
 const LIBRARY_LOAD_TIMEOUT_MS = 12_000;
 const FREE_READER_IMAGE_LIFETIME_LIMIT = 25;
 const PRO_READER_IMAGE_MONTHLY_LIMIT = 1000;
@@ -550,22 +547,6 @@ const PRO_USER_STORAGE_QUOTA_BYTES = Number(
   import.meta.env.VITE_PRO_USER_STORAGE_QUOTA_BYTES ?? 5_368_709_120
 );
 const APP_TITLE = "Illume Reader | Make reading more immersive";
-const READER_IMAGE_STYLES: Array<{ id: ReaderImageStyle; label: string; summary: string; previewAlt: string; previewSrc: string }> = [
-  {
-    id: "cartoon",
-    label: "Cartoon",
-    summary: "Bold Sunday funnies look with bright 1980s color.",
-    previewAlt: "Cartoon image style example",
-    previewSrc: "/cartoon.jpg"
-  },
-  {
-    id: "cute",
-    label: "Cute",
-    summary: "Kawaii anime feel with pastel modern colors.",
-    previewAlt: "Cute image style example",
-    previewSrc: "/cute.jpg"
-  }
-];
 type ClassicBook = {
   id: string;
   title: string;
@@ -8284,8 +8265,9 @@ function App() {
   const [displayedReaderImageChunkIndex, setDisplayedReaderImageChunkIndex] = useState<number | null>(null);
   const [generatingReaderImageChunkIndex, setGeneratingReaderImageChunkIndex] = useState<number | null>(null);
   const [readerImageCount, setReaderImageCount] = useState(0);
-  const [readerImageStyle, setReaderImageStyle] = useState<ReaderImageStyle>("cartoon");
-  const [readerImageStyleOpen, setReaderImageStyleOpen] = useState(false);
+  // Single look for all reader images. The style value is still sent as the
+  // cache key (server ignores it in the prompt).
+  const [readerImageStyle] = useState<ReaderImageStyle>("cartoon");
   const [readerImageUpgradeOpen, setReaderImageUpgradeOpen] = useState(false);
   const [chapterDrawerOpen, setChapterDrawerOpen] = useState(() => window.matchMedia(CHAPTER_SIDEBAR_DESKTOP_QUERY).matches);
   const [readerSidebarDocked, setReaderSidebarDocked] = useState(() => window.matchMedia(CHAPTER_SIDEBAR_DESKTOP_QUERY).matches);
@@ -8299,7 +8281,6 @@ function App() {
   const paragraphRefs = useRef(new Map<string, HTMLElement>());
   const chapterRefs = useRef(new Map<number, HTMLButtonElement>());
   const imageRequestsRef = useRef(new Set<number>());
-  const readerPromptPrewarmRef = useRef(new Set<string>());
   const displayedReaderImageChunkIndexRef = useRef<number | null>(null);
   const readerImageSettleTimerRef = useRef<number | null>(null);
   const readerImageModeRef = useRef(false);
@@ -9078,17 +9059,15 @@ function App() {
   }, [speedPopoverOpen]);
 
   useEffect(() => {
-    if (!readerImageStyleOpen && !readerToolsMenuOpen) return;
+    if (!readerToolsMenuOpen) return;
 
     const closeOnOutsidePointer = (event: globalThis.PointerEvent) => {
       if (event.target instanceof Node && imageStyleMenuRef.current?.contains(event.target)) return;
-      setReaderImageStyleOpen(false);
       setReaderToolsMenuOpen(false);
     };
 
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      setReaderImageStyleOpen(false);
       setReaderToolsMenuOpen(false);
     };
 
@@ -9099,7 +9078,7 @@ function App() {
       window.removeEventListener("pointerdown", closeOnOutsidePointer);
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [readerImageStyleOpen, readerToolsMenuOpen]);
+  }, [readerToolsMenuOpen]);
 
   useEffect(() => {
     if (!catalogActionBookId) return;
@@ -9121,15 +9100,6 @@ function App() {
       window.removeEventListener("keydown", closeOnEscape);
     };
   }, [catalogActionBookId]);
-
-  useEffect(() => {
-    const savedStyle = window.localStorage.getItem("reader-image-style");
-    if (savedStyle === "cartoon" || savedStyle === "cute") setReaderImageStyle(savedStyle);
-  }, []);
-
-  useEffect(() => {
-    window.localStorage.setItem("reader-image-style", readerImageStyle);
-  }, [readerImageStyle]);
 
   useEffect(() => {
     if (playback !== "playing" || !current) return;
@@ -9334,14 +9304,6 @@ function App() {
     const runId = readerImageRunRef.current;
     if (readerImageModeRef.current && runId === readerImageRunRef.current) {
       void ensureReaderImage(chunkIndex, runId);
-      // Pre-write prompts for upcoming sections now (free, no image quota)
-      // so the next renders skip the Muse step.
-      if (book && activeBookId) {
-        const upcoming = [1, 2, 3, 4]
-          .map((offset) => readerImageChunkByIndex.get(chunkIndex + offset))
-          .filter((chunk): chunk is ReaderImageChunk => Boolean(chunk));
-        prewarmReaderPrompts(activeBookId, book, upcoming);
-      }
     }
 
     readerImageSettleTimerRef.current = window.setTimeout(() => {
@@ -9356,7 +9318,7 @@ function App() {
         readerImageSettleTimerRef.current = null;
       }
     };
-  }, [activeReaderImageChunkIndex, readerImageMode, readerImageStyle]);
+  }, [activeReaderImageChunkIndex, readerImageMode]);
 
   useEffect(() => {
     if (!readerImageMode || activeReaderImageChunkIndex < 0) return;
@@ -9712,46 +9674,10 @@ function App() {
     }
     imageRequestsRef.current.clear();
     setReaderImageMode(false);
-    setReaderImageStyleOpen(false);
     setReaderImages({});
     setVisibleReaderImageChunkIndex(null);
     setDisplayedReaderImageChunkIndex(null);
     setGeneratingReaderImageChunkIndex(null);
-  };
-
-  const selectReaderImageStyle = (style: ReaderImageStyle) => {
-    if (style === readerImageStyle) {
-      setReaderImageStyleOpen(false);
-      return;
-    }
-
-    setReaderImageStyle(style);
-    setReaderImageStyleOpen(false);
-    if (!readerImageMode || !book || activeReaderImageChunkIndex < 0) return;
-
-    const runId = readerImageRunRef.current + 1;
-    readerImageRunRef.current = runId;
-    readerImageModeRef.current = true;
-    if (readerImageSettleTimerRef.current !== null) {
-      window.clearTimeout(readerImageSettleTimerRef.current);
-      readerImageSettleTimerRef.current = null;
-    }
-    imageRequestsRef.current.clear();
-    setReaderImages({});
-    setVisibleReaderImageChunkIndex(null);
-    setDisplayedReaderImageChunkIndex(null);
-    setGeneratingReaderImageChunkIndex(null);
-
-    const chunk = readerImageChunkByIndex.get(activeReaderImageChunkIndex);
-    const nextChunk = readerImageChunkByIndex.get(activeReaderImageChunkIndex + 1);
-    if (chunk) void generateReaderImage(chunk, runId, style);
-    if (nextChunk) void generateReaderImage(nextChunk, runId, style);
-    if (activeBookId) {
-      const upcoming = [2, 3, 4, 5]
-        .map((offset) => readerImageChunkByIndex.get(activeReaderImageChunkIndex + offset))
-        .filter((entry): entry is ReaderImageChunk => Boolean(entry));
-      prewarmReaderPrompts(activeBookId, book, upcoming, style);
-    }
   };
 
   const toggleReaderImageMode = () => {
@@ -10702,12 +10628,6 @@ function App() {
       } catch (error) {
         console.warn("Could not prepare the first reader image during upload:", error);
       }
-      // Pre-write prompts for the next sections in the background so later
-      // images skip the Muse step. No quota spent, never blocks upload.
-      const firstIndex = imageContext.chunks.findIndex(
-        (chunk) => chunk.startWord === imageContext.firstChunk?.startWord && chunk.endWord === imageContext.firstChunk?.endWord
-      );
-      prewarmReaderPrompts(row.id, parsed, imageContext.chunks.slice(firstIndex + 1));
     }
 
     setCatalogBooks((items) => sortBooksByRecentActivity([row, ...items]));
@@ -10882,44 +10802,6 @@ function App() {
         : chunks[Math.min(chunks.length - 1, Math.floor(startOffset / READER_IMAGE_CHUNK_WORDS))] ?? chunks[0];
 
     return { chunks, firstChunk, initialPage, safeIndex, start, startOffset };
-  };
-
-  // Fire-and-forget prompt pre-warm: writes Muse Spark prompts for upcoming
-  // chunks without rendering images or spending image quota, so later renders
-  // skip the LLM step and start instantly.
-  const prewarmReaderPrompts = (
-    bookId: string,
-    parsed: ReaderBook,
-    chunks: ReaderImageChunk[],
-    style = readerImageStyle
-  ) => {
-    const pending = chunks
-      .filter((chunk) => {
-        const key = `${bookId}:${style}:${chunk.startWord}:${chunk.endWord}`;
-        if (readerPromptPrewarmRef.current.has(key)) return false;
-        readerPromptPrewarmRef.current.add(key);
-        return true;
-      })
-      .slice(0, READER_IMAGE_PROMPT_PREWARM_COUNT);
-    if (!pending.length) return;
-    void Promise.allSettled(
-      pending.map((chunk) =>
-        supabase.functions.invoke("generate-reader-image", {
-          method: "POST",
-          body: {
-            author: parsed.author,
-            bookId,
-            bookTitle: parsed.title,
-            endWord: chunk.endWord,
-            imageStyle: style,
-            promptOnly: true,
-            startWord: chunk.startWord,
-            style,
-            text: chunk.text.slice(0, READER_IMAGE_PROMPT_PREWARM_CHARS)
-          }
-        })
-      )
-    );
   };
 
   const preGenerateReaderImageForBook = async (
@@ -11203,12 +11085,6 @@ function App() {
         });
       }
       if (runId !== bookOpenRunRef.current) return;
-      if (imageContext.firstChunk) {
-        const firstIndex = imageContext.chunks.findIndex(
-          (chunk) => chunk.startWord === imageContext.firstChunk?.startWord && chunk.endWord === imageContext.firstChunk?.endWord
-        );
-        prewarmReaderPrompts(row.id, cached, imageContext.chunks.slice(firstIndex + 1));
-      }
       setOpeningBookProgress(100);
       setBusy(false);
       openParsedBook(row, cached, undefined, cachedFile, { initialReaderImage: null, updateHistory: false });
@@ -11299,12 +11175,6 @@ function App() {
         });
       }
       if (runId !== bookOpenRunRef.current) return;
-      if (imageContext.firstChunk) {
-        const firstIndex = imageContext.chunks.findIndex(
-          (chunk) => chunk.startWord === imageContext.firstChunk?.startWord && chunk.endWord === imageContext.firstChunk?.endWord
-        );
-        prewarmReaderPrompts(row.id, parsed, imageContext.chunks.slice(firstIndex + 1));
-      }
       setOpeningBookProgress(100);
       openParsedBook(row, parsed, undefined, file, { initialReaderImage: null, updateHistory: false });
     } catch (error) {
@@ -11823,9 +11693,7 @@ function App() {
     const image = readerImages[chunk.index];
     const checkingImageSrc =
       image?.status === "checking" ? image.fallbackSrc || fallbackReaderImageSrc(chunk.index) : "";
-    const generatingImageSrc =
-      image?.status === "loading" ? image.fallbackSrc || fallbackReaderImageSrc(chunk.index) : "";
-    const isFreshGeneration = image?.status === "loading" && image.isFreshGeneration;
+    const prevSrc = image?.fallbackSrc || fallbackReaderImageSrc(chunk.index);
     const isLimit = Boolean(image?.limitReached);
     const label = chunk.pageNumber ? `Page ${chunk.pageNumber}` : `Words ${chunk.startWord}-${chunk.endWord}`;
 
@@ -11835,36 +11703,35 @@ function App() {
         key={`generated-${chunk.index}`}
       >
         {image?.status === "ready" && image.src ? (
-          <img
-            alt={chunk.pageNumber ? `Generated visual for page ${chunk.pageNumber}` : `Generated visual for words ${chunk.startWord} to ${chunk.endWord}`}
-            key={`ready-${chunk.index}-${image.src}`}
-            src={image.src}
-          />
+          <div className="reader-image-crossfade" key={`ready-${chunk.index}-${image.src}`}>
+            {prevSrc && prevSrc !== image.src && (
+              <img className="reader-image-prev" alt="" aria-hidden="true" src={prevSrc} />
+            )}
+            <img
+              alt={chunk.pageNumber ? `Generated visual for page ${chunk.pageNumber}` : `Generated visual for words ${chunk.startWord} to ${chunk.endWord}`}
+              className="reader-image-next"
+              src={image.src}
+            />
+          </div>
         ) : image?.status === "checking" ? (
           <div className="reader-generated-placeholder checking">
             {checkingImageSrc && <img alt="" aria-hidden="true" src={checkingImageSrc} />}
           </div>
+        ) : image?.status === "loading" && prevSrc ? (
+          <img
+            alt={chunk.pageNumber ? `Generated visual for page ${chunk.pageNumber}` : `Generated visual for words ${chunk.startWord} to ${chunk.endWord}`}
+            src={prevSrc}
+          />
         ) : (
           <div
             className={[
               "reader-generated-placeholder",
               image?.status === "error" ? "error" : "",
-              image?.status !== "error" ? "generating" : "",
-              isFreshGeneration ? "fresh-generation" : "",
-              generatingImageSrc ? "from-blur" : "",
               isLimit ? "limit" : ""
             ]
               .filter(Boolean)
               .join(" ")}
           >
-            {generatingImageSrc && <img className="reader-image-generating-backdrop" alt="" aria-hidden="true" src={generatingImageSrc} />}
-            {image?.status !== "error" && (
-              <div className="reader-image-generating-lights" aria-hidden="true">
-                <span className="reader-image-generating-light aurora" />
-                <span className="reader-image-generating-light bloom" />
-                <span className="reader-image-generating-light ember" />
-              </div>
-            )}
             {isLimit && image.plan === "free" && (
               <button className="text-upgrade-button" onClick={() => setReaderImageUpgradeOpen(true)} type="button">
                 Upgrade to Pro
@@ -11926,43 +11793,41 @@ function App() {
     const isReady = image?.status === "ready" && image.src;
     const checkingImageSrc =
       image?.status === "checking" ? image.fallbackSrc || fallbackReaderImageSrc(chunk.index) : "";
-    const generatingImageSrc =
-      image?.status === "loading" ? image.fallbackSrc || fallbackReaderImageSrc(chunk.index) : "";
-    const isFreshGeneration = image?.status === "loading" && image.isFreshGeneration;
+    const prevSrc = image?.fallbackSrc || fallbackReaderImageSrc(chunk.index);
 
     return (
       <aside className="reader-image-stage" aria-label="Current generated image">
         <div className="reader-image-hero">
           {isReady ? (
-            <img
-              alt={`Generated visual for words ${chunk?.startWord} to ${chunk?.endWord}`}
-              key={`stage-ready-${chunk.index}-${image.src}`}
-              src={image.src}
-            />
+            <div className="reader-image-crossfade" key={`stage-ready-${chunk.index}-${image.src}`}>
+              {prevSrc && prevSrc !== image.src && (
+                <img className="reader-image-prev" alt="" aria-hidden="true" src={prevSrc} />
+              )}
+              <img
+                alt={`Generated visual for words ${chunk?.startWord} to ${chunk?.endWord}`}
+                className="reader-image-next"
+                src={image.src}
+              />
+            </div>
           ) : image?.status === "checking" ? (
             <div className="reader-image-hero-checking">
               {checkingImageSrc && <img alt="" aria-hidden="true" src={checkingImageSrc} />}
             </div>
+          ) : image?.status === "loading" && prevSrc ? (
+            <img
+              alt={`Generated visual for words ${chunk?.startWord} to ${chunk?.endWord}`}
+              src={prevSrc}
+            />
           ) : (
             <div
               className={[
                 "reader-image-hero-placeholder",
-                isError ? "error" : "generating",
-                isFreshGeneration ? "fresh-generation" : "",
-                generatingImageSrc ? "from-blur" : "",
+                isError ? "error" : "",
                 isLimit ? "limit" : ""
               ]
                 .filter(Boolean)
                 .join(" ")}
             >
-              {generatingImageSrc && <img className="reader-image-generating-backdrop" alt="" aria-hidden="true" src={generatingImageSrc} />}
-              {!isError && (
-                <div className="reader-image-generating-lights" aria-hidden="true">
-                  <span className="reader-image-generating-light aurora" />
-                  <span className="reader-image-generating-light bloom" />
-                  <span className="reader-image-generating-light ember" />
-                </div>
-              )}
               {isLimit && image?.plan === "free" && (
                 <button className="reader-image-upgrade-inline" onClick={() => setReaderImageUpgradeOpen(true)} type="button">
                   Upgrade to Pro
@@ -13090,35 +12955,6 @@ function App() {
     </button>
   );
 
-  const sidebarStylePopover = (
-    <>
-      {readerImageStyleOpen && (
-        <section aria-label="Image style" className="image-style-menu rs-popover" id="image-style-menu">
-          <div className="image-style-menu-heading">
-            <strong>Styles</strong>
-          </div>
-          <div className="image-style-options">
-            {READER_IMAGE_STYLES.map((style) => (
-              <button
-                aria-pressed={readerImageStyle === style.id}
-                className={readerImageStyle === style.id ? "image-style-option active" : "image-style-option"}
-                key={style.id}
-                onClick={() => selectReaderImageStyle(style.id)}
-                type="button"
-              >
-                <img className="image-style-preview" src={style.previewSrc} alt={style.previewAlt} />
-                <span className="image-style-option-copy">
-                  <strong>{style.label}</strong>
-                  <small>{style.summary}</small>
-                </span>
-              </button>
-            ))}
-          </div>
-        </section>
-      )}
-    </>
-  );
-
   const sidebarTypographyPopover = (
     <>
       {settingsOpen && (
@@ -13313,8 +13149,7 @@ function App() {
     </>
   );
 
-  const readerToolsActive = readerToolsMenuOpen || readerImageStyleOpen || settingsOpen;
-  const activeReaderImageStyleLabel = READER_IMAGE_STYLES.find((style) => style.id === readerImageStyle)?.label ?? "";
+  const readerToolsActive = readerToolsMenuOpen || settingsOpen;
   const sidebarTools = (
     <div className="rs-more" ref={imageStyleMenuRef}>
       <button
@@ -13324,7 +13159,6 @@ function App() {
         className={readerToolsActive ? "rs-icon open" : "rs-icon"}
         onClick={() => {
           const nextOpen = !readerToolsActive;
-          setReaderImageStyleOpen(false);
           setSettingsOpen(false);
           setReaderMenuOpen(null);
           setReaderToolsMenuOpen(nextOpen);
@@ -13337,21 +13171,6 @@ function App() {
       {readerToolsMenuOpen && (
         <div className="rs-menu" role="menu" aria-label="Reader options">
           {sidebarImageButton}
-          <button
-            className="rs-menu-item"
-            disabled={!readerImageMode}
-            onClick={() => {
-              setReaderToolsMenuOpen(false);
-              setReaderImageStyleOpen(true);
-            }}
-            role="menuitem"
-            type="button"
-          >
-            <Palette size={16} aria-hidden="true" />
-            <span className="rs-menu-label">Image style</span>
-            <span className="rs-menu-value">{activeReaderImageStyleLabel}</span>
-            <ChevronRight className="rs-menu-chevron" size={14} aria-hidden="true" />
-          </button>
           <button
             className="rs-menu-item"
             onClick={() => {
@@ -13368,7 +13187,6 @@ function App() {
           </button>
         </div>
       )}
-      {sidebarStylePopover}
       {sidebarTypographyPopover}
     </div>
   );
