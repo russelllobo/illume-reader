@@ -11691,8 +11691,6 @@ function App() {
 
   const renderGeneratedReaderImage = useCallback((chunk: ReaderImageChunk) => {
     const image = readerImages[chunk.index];
-    const checkingImageSrc =
-      image?.status === "checking" ? image.fallbackSrc || fallbackReaderImageSrc(chunk.index) : "";
     const prevSrc = image?.fallbackSrc || fallbackReaderImageSrc(chunk.index);
     const isLimit = Boolean(image?.limitReached);
     const label = chunk.pageNumber ? `Page ${chunk.pageNumber}` : `Words ${chunk.startWord}-${chunk.endWord}`;
@@ -11707,11 +11705,7 @@ function App() {
             alt={chunk.pageNumber ? `Generated visual for page ${chunk.pageNumber}` : `Generated visual for words ${chunk.startWord} to ${chunk.endWord}`}
             src={image.src}
           />
-        ) : image?.status === "checking" ? (
-          <div className="reader-generated-placeholder checking">
-            {checkingImageSrc && <img alt="" aria-hidden="true" src={checkingImageSrc} />}
-          </div>
-        ) : image?.status === "loading" && prevSrc ? (
+        ) : (image?.status === "loading" || image?.status === "checking") && prevSrc ? (
           <img
             alt={chunk.pageNumber ? `Generated visual for page ${chunk.pageNumber}` : `Generated visual for words ${chunk.startWord} to ${chunk.endWord}`}
             src={prevSrc}
@@ -11785,8 +11779,6 @@ function App() {
     const isLimit = Boolean(image?.limitReached);
     const isError = image?.status === "error";
     const isReady = image?.status === "ready" && image.src;
-    const checkingImageSrc =
-      image?.status === "checking" ? image.fallbackSrc || fallbackReaderImageSrc(chunk.index) : "";
     const prevSrc = image?.fallbackSrc || fallbackReaderImageSrc(chunk.index);
 
     return (
@@ -11797,11 +11789,7 @@ function App() {
               alt={`Generated visual for words ${chunk?.startWord} to ${chunk?.endWord}`}
               src={image.src}
             />
-          ) : image?.status === "checking" ? (
-            <div className="reader-image-hero-checking">
-              {checkingImageSrc && <img alt="" aria-hidden="true" src={checkingImageSrc} />}
-            </div>
-          ) : image?.status === "loading" && prevSrc ? (
+          ) : (image?.status === "loading" || image?.status === "checking") && prevSrc ? (
             <img
               alt={`Generated visual for words ${chunk?.startWord} to ${chunk?.endWord}`}
               src={prevSrc}
