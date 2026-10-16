@@ -1,156 +1,32 @@
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent } from "react";
 import {
   ArrowRight,
-  BookOpenText,
+  AudioLines,
+  BookOpen,
+  ChevronDown,
+  Highlighter,
+  ImageIcon,
   Loader2,
   Mail,
-  Moon,
-  Star,
-  Sun,
+  Pause,
+  Play,
+  RotateCcw,
+  Sparkles,
   X
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { CSSProperties, FormEvent } from "react";
+import { COVERS, LOGO, PASSAGE_BOOK, PASSAGE_PARAGRAPHS } from "./concepts/shared";
+import "./concepts/Concept2.css";
 
-type ClassicBook = {
-  title: string;
-  author: string;
-  cover: string;
-};
+const STEPS = ["The page", "Narration", "Word tracking", "Image Mode"];
+const STEP_TIMES = [0, 1200, 2800, 5600];
+const WORD_MS = 260;
+const DURATION_MS = 11200;
+const BARS = 28;
 
-const TOP_SHELF_BOOKS: ClassicBook[] = [
-  {
-    title: "Pride and Prejudice",
-    author: "Jane Austen",
-    cover: "/landing/covers/pride-and-prejudice.jpg"
-  },
-  {
-    title: "Frankenstein",
-    author: "Mary Shelley",
-    cover: "/landing/covers/frankenstein.jpg"
-  },
-  {
-    title: "Dracula",
-    author: "Bram Stoker",
-    cover: "/landing/covers/dracula.jpg"
-  },
-  {
-    title: "The Great Gatsby",
-    author: "F. Scott Fitzgerald",
-    cover: "/landing/covers/the-great-gatsby.jpg"
-  },
-  {
-    title: "Moby-Dick",
-    author: "Herman Melville",
-    cover: "/landing/covers/moby-dick.jpg"
-  },
-  {
-    title: "Dorian Gray",
-    author: "Oscar Wilde",
-    cover: "/landing/covers/the-picture-of-dorian-gray.jpg"
-  },
-  {
-    title: "The Odyssey",
-    author: "Homer",
-    cover: "/landing/covers/the-odyssey.jpg"
-  },
-  {
-    title: "Crime and Punishment",
-    author: "Fyodor Dostoevsky",
-    cover: "/landing/covers/crime-and-punishment.jpg"
-  },
-  {
-    title: "Monte Cristo",
-    author: "Alexandre Dumas",
-    cover: "/landing/covers/the-count-of-monte-cristo.jpg"
-  },
-  {
-    title: "Jane Eyre",
-    author: "Charlotte Bronte",
-    cover: "/landing/covers/jane-eyre.jpg"
-  }
-];
-
-const LOWER_SHELF_BOOKS: ClassicBook[] = [
-  {
-    title: "Wuthering Heights",
-    author: "Emily Bronte",
-    cover: "/landing/covers/wuthering-heights.jpg"
-  },
-  {
-    title: "The Secret Garden",
-    author: "Frances Hodgson Burnett",
-    cover: "/landing/covers/the-secret-garden.jpg"
-  },
-  {
-    title: "Little Women",
-    author: "Louisa May Alcott",
-    cover: "/landing/covers/little-women.jpg"
-  },
-  {
-    title: "The Scarlet Letter",
-    author: "Nathaniel Hawthorne",
-    cover: "/landing/covers/the-scarlet-letter.jpg"
-  },
-  {
-    title: "Two Cities",
-    author: "Charles Dickens",
-    cover: "/landing/covers/a-tale-of-two-cities.jpg"
-  },
-  {
-    title: "Treasure Island",
-    author: "Robert Louis Stevenson",
-    cover: "/landing/covers/treasure-island.jpg"
-  },
-  {
-    title: "Anne of Green Gables",
-    author: "L. M. Montgomery",
-    cover: "/landing/covers/anne-of-green-gables.jpg"
-  },
-  {
-    title: "The Time Machine",
-    author: "H. G. Wells",
-    cover: "/landing/covers/the-time-machine.jpg"
-  },
-  {
-    title: "War of the Worlds",
-    author: "H. G. Wells",
-    cover: "/landing/covers/the-war-of-the-worlds.jpg"
-  },
-  {
-    title: "Wizard of Oz",
-    author: "L. Frank Baum",
-    cover: "/landing/covers/the-wonderful-wizard-of-oz.jpg"
-  }
-];
-
-function ClassicsWall() {
-  const topShelfBooks = [...TOP_SHELF_BOOKS, ...TOP_SHELF_BOOKS];
-  const lowerShelfBooks = [...LOWER_SHELF_BOOKS, ...LOWER_SHELF_BOOKS];
-  const renderBook = (book: ClassicBook, i: number, row: string) => (
-    <figure className="classic-book" key={`${row}-${book.title}-${i}`}>
-      <img src={book.cover} alt="" />
-      <figcaption>
-        <strong>{book.title}</strong>
-        <span>{book.author}</span>
-      </figcaption>
-    </figure>
-  );
-
-  return (
-    <div className="classics-wall" aria-hidden="true">
-      <div className="classics-wall-row">
-        <div className="classics-wall-track">
-          {topShelfBooks.map((book, i) => renderBook(book, i, "top"))}
-        </div>
-      </div>
-      <div className="classics-wall-row alternate">
-        <div className="classics-wall-track">
-          {lowerShelfBooks.map((book, i) => renderBook(book, i, "lower"))}
-        </div>
-      </div>
-    </div>
-  );
-}
+const clamp = (v: number, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const seg = (p: number, a: number, b: number) => clamp((p - a) / (b - a));
+const ease = (t: number) => t * t * (3 - 2 * t);
 
 interface LandingPageProps {
   handleAuth: (event: FormEvent<HTMLFormElement>) => Promise<void>;
@@ -165,170 +41,6 @@ interface LandingPageProps {
   notice: string;
   colorScheme: "light" | "dark";
   onToggleColorScheme: () => void;
-}
-
-const LANDING_READER_IMAGES = [
-  "/landing/reader-1.webp",
-  "/landing/reader-2.webp",
-  "/landing/reader-3.webp",
-  "/landing/reader-4.webp"
-];
-
-const LANDING_HERO_IMAGE_TIMEOUT_MS = 520;
-const prideAndPrejudiceCover =
-  "/landing/covers/pride-and-prejudice.jpg";
-
-const preloadImage = (src: string) =>
-  new Promise<void>((resolve) => {
-    const image = new Image();
-    image.onload = () => {
-      if ("decode" in image) {
-        image.decode().then(() => resolve()).catch(() => resolve());
-        return;
-      }
-
-      resolve();
-    };
-    image.onerror = () => resolve();
-    image.src = src;
-  });
-
-const readerParagraphs = `
-Had she found Jane in any apparent danger, Mrs. Bennet would have been very miserable; but being satisfied on seeing her that her illness was not alarming, she had no wish of her recovering immediately, as her restoration to health would probably remove her from Netherfield. She would not listen therefore to her daughter's proposal of being carried home; neither did the apothecary, who arrived about the same time, think it at all advisable. After sitting a little while with Jane, on Miss Bingley's appearance and invitation, the mother and three daughters all attended her into the breakfast parlour. Bingley met them with hopes that Mrs. Bennet had not found Miss Bennet worse than she expected.
-
-"Indeed I have, Sir," was her answer. "She is a great deal too ill to be moved. Mr. Jones says we must not think of moving her. We must trespass a little longer on your kindness."
-
-"Removed!" cried Bingley. "It must not be thought of. My sister, I am sure, will not hear of her removal."
-
-"You may depend upon it, Madam," said Miss Bingley, with cold civility, "that Miss Bennet shall receive every possible attention while she remains with us."
-
-Mrs. Bennet was profuse in her acknowledgments.
-
-"I am sure," she added, "if it was not for such good friends I do not know what would become of her, for she is very ill indeed, and suffers a vast deal, though with the greatest patience in the world, which is always the way with her, for she has, without exception, the sweetest temper I ever met with. I often tell my other girls they are nothing to her. You have a sweet room here, Mr. Bingley, and a charming prospect over that gravel walk. I do not know a place in the country that is equal to Netherfield. You will not think of quitting it in a hurry I hope, though you have but a short lease."
-
-"Whatever I do is done in a hurry," replied he; "and therefore if I should resolve to quit Netherfield, I should probably be off in five minutes. At present, however, I consider myself as quite fixed here."
-
-"That is exactly what I should have supposed of you," said Elizabeth.
-
-"You begin to comprehend me, do you?" cried he, turning towards her.
-
-"Oh! yes - I understand you perfectly."
-
-"I wish I might take this for a compliment; but to be so easily seen through I am afraid is pitiful."
-
-"That is as it happens. It does not necessarily follow that a deep, intricate character is more or less estimable than such a one as yours."
-
-"Lizzy," cried her mother, "remember where you are, and do not run on in the wild manner that you are suffered to do at home."
-
-"I did not know before," continued Bingley immediately, "that you were a studier of character. It must be an amusing study."
-
-"Yes; but intricate characters are the most amusing. They have at least that advantage."
-
-"The country," said Darcy, "can in general supply but few subjects for such a study. In a country neighbourhood you move in a very confined and unvarying society."
-
-"But people themselves alter so much, that there is something new to be observed in them forever."
-
-"Yes, indeed," cried Mrs. Bennet, offended by his manner of mentioning a country neighbourhood. "I assure you there is quite as much of that going on in the country as in town."
-
-Everybody was surprised; and Darcy, after looking at her for a moment, turned silently away.
-
-X
-
-The day passed much as the day before had done. Mrs. Hurst and Miss Bingley had spent some hours of the morning with the invalid, who continued, though slowly, to mend; and in the evening Elizabeth joined their party in the drawing-room. The loo table, however, did not appear. Mr. Darcy was writing, and Miss Bingley, seated near him, was watching the progress of his letter, and repeatedly calling off his attention by messages to his sister. Mr. Hurst and Mr. Bingley were at piquet, and Mrs. Hurst was observing their game.
-
-Elizabeth took up some needlework, and was sufficiently amused in attending to what passed between Darcy and his companion. The perpetual commendations of the lady either on his handwriting, or on the evenness of his lines, or on the length of his letter, with the perfect unconcern with which her praises were received, formed a curious dialogue, and was exactly in unison with her opinion of each.
-
-"How delighted Miss Darcy will be to receive such a letter!"
-
-"You are mistaken. I write rather slowly."
-
-"How many letters you must have occasion to write in the course of the year! Letters of business too! How odious I should think them!"
-
-"It is fortunate, then, that they fall to my lot instead of to yours."
-
-"Pray tell your sister that I long to see her."
-
-"I have already told her so once, by your desire."
-
-"I am afraid you do not like your pen. Let me mend it for you. I mend pens remarkably well."
-
-"Thank you - but I always mend my own."
-`.trim().split(/\n\s*\n/);
-
-const demoReaderParagraphs = readerParagraphs.slice(1, 7);
-const readerWords = demoReaderParagraphs.flatMap((paragraph) => paragraph.split(/\s+/));
-
-function IllumeReaderText({ currentWordIndex }: { currentWordIndex: number }) {
-  let wordOffset = 0;
-
-  return (
-    <>
-      {demoReaderParagraphs.map((paragraph) => {
-        const words = paragraph.split(/\s+/);
-        const paragraphStart = wordOffset;
-        wordOffset += words.length;
-
-        return (
-          <p key={paragraphStart}>
-            {words.map((word, idx) => {
-              const absoluteIdx = paragraphStart + idx;
-
-              return (
-                <span key={`${paragraphStart}-${word}-${idx}`}>
-                  <span className={absoluteIdx === currentWordIndex ? "illume-word active" : "illume-word"}>
-                    {word}
-                  </span>{" "}
-                </span>
-              );
-            })}
-          </p>
-        );
-      })}
-    </>
-  );
-}
-
-function IllumeProductScreenshot({
-  currentWordIndex,
-  currentImageIndex
-}: {
-  currentWordIndex: number;
-  currentImageIndex: number;
-}) {
-  return (
-    <div className="landing-reader-demo" aria-label="illume image mode product screenshot">
-      <div className="landing-reader-page">
-        <div className="landing-reader-copy-scroll">
-          <div className="landing-book-identity">
-            <img src={prideAndPrejudiceCover} alt="Pride and Prejudice Standard Ebooks cover" />
-            <div>
-              <div className="landing-screen-meta">Jane Austen</div>
-              <h3>Pride and Prejudice</h3>
-            </div>
-          </div>
-          <IllumeReaderText currentWordIndex={currentWordIndex} />
-        </div>
-      </div>
-
-      <div className="landing-reader-art">
-        <div className="landing-reader-art-frame">
-          {LANDING_READER_IMAGES.map((src, index) => (
-            <img
-              className={index === currentImageIndex ? "active" : ""}
-              key={src}
-              src={src}
-              alt={index === currentImageIndex ? "Generated visual for a Pride and Prejudice passage" : ""}
-              aria-hidden={index === currentImageIndex ? undefined : true}
-              decoding="async"
-              loading="eager"
-              width={1024}
-              height={1536}
-            />
-          ))}
-        </div>
-      </div>
-    </div>
-  );
 }
 
 function GoogleIcon() {
@@ -364,127 +76,182 @@ export function LandingPage({
   authMode,
   setAuthMode,
   busy,
-  notice,
-  colorScheme,
-  onToggleColorScheme
+  notice
 }: LandingPageProps) {
+  const storyRef = useRef<HTMLElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const textRef = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const heroRef = useRef<HTMLElement>(null);
+  const wordRefs = useRef<HTMLSpanElement[]>([]);
+  const stepRefs = useRef<HTMLButtonElement[]>([]);
+  const shelfRef = useRef<HTMLDivElement>(null);
+  const shelfLightRef = useRef<HTMLDivElement>(null);
+  const finaleRef = useRef<HTMLElement>(null);
+  const replayRef = useRef<() => void>(() => {});
+  const seekRef = useRef<(ms: number) => void>(() => {});
+  const pausedRef = useRef(false);
+  const [playback, setPlayback] = useState<"playing" | "paused" | "finished">("playing");
+  const [reduced, setReduced] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+  const [lit, setLit] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
-  const [currentWordIndex, setCurrentWordIndex] = useState(0);
-  const [currentImageIndex, setCurrentImageIndex] = useState(0);
-  const [isHeroReady, setIsHeroReady] = useState(false);
   const [authPane, setAuthPane] = useState<"choice" | "email">("choice");
-  const [isHeaderCondensed, setIsHeaderCondensed] = useState(false);
-  const [detailHeadingProgress, setDetailHeadingProgress] = useState(0);
-  const detailSectionRef = useRef<HTMLElement | null>(null);
-  const detailHeading = "For readers with wandering minds.";
 
-  useLayoutEffect(() => {
-    document.documentElement.classList.add("landing-scroll");
+  const paragraphs = useMemo(() => {
+    let i = 0;
+    return PASSAGE_PARAGRAPHS.map((p) => p.split(/\s+/).map((w) => ({ w, i: i++ })));
+  }, []);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.add("landing-scroll");
     document.body.classList.add("landing-scroll");
-
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const onMq = () => setReduced(mq.matches);
+    mq.addEventListener("change", onMq);
     return () => {
-      document.documentElement.classList.remove("landing-scroll");
+      root.classList.remove("landing-scroll");
       document.body.classList.remove("landing-scroll");
+      mq.removeEventListener("change", onMq);
     };
   }, []);
 
   useEffect(() => {
-    const updateHeader = () => setIsHeaderCondensed(window.scrollY > 24);
-
-    updateHeader();
-    window.addEventListener("scroll", updateHeader, { passive: true });
-    return () => window.removeEventListener("scroll", updateHeader);
-  }, []);
-
-  useEffect(() => {
-    let frame = 0;
-
-    const updateHeadingProgress = () => {
-      frame = 0;
-      const section = detailSectionRef.current;
-      if (!section) return;
-
-      const rect = section.getBoundingClientRect();
-      const start = window.innerHeight * 0.82;
-      const distance = window.innerHeight * 0.48;
-      const nextProgress = Math.max(0, Math.min(1, (start - rect.top) / distance));
-
-      setDetailHeadingProgress((current) =>
-        Math.abs(current - nextProgress) > 0.006 ? nextProgress : current
-      );
-    };
-
-    const requestUpdate = () => {
-      if (frame) return;
-      frame = window.requestAnimationFrame(updateHeadingProgress);
-    };
-
-    updateHeadingProgress();
-    window.addEventListener("scroll", requestUpdate, { passive: true });
-    window.addEventListener("resize", requestUpdate);
-
-    return () => {
-      if (frame) window.cancelAnimationFrame(frame);
-      window.removeEventListener("scroll", requestUpdate);
-      window.removeEventListener("resize", requestUpdate);
-    };
-  }, []);
-
-  useEffect(() => {
-    const focusItems = Array.from(document.querySelectorAll<HTMLElement>(".illume-focus-feature"));
-
-    if (!focusItems.length) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (!entry.isIntersecting) return;
-          entry.target.classList.add("is-visible");
-          observer.unobserve(entry.target);
-        });
-      },
-      { threshold: 0.32 }
+    const el = finaleRef.current;
+    if (!el) return;
+    if (reduced) {
+      setLit(true);
+      return;
+    }
+    const io = new IntersectionObserver(
+      ([entry]) => entry.isIntersecting && setLit(true),
+      { threshold: 0.45 }
     );
-
-    focusItems.forEach((item) => observer.observe(item));
-
-    return () => observer.disconnect();
-  }, []);
+    io.observe(el);
+    return () => io.disconnect();
+  }, [reduced]);
 
   useEffect(() => {
-    let isMounted = true;
-    const readyTimer = window.setTimeout(() => {
-      if (isMounted) setIsHeroReady(true);
-    }, LANDING_HERO_IMAGE_TIMEOUT_MS);
+    const story = storyRef.current;
+    const stage = stageRef.current;
+    const text = textRef.current;
+    const viewport = viewportRef.current;
+    const hero = heroRef.current;
+    if (!story || !stage || !text || !viewport || !hero) return;
 
-    Promise.all([preloadImage(prideAndPrejudiceCover), ...LANDING_READER_IMAGES.map(preloadImage)])
-      .then(() => {
-        if (!isMounted) return;
-        window.clearTimeout(readyTimer);
-        setIsHeroReady(true);
+    let elapsed = 0;
+    let started = reduced;
+    let visible = false;
+    let previous = performance.now();
+    let current = -2;
+    let chapter = -1;
+    let finished = false;
+    let raf = 0;
+
+    const setWord = (index: number) => {
+      if (index === current) return;
+      wordRefs.current.forEach((word, k) => {
+        word.classList.toggle("c2-w--read", k < index);
+        word.classList.toggle("c2-w--now", k === index);
       });
-
-    return () => {
-      isMounted = false;
-      window.clearTimeout(readyTimer);
+      current = index;
     };
-  }, []);
+    const draw = () => {
+      const time = reduced ? DURATION_MS : elapsed;
+      const narration = ease(seg(time, 1200, 2200));
+      const follow = ease(seg(time, 2800, 3500));
+      const image = ease(seg(time, 5600, 7300));
+      stage.style.setProperty("--narr", String(narration));
+      stage.style.setProperty("--follow", String(follow));
+      stage.style.setProperty("--image", String(image));
+      stage.style.setProperty("--settle", String(ease(seg(time, 500, 1800))));
+      stage.style.setProperty("--p", String(clamp(time / DURATION_MS)));
+      const nextChapter = time >= 5600 ? 3 : time >= 2800 ? 2 : time >= 1200 ? 1 : 0;
+      if (nextChapter !== chapter) {
+        chapter = nextChapter;
+        stage.dataset.chapter = String(chapter);
+        stepRefs.current.forEach((step, k) => {
+          step.classList.toggle("c2-step--on", k <= chapter);
+          if (k === chapter) step.setAttribute("aria-current", "step");
+          else step.removeAttribute("aria-current");
+        });
+      }
+      stage.classList.toggle("c2-is-speaking", time >= 1200 && time < DURATION_MS && !pausedRef.current && visible && !reduced);
+      const index = time >= 2800 ? Math.min(31, Math.floor((time - 2800) / WORD_MS)) : -1;
+      setWord(index);
+      // Keep the same passage in view throughout the reveal.
+      text.style.transform = "none";
+      if (time >= DURATION_MS && !finished) {
+        finished = true;
+        setPlayback("finished");
+      }
+    };
+    const frame = (now: number) => {
+      const delta = now - previous;
+      previous = now;
+      if (started && visible && !pausedRef.current && !reduced) elapsed = Math.min(DURATION_MS, elapsed + delta);
+      draw();
+      const rect = hero.getBoundingClientRect();
+      hero.style.setProperty("--hero", String(clamp(-rect.top / Math.max(1, rect.height))));
+      raf = requestAnimationFrame(frame);
+    };
+    const seek = (ms: number) => {
+      elapsed = ms;
+      previous = performance.now();
+      started = true;
+      finished = false;
+      pausedRef.current = false;
+      setPlayback("playing");
+      draw();
+    };
+    seekRef.current = seek;
+    replayRef.current = () => seek(0);
+    const observer = new IntersectionObserver(([entry]) => {
+      visible = entry.isIntersecting;
+      if (visible) started = true;
+      previous = performance.now();
+    }, { threshold: 0.35 });
+    observer.observe(stage);
+    draw();
+    raf = requestAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(raf);
+      observer.disconnect();
+    };
+  }, [reduced]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      setCurrentWordIndex((prev) => (prev >= readerWords.length - 1 ? 0 : prev + 1));
-    }, 360);
+    const shelf = shelfRef.current;
+    const light = shelfLightRef.current;
+    if (!shelf || !light || reduced) return;
+    let raf = 0;
+    let x = 0;
+    let y = 0;
+    const onMove = (e: PointerEvent) => {
+      const r = shelf.getBoundingClientRect();
+      x = e.clientX - r.left;
+      y = e.clientY - r.top;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        light.style.transform = `translate3d(${x}px, ${y}px, 0) translate(-50%, -50%)`;
+        light.style.opacity = "1";
+      });
+    };
+    const onLeave = () => {
+      light.style.opacity = "0";
+    };
+    shelf.addEventListener("pointermove", onMove);
+    shelf.addEventListener("pointerleave", onLeave);
+    return () => {
+      cancelAnimationFrame(raf);
+      shelf.removeEventListener("pointermove", onMove);
+      shelf.removeEventListener("pointerleave", onLeave);
+    };
+  }, [reduced]);
 
-    return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setCurrentImageIndex((prev) => (prev + 1) % LANDING_READER_IMAGES.length);
-    }, 1800);
-
-    return () => window.clearInterval(timer);
-  }, []);
+  const scrollToStory = () => storyRef.current?.scrollIntoView({ behavior: reduced ? "auto" : "smooth" });
 
   const handleOpenAuth = (mode: "sign-in" | "sign-up") => {
     setAuthMode(mode);
@@ -498,141 +265,256 @@ export function LandingPage({
   };
 
   return (
-<div className="illume-theme">
-        <header className={`illume-header${isHeaderCondensed ? " is-condensed" : ""}`}>
-          <a href="#" className="illume-brand" aria-label="illume home">
-            <img src="/landing/logo.webp" alt="" className="illume-brand-mark" />
-            <span>illume</span>
-          </a>
-          <div className="illume-header-actions">
-            <button
-              className="illume-color-toggle"
-              onClick={onToggleColorScheme}
-              type="button"
-              aria-label={colorScheme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-            >
-              {colorScheme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
-            </button>
-            <button onClick={() => handleOpenAuth("sign-in")} className="illume-sign-in-button" type="button">
-              <BookOpenText size={15} />
-              <span>Read now</span>
-            </button>
-          </div>
-        </header>
+    <div className={`c2-root${reduced ? " c2-static" : ""}`}>
+      <header className="c2-nav">
+        <a className="c2-brand" href="#" aria-label="illume home">
+          <img src={LOGO} alt="" width={30} height={30} />
+          <span>illume</span>
+        </a>
+        <nav className="c2-nav-links" aria-label="Primary">
+          <button type="button" className="c2-link" onClick={scrollToStory}>
+            How it works
+          </button>
+          <button type="button" className="c2-link c2-hide-sm" onClick={() => handleOpenAuth("sign-in")}>
+            Sign in
+          </button>
+          <button type="button" className="c2-btn c2-btn--small" onClick={() => handleOpenAuth("sign-up")}>
+            Start free
+          </button>
+        </nav>
+      </header>
 
       <main>
-        <section id="product" className={isHeroReady ? "illume-hero is-ready" : "illume-hero"}>
-          <div className="illume-hero-copy">
-            <div className="illume-hero-proof">
-              <div className="proof-avatars" aria-hidden="true">
-                <span className="proof-dot proof-dot--a">J</span>
-                <span className="proof-dot proof-dot--b">A</span>
-                <span className="proof-dot proof-dot--c">M</span>
-                <span className="proof-dot proof-dot--d">
-                  <Star size={9} fill="currentColor" />
-                </span>
-              </div>
-              <div className="proof-text">
-                <span className="proof-stat">12,000+ readers</span>
-                <span className="proof-divider-dot" aria-hidden="true" />
-                <span className="proof-rating">4.9 average</span>
-              </div>
+        <section className="c2-hero" ref={heroRef} aria-labelledby="c2-hero-title">
+          <div className="c2-hero-wall" aria-hidden="true">
+            <div className="c2-hero-wall-inner">
+              {[0, 1, 2].map((r) =>
+                PASSAGE_PARAGRAPHS.map((p, k) => <p key={`${r}-${k}`}>{p}</p>)
+              )}
             </div>
-            <h1>Reading, but easier</h1>
-            <p className="illume-hero-line">
-              Illume turns books into a more immersive reading experience, with natural narration, live word tracking, and AI-generated visuals that help you keep focus chapter after chapter.
+          </div>
+          <div className="c2-hero-flame" aria-hidden="true" />
+          <div className="c2-hero-content">
+            <p className="c2-eyebrow">
+              <span>illume</span> <em>/ɪˈluːm/</em> — to light up
             </p>
-            <div className="illume-actions">
-              <button onClick={() => handleOpenAuth("sign-up")} className="illume-primary-button" type="button">
-                <span>Start reading free.</span>
-                <ArrowRight size={16} />
+            <h1 id="c2-hero-title" className="c2-hero-title">
+              Light up <span>every page.</span>
+            </h1>
+            <p className="c2-hero-sub">
+              For minds that wander. Illume reads your books aloud, lights each word as it&apos;s spoken,
+              and paints every scene — so you never lose the thread.
+            </p>
+            <div className="c2-hero-ctas">
+              <button type="button" className="c2-btn" onClick={() => handleOpenAuth("sign-up")}>
+                Start reading free <ArrowRight size={18} aria-hidden="true" />
+              </button>
+              <button type="button" className="c2-btn c2-btn--ghost" onClick={scrollToStory}>
+                See it happen
               </button>
             </div>
           </div>
-
-          <div className="illume-hero-product">
-            <IllumeProductScreenshot
-              currentWordIndex={currentWordIndex}
-              currentImageIndex={currentImageIndex}
-            />
-          </div>
-        </section>
-
-        <section id="library" className="illume-detail-section" ref={detailSectionRef}>
-          <div className="illume-detail-copy">
-            <h2 className="illume-scroll-heading" aria-label={detailHeading}>
-              {detailHeading.split("").map((char, index) => {
-                const charProgress = Math.max(0, Math.min(1, (detailHeadingProgress - index * 0.024) * 4.8));
-                return (
-                  <span
-                    aria-hidden="true"
-                    className="illume-scroll-char"
-                    key={`${char}-${index}`}
-                    style={{
-                      "--char-light": charProgress
-                    } as CSSProperties}
-                  >
-                    {char}
-                  </span>
-                );
-              })}
-            </h2>
-            <p className="illume-detail-lede">
-              Some books are brilliant. Some are very good at making you check your phone.
-            </p>
-            <p>
-              Illume helps you stay with the page by combining reading, listening, and visuals in one calm, focused space.
-            </p>
-          </div>
-
-          <div className="illume-library-showcase">
-            <ClassicsWall />
-          </div>
-        </section>
-
-        <section className="illume-focus-block" aria-label="Reading support features">
-          <div className="illume-feature-lines">
-            <article className="illume-focus-feature">
-              <div>
-                <h3>Listen while you read</h3>
-                <p>Natural narration keeps the story moving when your attention starts to drift.</p>
-              </div>
-            </article>
-            <article className="illume-focus-feature">
-              <div>
-                <h3>Follow every word</h3>
-                <p>Live word tracking helps you stay locked onto the page.</p>
-              </div>
-            </article>
-            <article className="illume-focus-feature">
-              <div>
-                <h3>See the scene</h3>
-                <p>Image Mode makes dense or abstract passages feel easier to understand.</p>
-              </div>
-            </article>
-          </div>
-        </section>
-
-        <section id="pricing" className="illume-final-cta">
-          <img src="/landing/logo.webp" alt="" aria-hidden="true" />
-          <div>
-            <h2>Stop restarting the same chapter.</h2>
-          </div>
-          <button onClick={() => handleOpenAuth("sign-up")} className="illume-primary-button" type="button">
-            <span>Get started free</span>
-            <ArrowRight size={16} />
+          <button type="button" className="c2-scroll-cue" onClick={scrollToStory} aria-label="Scroll to the demo">
+            <span>Watch it light up</span>
+            <ChevronDown size={18} aria-hidden="true" />
           </button>
+        </section>
+
+        <section className="c2-story" ref={storyRef} aria-label="How Illume transforms a page">
+          <div className="c2-stage" ref={stageRef} data-chapter="0">
+            <div className="c2-stage-glow" aria-hidden="true" />
+            <div className="c2-stage-grid">
+              <div className="c2-demo-heading">
+                <h2>A page, brought to life.</h2>
+                <ol className="c2-steps" aria-label="Demo stages">
+                  {STEPS.map((label, k) => (
+                    <li key={label}>
+                      <button type="button" disabled={reduced}
+                        onClick={() => seekRef.current(STEP_TIMES[k])}
+                        ref={(el) => { if (el) stepRefs.current[k] = el; }}>
+                        <span className="c2-step-dot" aria-hidden="true" />{label}
+                      </button>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+
+              <div className="c2-visual">
+                <div className="c2-device">
+                  <div className="c2-device-shell" aria-hidden="true" />
+                  <div className="c2-topbar" aria-hidden="true">
+                    <img src={PASSAGE_BOOK.cover} alt="" />
+                    <div>
+                      <strong>{PASSAGE_BOOK.title}</strong>
+                      <span>{PASSAGE_BOOK.author} · Chapter 9</span>
+                    </div>
+                    <span className="c2-topbar-pill">
+                      <Sparkles size={13} /> Image Mode
+                    </span>
+                  </div>
+                  <div className="c2-device-body">
+                    <article className="c2-page" aria-label={`Excerpt from ${PASSAGE_BOOK.title}`}>
+                      <p className="c2-page-chapter">Chapter IX</p>
+                      <div className="c2-page-view" ref={viewportRef}>
+                        <div className="c2-text" ref={textRef}>
+                          {paragraphs.map((para, pk) => (
+                            <p key={pk}>
+                              {para.map(({ w, i }) => (
+                                <Fragment key={i}>
+                                  <span
+                                    className="c2-w"
+                                    ref={(el) => {
+                                      if (el) wordRefs.current[i] = el;
+                                    }}
+                                  >
+                                    {w}
+                                  </span>{" "}
+                                </Fragment>
+                              ))}
+                            </p>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="c2-player">
+                        <span className="c2-player-btn" aria-hidden="true">
+                          <Pause size={15} />
+                        </span>
+                        <span className="c2-wave" aria-hidden="true">
+                          {Array.from({ length: BARS }, (_, k) => (
+                            <i key={k} style={{ animationDelay: `${(k * 97) % 900}ms` }} />
+                          ))}
+                        </span>
+                        <span className="c2-voice">
+                          <span className="c2-voice-dot" aria-hidden="true" />
+                          Geffen
+                        </span>
+                        <span className="c2-speed" aria-hidden="true">
+                          1.0×
+                        </span>
+                      </div>
+                    </article>
+                    <figure className="c2-art">
+                      <div className="c2-art-bloom" aria-hidden="true" />
+                      <div className="c2-art-frame">
+                        <img src="/landing/reader-cartoon-1.webp"
+                          alt="Cartoon illustration of characters from Pride and Prejudice" />
+                        <figcaption className="c2-art-tag">
+                          <Sparkles size={12} aria-hidden="true" /> Image Mode · Cartoon
+                        </figcaption>
+                      </div>
+                    </figure>
+                  </div>
+                </div>
+              </div>
+              {!reduced && (
+                <div className="c2-demo-controls">
+                  {playback !== "finished" && (
+                    <button type="button" className="c2-replay" onClick={() => {
+                      pausedRef.current = !pausedRef.current;
+                      setPlayback(pausedRef.current ? "paused" : "playing");
+                    }}>
+                      {playback === "paused" ? <Play size={14} /> : <Pause size={14} />}
+                      {playback === "paused" ? "Resume" : "Pause"}
+                    </button>
+                  )}
+                  <button type="button" className="c2-replay" onClick={() => replayRef.current()}>
+                    <RotateCcw size={14} aria-hidden="true" /> Replay
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className="c2-recap" aria-labelledby="c2-recap-title">
+          <h2 id="c2-recap-title" className="c2-section-title">
+            Everything lit. <span>Nothing lost.</span>
+          </h2>
+          <ul className="c2-recap-list">
+            <li>
+              <AudioLines aria-hidden="true" />
+              <h3>Natural narration</h3>
+              <p>Geffen reads any chapter aloud with real warmth and rhythm.</p>
+            </li>
+            <li>
+              <Highlighter aria-hidden="true" />
+              <h3>Live word tracking</h3>
+              <p>Each word glows as it&apos;s spoken, so your place is never lost.</p>
+            </li>
+            <li>
+              <ImageIcon aria-hidden="true" />
+              <h3>Image Mode</h3>
+              <p>An illustration for every section keeps the story in sight.</p>
+            </li>
+            <li>
+              <BookOpen aria-hidden="true" />
+              <h3>Your whole library</h3>
+              <p>EPUB and PDF, picked up exactly where you left off.</p>
+            </li>
+          </ul>
+        </section>
+
+        <section className="c2-shelf-section" aria-labelledby="c2-shelf-title">
+          <div className="c2-shelf-head">
+            <h2 id="c2-shelf-title" className="c2-section-title">
+              The classics, <span>by candlelight.</span>
+            </h2>
+            <p>Start with timeless books ready to read, hear and see — or bring your own.</p>
+          </div>
+          <div className="c2-shelf" ref={shelfRef}>
+            <div className="c2-shelf-light" ref={shelfLightRef} aria-hidden="true" />
+            <div className="c2-shelf-track">
+              {[0, 1].map((copy) => (
+                <ul className="c2-shelf-row" key={copy} aria-hidden={copy === 1 || undefined}>
+                  {COVERS.map((c) => (
+                    <li key={c.title}>
+                      <button
+                        type="button"
+                        className="c2-cover"
+                        onClick={() => handleOpenAuth("sign-up")}
+                        aria-label={`Read ${c.title} by ${c.author}`}
+                        tabIndex={copy === 1 ? -1 : undefined}
+                      >
+                        <img src={c.cover} alt="" loading="lazy" />
+                        <span className="c2-cover-sheen" aria-hidden="true" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ))}
+            </div>
+            <div className="c2-shelf-ledge" aria-hidden="true" />
+          </div>
+          <div className="c2-shelf-foot">
+            <button type="button" className="c2-btn c2-btn--ghost" onClick={() => handleOpenAuth("sign-up")}>
+              Browse the library <ArrowRight size={18} aria-hidden="true" />
+            </button>
+          </div>
+        </section>
+
+        <section className={`c2-finale${lit ? " c2-finale--lit" : ""}`} ref={finaleRef} aria-labelledby="c2-finale-title">
+          <div className="c2-finale-bloom" aria-hidden="true" />
+          <h2 id="c2-finale-title" className="c2-finale-title">
+            <span className="c2-finale-dim">Stop restarting the same chapter.</span>
+            <span className="c2-finale-lit" aria-hidden="true">
+              Stop restarting the same chapter.
+            </span>
+          </h2>
+          <p className="c2-finale-sub">Your mind will wander. Illume brings it back.</p>
+          <button type="button" className="c2-btn c2-btn--glow" onClick={() => handleOpenAuth("sign-up")}>
+            Light up your first book <ArrowRight size={18} aria-hidden="true" />
+          </button>
+          <p className="c2-finale-note">Free plan · Pro when you want more</p>
         </section>
       </main>
 
-      <footer className="illume-footer">
-        <div className="illume-footer-brand">
-          <img src="/landing/logo.webp" alt="" aria-hidden="true" />
-          <span className="illume-footer-copy">
-            <span className="illume-footer-name">illume</span>
-            <span className="illume-footer-origin">Made in London</span>
-          </span>
-        </div>
+      <footer className="c2-footer">
+        <span className="c2-brand c2-brand--quiet">
+          <img src={LOGO} alt="" width={22} height={22} />
+          <span>illume</span>
+        </span>
+        <span>Made in London</span>
+        <span>© 2026 Illume Reader</span>
       </footer>
 
       {isAuthOpen && (
@@ -747,7 +629,6 @@ export function LandingPage({
           </div>
         </div>
       )}
-
     </div>
   );
 }
