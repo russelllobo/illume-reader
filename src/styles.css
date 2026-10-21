@@ -5227,6 +5227,18 @@ button:disabled {
     width: min(236px, calc(100vw - 28px));
   }
 
+  .control-rail .narration-speed-popover {
+    --popover-open-transform: translateY(0) scale(1);
+    left: auto;
+    right: 0;
+  }
+
+  .control-rail .narration-speed-popover::after {
+    left: auto;
+    right: 22px;
+    transform: rotate(45deg);
+  }
+
   .topbar-image-style-menu {
     left: auto;
     right: 0;
@@ -13461,6 +13473,7 @@ html[data-color-scheme] .library-upgrade-button {
 }
 
 .rs-sidebar .rs-player .narration-speed-popover {
+  --popover-open-transform: translateY(0) scale(1);
   left: auto;
   right: -8px;
 }
