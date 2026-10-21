@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { Volume2, VolumeX } from "lucide-react";
 import narrationData from "./concepts/persuasion-narration.json";
+import sentenceData from "./concepts/persuasion-sentences.json";
 
 type NarrationWord = { w: string; start: number; end: number };
 type NarrationParagraph = { text: string; audioStartMs: number; words: NarrationWord[] };
+type DemoParagraph = { text: string; paragraph: number; startWord: number; endWord: number };
 
 const narration = narrationData as { durationMs: number; paragraphs: NarrationParagraph[] };
 const paragraphs = narration.paragraphs;
+const sentences = (sentenceData as { sentences: DemoParagraph[] }).sentences;
 
 // Flatten the words once so playback can binary-search the active one.
 const words = paragraphs.flatMap((paragraph, paragraphIndex) =>
@@ -20,6 +23,14 @@ const paragraphOffsets: number[] = [];
     offset += paragraph.words.length;
   }
 }
+
+const sentenceForWord = new Array(words.length).fill(0);
+sentences.forEach((sentence, sentenceIndex) => {
+  const base = paragraphOffsets[sentence.paragraph];
+  for (let index = sentence.startWord; index <= sentence.endWord; index++) {
+    sentenceForWord[base + index] = sentenceIndex;
+  }
+});
 
 const activeWordAt = (timeMs: number) => {
   let lo = 0;
@@ -43,6 +54,7 @@ export function PersuasionDemo() {
   const wordRefs = useRef<(HTMLSpanElement | null)[]>([]);
   const [muted, setMuted] = useState(true);
   const [active, setActive] = useState(0);
+  const activeSentence = sentenceForWord[active] ?? 0;
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -131,6 +143,14 @@ export function PersuasionDemo() {
         onEnded={handleEnded}
       />
 
+      <header className="c2-persuasion-book">
+        <img src="/landing/persuasion/cover.jpg" alt="" />
+        <div>
+          <strong>Persuasion</strong>
+          <span>Jane Austen</span>
+        </div>
+      </header>
+
       <div
         className="c2-persuasion-copy"
         ref={copyRef}
@@ -158,11 +178,16 @@ export function PersuasionDemo() {
         ))}
       </div>
 
-      <figure className="c2-persuasion-art">
-        <img
-          src="/landing/persuasion/section.webp"
-          alt="Watercolour illustration of Anne Elliot and Sir Walter Elliot"
-        />
+      <figure className="c2-persuasion-art" aria-hidden="true">
+        {sentences.map((sentence, index) => (
+          <img
+            key={index}
+            src={`/landing/persuasion/sentences/${String(index + 1).padStart(2, "0")}.webp`}
+            alt=""
+            className={index === activeSentence ? "is-active" : ""}
+            loading={index < 2 ? "eager" : "lazy"}
+          />
+        ))}
       </figure>
 
       <button
