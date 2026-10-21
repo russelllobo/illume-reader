@@ -2,25 +2,15 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.106.0";
 
 const READER_IMAGE_BUCKET = "reader-images";
-const OPENAI_IMAGE_URL = "https://api.openai.com/v1/images/generations";
-const READER_IMAGE_MODEL = "gpt-image-2.5-sunburst";
-const READER_IMAGE_FALLBACK_MODEL = "gpt-image-2.5-flare";
-// Step 2: OpenRouter Images API renders the prompt. Recraft V4.1 Flash is the
-// first priority (~$0.007/image, ~1.3s); the rest are tried in order.
+// Image rendering: Recraft V4.1 Flash first (~$0.007/image, ~1.3s),
+// GPT Image 2.5 Flare as the only fallback. Nothing else.
 const OPENROUTER_IMAGE_URL = "https://openrouter.ai/api/v1/images";
-const OPENROUTER_PRIMARY_MODEL = "recraft/recraft-v4.1-flash";
-const OPENROUTER_FALLBACK_MODELS = [
-  "google/gemini-3.1-flash-lite-image",
-  "google/gemini-3.1-flash-image",
-  "openai/gpt-image-2.5-flare"
-];
-// Step 1: Meta Muse Spark via the OpenCode Go subscription writes the image prompt.
-// Step 2: OpenRouter Images API renders it — Recraft V4.1 Flash first,
-// then Gemini Lite / Banana 2 / GPT Flare; direct OpenAI as last resort.
-const GO_RESPONSES_URL = "https://opencode.ai/zen/go/v1/responses";
-const IMAGE_PROMPT_MODEL = "muse-spark-1.3-contributor";
+const IMAGE_PRIMARY_MODEL = "recraft/recraft-v4.1-flash";
+const IMAGE_FALLBACK_MODEL = "openai/gpt-image-2.5-flare";
 const FREE_READER_IMAGE_LIFETIME_LIMIT = 25;
 const PRO_READER_IMAGE_MONTHLY_LIMIT = 1000;
+// Accepted for cache-key compatibility with existing rows; ignored in the
+// prompt (there is a single look, no style selector anymore).
 type ReaderImageStyle = "cartoon" | "cute";
 
 const corsHeaders = {
@@ -57,127 +47,15 @@ const imagePathFor = (
   endWord: number
 ) => `${userId}/${bookId}/${style}/${startWord}-${endWord}.png`;
 
-const styleSuffixFor = (style: ReaderImageStyle) =>
-  style === "cute"
-    ? "Playful premium kawaii editorial illustration, soft rounded shapes, pastel modern colors, warm lighting, crisp details, slightly exaggerated expressions, minimal text, portrait composition."
-    : "Bold Sunday funnies cartoon style, thick outlines, halftone textures, bright 1980s colors, playful premium editorial illustration, minimal text, portrait composition.";
-
-const promptForStyle = (
-  style: ReaderImageStyle,
-  bookTitle: string,
-  text: string
-) => {
-  const promptLines =
-    style === "cute"
-      ? [
-          "Create a clever visual picture for this paragraph as if it were an illustration from a bestselling book.",
-          `Book: ${bookTitle || "Uploaded document"}.`,
-          `Paragraph: ${text}`,
-          "",
-          "First, silently identify:",
-          "The type of book: non-fiction, biography , fiction etc",
-          "Pick:",
-          "A concise main idea/story",
-          "Identify:",
-          "1) The emotional or practical shift.",
-          "Then create the image using shift.",
-          "",
-          "The image should have:",
-          "- MINIMAL text",
-          "- 1 simple idea in kawaii anime style with soft rounded shapes, pastel modern colors, and a charming storybook feel that explains the concept instantly. Avoid displaying too much information.",
-          "- A clear before/after or problem/solution contrast only if suitable",
-          "- Expressive cute animals, gentle characters, or adorable facial expressions where useful.",
-          "- Bright pastel, inviting colors.",
-          "",
-          "Style: Playful premium kawaii editorial illustration, soft shapes, warm lighting, crisp details, slightly exaggerated expressions, modern cute-book visual style. Fun but not childish. Clear but not boring. Make the idea/story land visually, enhancing the text."
-        ]
-      : [
-          "Create a clever visual picture for this paragraph as if it were an illustration from a bestselling book.",
-          `Book: ${bookTitle || "Uploaded document"}.`,
-          `Paragraph: ${text}`,
-          "",
-          "First, silently identify:",
-          "The type of book: non-fiction, biography , fiction etc",
-          "Pick:",
-          "A concise main idea/story",
-          "Identify:",
-          "1) The emotional or practical shift.",
-          "Then create the image using shift.",
-          "",
-          "The image should have:",
-          "- MINIMAL text",
-          "- 1 simple idea in bold Sunday funnies style with thick outlines, halftone textures, and bright 1980s colors that explains the concept instantly. Avoid displaying too much information.",
-          "- A clear before/after or problem/solution contrast only if suitable",
-          "- Expressive human body language or facial expressions where useful.",
-          "- Bright, inviting colors.",
-          "",
-          "Style: Playful premium editorial illustration, bold shapes, warm lighting, crisp details, slightly exaggerated expressions, modern nonfiction-book visual style. Fun but not childish. Clear but not boring. Make the lesson land visually without needing the viewer to read a long explanation."
-        ];
-
-  return promptLines.filter((line) => line !== "").join("\n");
-};
-
-// Step 1: Meta Muse Spark (OpenCode Go) writes a standalone image prompt for
-// the section. Throws when the Go key is missing or the call fails, so the
-// caller can fall back to the built-in template prompt.
-const writeImagePromptWithMuse = async (
-  goApiKey: string,
-  style: ReaderImageStyle,
-  bookTitle: string,
-  author: string,
-  text: string,
-  cacheSession: string
-) => {
-  const bookLine = `from ${bookTitle || "Uploaded document"}${author ? ` by ${author}` : ""}`;
-  const input = [
-    "Write ONE image prompt (under 150 words) depicting the key scene of this book section",
-    `${bookLine}.`,
-    "The prompt must stand alone: the image model only sees the prompt, never the book.",
-    "Name the book context briefly, then describe the single key visual scene:",
-    "characters, setting, action, emotion and story shift.",
-    `End with exactly: "${styleSuffixFor(style)}"`,
-    "Reply with ONLY the image prompt, no preamble.",
+// The entire prompt architecture: one fixed illustrator instruction plus the
+// raw 200-word section text. No prompt-writing LLM, no style suffixes.
+const buildImagePrompt = (bookTitle: string, text: string) =>
+  [
+    `You are a book illustrator. Create a visual aid that will appear for this section in the book ${bookTitle || "Uploaded document"}. Don't include text in the picture.`,
     "",
-    `Section: ${text}`,
+    "Section:",
+    text,
   ].join("\n");
-
-  const response = await fetch(GO_RESPONSES_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${goApiKey}`,
-      "Content-Type": "application/json",
-      "User-Agent": "IllumeReader/1.0",
-      "x-opencode-session": cacheSession,
-    },
-    body: JSON.stringify({
-      input,
-      max_output_tokens: 900,
-      model: IMAGE_PROMPT_MODEL,
-      reasoning: { effort: "low" },
-    }),
-    signal: AbortSignal.timeout(55_000),
-  });
-
-  const result = await response.json();
-  if (!response.ok) {
-    const message =
-      (result?.error as { message?: unknown })?.message ??
-      `Muse prompt step failed (${response.status})`;
-    throw new Error(typeof message === "string" ? message : "Muse prompt step failed.");
-  }
-
-  const outputs = Array.isArray(result?.output) ? result.output : [];
-  for (const item of outputs) {
-    if (item?.type !== "message" || !Array.isArray(item?.content)) continue;
-    for (const part of item.content) {
-      if (part?.type === "output_text" && typeof part?.text === "string" && part.text.trim()) {
-        return part.text.trim().slice(0, 1200);
-      }
-    }
-  }
-
-  throw new Error("Muse returned no image prompt.");
-};
 
 const base64ToBytes = (base64: string) => Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
 
@@ -189,8 +67,6 @@ const bytesToBase64 = (bytes: Uint8Array) => {
   }
   return btoa(binary);
 };
-
-const imageDataUrl = (base64: string) => `data:image/png;base64,${base64}`;
 
 const currentMonthStart = () => new Date().toISOString().slice(0, 7) + "-01";
 
@@ -225,130 +101,12 @@ const errorMessage = (error: unknown, fallback = "Could not generate image.") =>
   return fallback;
 };
 
-const openAiImageErrorMessage = (status: number, result: unknown) => {
-  const rawMessage =
-    result && typeof result === "object" && "error" in result
-      ? (result.error as { message?: unknown }).message
-      : undefined;
-  const message = typeof rawMessage === "string" ? rawMessage : "";
-  const normalized = message.toLowerCase();
-
-  if (
-    status === 429 ||
-    normalized.includes("rate limit") ||
-    normalized.includes("rate_limit")
-  ) {
-    return "Image generation is busy. Please try again in a moment.";
-  }
-
-  return message || "Image generation failed.";
-};
-
 const sseEncode = (event: string, data: unknown) =>
   `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 
-// Extracts the b64_json value from an SSE frame with plain string slicing.
-// base64 never contains quotes or backslashes, so this avoids JSON.parse on
-// multi-megabyte payloads (edge CPU limits are tight).
-const extractB64 = (frame: string): string | null => {
-  const keyIndex = frame.indexOf('"b64_json"');
-  if (keyIndex < 0) return null;
-  const start = frame.indexOf('"', keyIndex + 11) + 1;
-  if (!start) return null;
-  const end = frame.indexOf('"', start);
-  if (end < 0) return null;
-  return frame.slice(start, end);
-};
-
-const frameType = (frame: string): string => {
-  const keyIndex = frame.indexOf('"type"');
-  if (keyIndex < 0) return "";
-  const start = frame.indexOf('"', keyIndex + 7) + 1;
-  if (!start) return "";
-  const end = frame.indexOf('"', start);
-  if (end < 0) return "";
-  return frame.slice(start, end);
-};
-
-const isSafetyVeto = (result: unknown) =>
-  /safety system/i.test(
-    String((result as { error?: { message?: unknown } })?.error?.message ?? "")
-  );
-
-// Calls the OpenAI Images API in streaming mode, forwarding partial previews.
-// Resolves with the final image. Throws enriched errors (status/result attached).
-const streamImageEvents = async (
-  openAiKey: string,
-  model: string,
-  prompt: string,
-  onPartial: (index: number, b64: string) => void
-): Promise<string> => {
-  const response = await fetch(OPENAI_IMAGE_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${openAiKey}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model,
-      n: 1,
-      output_format: "png",
-      partial_images: 3,
-      prompt,
-      quality: "low",
-      size: "1024x1536",
-      stream: true
-    })
-  });
-
-  if (!response.ok || !response.body) {
-    const result = await response.json().catch(() => null);
-    const error = new Error(openAiImageErrorMessage(response.status, result));
-    (error as { status?: number }).status = response.status;
-    (error as { result?: unknown }).result = result;
-    throw error;
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let finalB64 = "";
-
-  const handleFrame = (frame: string) => {
-    const type = frameType(frame);
-    if (type !== "image_generation.partial_image" && type !== "image_generation.completed") return;
-    const b64 = extractB64(frame);
-    if (!b64) return;
-    if (type === "image_generation.partial_image") {
-      const marker = '"partial_image_index"';
-      const keyIndex = frame.indexOf(marker);
-      let index = 0;
-      if (keyIndex >= 0) {
-        index = Number(frame.slice(keyIndex + marker.length).split(/[^0-9]/).find((part) => part !== "") ?? 0) || 0;
-      }
-      onPartial(index, b64);
-    } else {
-      finalB64 = b64;
-    }
-  };
-
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (value) buffer += decoder.decode(value, { stream: true });
-    if (done) buffer += decoder.decode();
-    const frames = buffer.split(/\r?\n\r?\n/);
-    buffer = done ? "" : (frames.pop() ?? "");
-    for (const frame of frames) handleFrame(frame);
-    if (done) break;
-  }
-
-  if (!finalB64) throw new Error("Image model returned no image data.");
-  return finalB64;
-};
-
 // Calls the OpenRouter Images API (buffered, no partials). Resolves with the
 // image plus the billed cost in USD (from `usage.cost` when reported).
-// Recraft Flash only supports portrait via 9:16; Gemini models support 2:3.
+// Recraft Flash only supports portrait via 9:16; Flare supports 2:3.
 const renderViaOpenRouter = async (
   openRouterKey: string,
   model: string,
@@ -384,14 +142,14 @@ const renderViaOpenRouter = async (
   return { b64, cost, mediaType };
 };
 
-// Tries Recraft Flash first, then each OpenRouter backup in order.
-// Returns the winning model, image, and billed cost. Throws the last error.
-const renderWithOpenRouterChain = async (
+// Tries Recraft Flash first, then Flare once. Returns the winning model,
+// image, and billed cost. Throws the last error.
+const renderImage = async (
   openRouterKey: string,
   prompt: string
 ): Promise<{ b64: string; cost: number | null; imageModel: string; mediaType: string }> => {
   let lastError: unknown = null;
-  for (const model of [OPENROUTER_PRIMARY_MODEL, ...OPENROUTER_FALLBACK_MODELS]) {
+  for (const model of [IMAGE_PRIMARY_MODEL, IMAGE_FALLBACK_MODEL]) {
     try {
       const { b64, cost, mediaType } = await renderViaOpenRouter(openRouterKey, model, prompt);
       console.log(
@@ -403,7 +161,7 @@ const renderWithOpenRouterChain = async (
       lastError = error;
     }
   }
-  throw lastError instanceof Error ? lastError : new Error("All OpenRouter image models failed.");
+  throw lastError instanceof Error ? lastError : new Error("Image generation failed.");
 };
 
 const imageDataUrlFor = (mediaType: string, base64: string) => `data:${mediaType};base64,${base64}`;
@@ -493,7 +251,7 @@ const getStoredReaderImage = async (
 
     const bytes = new Uint8Array(await blob.arrayBuffer());
     return {
-      imageUrl: imageDataUrl(bytesToBase64(bytes)),
+      imageUrl: imageDataUrlFor("image/png", bytesToBase64(bytes)),
       prompt: prompt ?? undefined
     };
   };
@@ -540,57 +298,6 @@ const getStoredReaderImage = async (
   return null;
 };
 
-// Pre-written Muse Spark prompts per book section. Lets upload pre-warm all
-// prompts once so later image renders skip the prompt-writing LLM call.
-const getStoredReaderPrompt = async (
-  adminClient: any,
-  userId: string,
-  bookId: string,
-  style: ReaderImageStyle,
-  startWord: number,
-  endWord: number
-) => {
-  const { data, error } = await adminClient
-    .from("reader_image_prompts")
-    .select("prompt, prompt_source")
-    .eq("user_id", userId)
-    .eq("book_id", bookId)
-    .eq("style", style)
-    .eq("start_word", startWord)
-    .eq("end_word", endWord)
-    .maybeSingle();
-
-  if (error) throw error;
-  if (!data?.prompt) return null;
-  return { prompt: data.prompt as string, promptSource: (data.prompt_source as string) || "muse-spark" };
-};
-
-const upsertReaderPrompt = async (
-  adminClient: any,
-  userId: string,
-  bookId: string,
-  style: ReaderImageStyle,
-  startWord: number,
-  endWord: number,
-  prompt: string,
-  promptSource: string
-) => {
-  const { error } = await adminClient.from("reader_image_prompts").upsert(
-    {
-      book_id: bookId,
-      end_word: endWord,
-      prompt,
-      prompt_source: promptSource,
-      start_word: startWord,
-      style,
-      user_id: userId
-    },
-    { onConflict: "book_id,start_word,end_word,style" }
-  );
-
-  if (error) console.warn("Could not cache reader image prompt", error);
-};
-
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") {
@@ -604,9 +311,7 @@ Deno.serve(async (req) => {
     const supabaseUrl = requiredEnv("SUPABASE_URL");
     const anonKey = requiredEnv("SUPABASE_ANON_KEY");
     const serviceRoleKey = requiredEnv("SUPABASE_SERVICE_ROLE_KEY");
-    const openAiKey = Deno.env.get("OPENAI_API_KEY") ?? "";
     const openRouterKey = Deno.env.get("OPENROUTER_API_KEY") ?? "";
-    const goApiKey = Deno.env.get("OPENCODE_GO_API_KEY") ?? "";
     const authorization = req.headers.get("Authorization");
 
     if (!authorization) throw new Error("Missing Authorization header");
@@ -622,7 +327,6 @@ Deno.serve(async (req) => {
     const payload = await req.json();
     const bookId = cleanId(payload.bookId);
     const bookTitle = cleanText(payload.bookTitle, 180);
-    const author = cleanText(payload.author, 120);
     const imageStyle = cleanImageStyle(payload.imageStyle ?? payload.style);
     const text = cleanText(payload.text, 12_000);
     const startWord = Number(payload.startWord);
@@ -689,67 +393,12 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Prompt pre-warm: write (or reuse) the Muse Spark prompt for this
-    // section without rendering an image or spending image quota. Used at
-    // upload and while reading so later renders skip the LLM step.
-    if (promptOnly) {
-      let cachedPrompt: { prompt: string; promptSource: string } | null = null;
-      try {
-        cachedPrompt = await getStoredReaderPrompt(
-          adminClient,
-          userData.user.id,
-          bookId,
-          imageStyle,
-          startWord,
-          endWord
-        );
-      } catch (promptCacheError) {
-        console.warn("Reader prompt cache read failed", promptCacheError);
-      }
-      if (cachedPrompt) {
-        return new Response(
-          JSON.stringify({
-            cached: true,
-            imageCount: await readerImageUsageSnapshot(adminClient, userData.user.id, activePlan),
-            imageLimit,
-            plan: activePlan,
-            prompt: cachedPrompt.prompt,
-            promptSource: cachedPrompt.promptSource
-          }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
+    const prompt = buildImagePrompt(bookTitle, text);
+    const promptSource = "simple";
 
-      let prompt = "";
-      let promptSource = "template";
-      if (goApiKey) {
-        try {
-          prompt = await writeImagePromptWithMuse(
-            goApiKey,
-            imageStyle,
-            bookTitle,
-            author,
-            text,
-            `illume-${bookId}`
-          );
-          promptSource = "muse-spark";
-        } catch (museError) {
-          console.warn("Muse prompt pre-warm failed, using template", museError);
-        }
-      }
-      if (!prompt) {
-        prompt = promptForStyle(imageStyle, bookTitle, text);
-      }
-      await upsertReaderPrompt(
-        adminClient,
-        userData.user.id,
-        bookId,
-        imageStyle,
-        startWord,
-        endWord,
-        prompt,
-        promptSource
-      );
+    // Compat for older clients that pre-warmed prompts: return the prompt
+    // directly without rendering an image or spending quota.
+    if (promptOnly) {
       return new Response(
         JSON.stringify({
           cached: false,
@@ -783,64 +432,12 @@ Deno.serve(async (req) => {
     }
 
     try {
-      // Step 1: reuse a pre-warmed prompt when upload/reading already wrote
-      // one. Otherwise Muse Spark (OpenCode Go, low reasoning) writes the
-      // image prompt for this section, falling back to the built-in template.
-      let prompt = "";
-      let promptSource = "template";
-      let cachedPrompt: { prompt: string; promptSource: string } | null = null;
-      try {
-        cachedPrompt = await getStoredReaderPrompt(
-          adminClient,
-          userData.user.id,
-          bookId,
-          imageStyle,
-          startWord,
-          endWord
-        );
-      } catch (promptCacheError) {
-        console.warn("Reader prompt cache read failed", promptCacheError);
-      }
-      if (cachedPrompt) {
-        prompt = cachedPrompt.prompt;
-        promptSource = cachedPrompt.promptSource;
-      } else if (goApiKey) {
-        try {
-          prompt = await writeImagePromptWithMuse(
-            goApiKey,
-            imageStyle,
-            bookTitle,
-            author,
-            text,
-            `illume-${bookId}`
-          );
-          promptSource = "muse-spark";
-          await upsertReaderPrompt(
-            adminClient,
-            userData.user.id,
-            bookId,
-            imageStyle,
-            startWord,
-            endWord,
-            prompt,
-            promptSource
-          );
-        } catch (museError) {
-          console.warn("Muse prompt step failed, using template", museError);
-        }
-      }
-      if (!prompt) {
-        prompt = promptForStyle(imageStyle, bookTitle, text);
-      }
-
       if (payload.stream === true) {
         const streamUserId = userData.user.id;
         const streamBookId = bookId;
         const streamStyle = imageStyle;
         const streamStartWord = startWord;
         const streamEndWord = endWord;
-        const streamPrompt = prompt;
-        const streamPromptSource = promptSource;
         const stream = new ReadableStream({
           async start(controller) {
             const send = (event: string, data: unknown) => {
@@ -855,51 +452,14 @@ Deno.serve(async (req) => {
               if (refundError) console.error("Failed to refund reader image generation", refundError);
             };
             try {
-              send("prompt", { prompt: streamPrompt, promptSource: streamPromptSource });
-              // OpenRouter chain first (Recraft Flash, then backups). Buffered:
-              // no partial previews, but billed cost is reported. Falls back to
-              // OpenAI streaming (with partials) when OpenRouter is unavailable.
-              let imageModel = OPENROUTER_PRIMARY_MODEL;
-              let imageCost: number | null = null;
-              let imageMediaType = "image/png";
-              let base64Image = "";
-              let renderedViaOpenRouter = false;
-              if (openRouterKey) {
-                try {
-                  const rendered = await renderWithOpenRouterChain(openRouterKey, streamPrompt);
-                  base64Image = rendered.b64;
-                  imageModel = rendered.imageModel;
-                  imageCost = rendered.cost;
-                  imageMediaType = rendered.mediaType;
-                  renderedViaOpenRouter = true;
-                } catch (chainError) {
-                  console.warn("OpenRouter chain failed, falling back to OpenAI stream", errorMessage(chainError));
-                }
-              }
-              if (!renderedViaOpenRouter) {
-                if (!openAiKey) throw new Error("No image API key configured.");
-                imageModel = READER_IMAGE_MODEL;
-                for (;;) {
-                  try {
-                    base64Image = await streamImageEvents(openAiKey, imageModel, streamPrompt, (index, b64) => {
-                      send("partial", { imageModel, index, imageUrl: imageDataUrl(b64) });
-                    });
-                    break;
-                  } catch (streamError) {
-                    const vetoed =
-                      isSafetyVeto((streamError as { result?: unknown }).result) &&
-                      imageModel !== READER_IMAGE_FALLBACK_MODEL;
-                    if (!vetoed) throw streamError;
-                    console.warn("Sunburst safety veto, retrying stream with Flare");
-                    imageModel = READER_IMAGE_FALLBACK_MODEL;
-                  }
-                }
-              }
+              send("prompt", { prompt, promptSource });
+              if (!openRouterKey) throw new Error("No image API key configured.");
+              const rendered = await renderImage(openRouterKey, prompt);
               const storagePath = imagePathFor(streamUserId, streamBookId, streamStyle, streamStartWord, streamEndWord);
               const { error: uploadError } = await adminClient.storage
                 .from(READER_IMAGE_BUCKET)
-                .upload(storagePath, base64ToBytes(base64Image), {
-                  contentType: imageMediaType,
+                .upload(storagePath, base64ToBytes(rendered.b64), {
+                  contentType: rendered.mediaType,
                   upsert: true
                 });
               if (uploadError) throw uploadError;
@@ -907,7 +467,7 @@ Deno.serve(async (req) => {
                 {
                   book_id: streamBookId,
                   end_word: streamEndWord,
-                  prompt: streamPrompt,
+                  prompt,
                   start_word: streamStartWord,
                   storage_path: storagePath,
                   style: streamStyle,
@@ -919,14 +479,14 @@ Deno.serve(async (req) => {
               const finalImageCount = await readerImageUsageSnapshot(adminClient, streamUserId, activePlan);
               send("final", {
                 cached: false,
-                imageCost,
+                imageCost: rendered.cost,
                 imageCount: finalImageCount,
                 imageLimit,
-                imageModel,
-                imageUrl: imageDataUrlFor(imageMediaType, base64Image),
+                imageModel: rendered.imageModel,
+                imageUrl: imageDataUrlFor(rendered.mediaType, rendered.b64),
                 plan: activePlan,
-                prompt: streamPrompt,
-                promptSource: streamPromptSource
+                prompt,
+                promptSource
               });
               controller.close();
             } catch (error) {
@@ -946,76 +506,14 @@ Deno.serve(async (req) => {
         });
       }
 
-      // Step 2: OpenRouter chain first (Recraft Flash, then backups). The
-      // billed cost comes back in the response. Only if every OpenRouter
-      // model fails do we fall back to direct OpenAI (Sunburst, Flare on
-      // safety veto) as the last resort.
-      let imageModel = OPENROUTER_PRIMARY_MODEL;
-      let imageCost: number | null = null;
-      let imageMediaType = "image/png";
-      let base64Image = "";
-      let renderedViaOpenRouter = false;
-      if (openRouterKey) {
-        try {
-          const rendered = await renderWithOpenRouterChain(openRouterKey, prompt);
-          base64Image = rendered.b64;
-          imageCost = rendered.cost;
-          imageModel = rendered.imageModel;
-          imageMediaType = rendered.mediaType;
-          renderedViaOpenRouter = true;
-        } catch (chainError) {
-          console.warn("OpenRouter chain failed, falling back to OpenAI", errorMessage(chainError));
-        }
-      }
-      if (!renderedViaOpenRouter) {
-        if (!openAiKey) throw new Error("No image API key configured.");
-        const renderWithModel = async (model: string) => {
-          const res = await fetch(OPENAI_IMAGE_URL, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${openAiKey}`,
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              model,
-              n: 1,
-              output_format: "png",
-              prompt,
-              quality: "low",
-              size: "1024x1536"
-            })
-          });
-          const body = await res.json();
-          return { body, res };
-        };
-
-        imageModel = READER_IMAGE_MODEL;
-        let { body: result, res: response } = await renderWithModel(imageModel);
-        if (
-          !response.ok &&
-          /safety system/i.test(
-            String((result?.error as { message?: unknown })?.message ?? "")
-          ) &&
-          imageModel !== READER_IMAGE_FALLBACK_MODEL
-        ) {
-          console.warn("Sunburst safety veto, retrying with Flare");
-          imageModel = READER_IMAGE_FALLBACK_MODEL;
-          ({ body: result, res: response } = await renderWithModel(imageModel));
-        }
-        if (!response.ok) {
-          throw new Error(openAiImageErrorMessage(response.status, result));
-        }
-
-        const directB64 = result?.data?.[0]?.b64_json;
-        if (!directB64) throw new Error("Image model returned no image data.");
-        base64Image = directB64;
-      }
+      if (!openRouterKey) throw new Error("No image API key configured.");
+      const rendered = await renderImage(openRouterKey, prompt);
       const storagePath = imagePathFor(userData.user.id, bookId, imageStyle, startWord, endWord);
 
       const { error: uploadError } = await adminClient.storage
         .from(READER_IMAGE_BUCKET)
-        .upload(storagePath, base64ToBytes(base64Image), {
-          contentType: imageMediaType,
+        .upload(storagePath, base64ToBytes(rendered.b64), {
+          contentType: rendered.mediaType,
           upsert: true
         });
 
@@ -1041,11 +539,11 @@ Deno.serve(async (req) => {
       return new Response(
         JSON.stringify({
           cached: false,
-          imageCost,
+          imageCost: rendered.cost,
           imageCount: finalImageCount,
           imageLimit,
-          imageModel,
-          imageUrl: imageDataUrlFor(imageMediaType, base64Image),
+          imageModel: rendered.imageModel,
+          imageUrl: imageDataUrlFor(rendered.mediaType, rendered.b64),
           plan: activePlan,
           prompt,
           promptSource

@@ -664,6 +664,13 @@ export default defineConfig({
   server: {
     allowedHosts: [".trycloudflare.com", ".ts.net"],
     host: "0.0.0.0",
-    port: 5173
+    port: 5173,
+    proxy: {
+      "/api/auth": "http://127.0.0.1:8787",
+      "/api/library": "http://127.0.0.1:8787",
+      "/api/account": "http://127.0.0.1:8787",
+      "/api/files": "http://127.0.0.1:8787",
+      "/api/actions": "http://127.0.0.1:8787"
+    }
   }
 });

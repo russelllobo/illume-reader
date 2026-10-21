@@ -1,0 +1,325 @@
+{
+  "captured_at": "2026-10-12T14:47:07.542894+00:00",
+  "functions": {
+    "youtube-token-exchange": {
+      "lines": 72,
+      "imports": [
+        "import \"jsr:@supabase/functions-js/edge-runtime.d.ts\";"
+      ],
+      "environment": [
+        "GOOGLE_CLIENT_SECRET"
+      ],
+      "tables": []
+    },
+    "youtube-feed": {
+      "lines": 192,
+      "imports": [
+        "import \"jsr:@supabase/functions-js/edge-runtime.d.ts\";"
+      ],
+      "environment": [
+        "YOUTUBE_API_KEY",
+        "YOUTUBE_CHANNEL_ID"
+      ],
+      "tables": []
+    },
+    "reader-dashboard": {
+      "lines": 456,
+      "imports": [
+        "import \"jsr:@supabase/functions-js/edge-runtime.d.ts\";",
+        "import { createClient } from \"npm:@supabase/supabase-js@2.106.0\";"
+      ],
+      "environment": [
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_URL"
+      ],
+      "tables": [
+        "books",
+        "launch_waitlist_signups",
+        "reader_images"
+      ]
+    },
+    "generate-reader-image": {
+      "lines": 571,
+      "imports": [
+        "import \"jsr:@supabase/functions-js/edge-runtime.d.ts\";",
+        "import { createClient } from \"npm:@supabase/supabase-js@2.106.0\";"
+      ],
+      "environment": [
+        "OPENROUTER_API_KEY",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_URL"
+      ],
+      "tables": [
+        "billing_profiles",
+        "books",
+        "reader_image_usage",
+        "reader_images"
+      ]
+    },
+    "stripe-webhook": {
+      "lines": 119,
+      "imports": [
+        "import \"jsr:@supabase/functions-js/edge-runtime.d.ts\";",
+        "import Stripe from \"npm:stripe@17.7.0\";",
+        "import { createClient } from \"npm:@supabase/supabase-js@2.106.0\";"
+      ],
+      "environment": [
+        "STRIPE_SECRET_KEY",
+        "STRIPE_WEBHOOK_SECRET",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_URL"
+      ],
+      "tables": [
+        "billing_profiles"
+      ]
+    },
+    "process-reader-document": {
+      "lines": 282,
+      "imports": [
+        "import \"jsr:@supabase/functions-js/edge-runtime.d.ts\";",
+        "import { createClient } from \"npm:@supabase/supabase-js@2.106.0\";",
+        "import * as pdfjsLib from \"npm:pdfjs-dist@5.7.284/build/pdf.mjs\";"
+      ],
+      "environment": [
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_URL"
+      ],
+      "tables": [
+        "book_pages",
+        "books"
+      ]
+    },
+    "instagram-feed": {
+      "lines": 382,
+      "imports": [
+        "import \"jsr:@supabase/functions-js/edge-runtime.d.ts\";"
+      ],
+      "environment": [
+        "INSTAGRAM_ACCESS_TOKEN",
+        "INSTAGRAM_GRAPH_VERSION",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_URL"
+      ],
+      "tables": []
+    },
+    "tiktok-token-exchange": {
+      "lines": 66,
+      "imports": [
+        "import \"jsr:@supabase/functions-js/edge-runtime.d.ts\";"
+      ],
+      "environment": [
+        "TIKTOK_CLIENT_KEY",
+        "TIKTOK_CLIENT_SECRET"
+      ],
+      "tables": []
+    },
+    "youtube-analytics": {
+      "lines": 280,
+      "imports": [
+        "import \"jsr:@supabase/functions-js/edge-runtime.d.ts\";"
+      ],
+      "environment": [
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_URL",
+        "YOUTUBE_CHANNEL_ID",
+        "YOUTUBE_REFRESH_TOKEN"
+      ],
+      "tables": []
+    },
+    "instagram-token-exchange": {
+      "lines": 220,
+      "imports": [
+        "import \"jsr:@supabase/functions-js/edge-runtime.d.ts\";"
+      ],
+      "environment": [
+        "INSTAGRAM_APP_ID",
+        "INSTAGRAM_APP_SECRET",
+        "INSTAGRAM_GRAPH_VERSION",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_URL"
+      ],
+      "tables": []
+    },
+    "edge-tts": {
+      "lines": 234,
+      "imports": [
+        "import \"jsr:@supabase/functions-js/edge-runtime.d.ts\";",
+        "import { createClient } from \"npm:@supabase/supabase-js@2.106.0\";"
+      ],
+      "environment": [
+        "SPEECHIFY_API_KEY",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_URL"
+      ],
+      "tables": []
+    },
+    "apple-app-store-notifications": {
+      "lines": 195,
+      "imports": [
+        "import \"jsr:@supabase/functions-js/edge-runtime.d.ts\";",
+        "import { createClient } from \"npm:@supabase/supabase-js@2.106.0\";",
+        "import {",
+        "import { Buffer } from \"node:buffer\";"
+      ],
+      "environment": [
+        "APPLE_APP_APPLE_ID",
+        "APPLE_BUNDLE_ID",
+        "APPLE_DISABLE_SIGNATURE_VERIFICATION",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_URL"
+      ],
+      "tables": [
+        "billing_profiles"
+      ]
+    },
+    "delete-account": {
+      "lines": 119,
+      "imports": [
+        "import \"jsr:@supabase/functions-js/edge-runtime.d.ts\";",
+        "import { createClient } from \"npm:@supabase/supabase-js@2.106.0\";"
+      ],
+      "environment": [
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_URL"
+      ],
+      "tables": []
+    },
+    "delete-reader-book": {
+      "lines": 164,
+      "imports": [
+        "import \"jsr:@supabase/functions-js/edge-runtime.d.ts\";",
+        "import { createClient } from \"npm:@supabase/supabase-js@2.106.0\";"
+      ],
+      "environment": [
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_URL"
+      ],
+      "tables": [
+        "books",
+        "reader_image_usage",
+        "reader_images"
+      ]
+    },
+    "create-billing-portal": {
+      "lines": 69,
+      "imports": [
+        "import \"jsr:@supabase/functions-js/edge-runtime.d.ts\";",
+        "import Stripe from \"npm:stripe@17.7.0\";",
+        "import { createClient } from \"npm:@supabase/supabase-js@2.106.0\";"
+      ],
+      "environment": [
+        "SITE_URL",
+        "STRIPE_SECRET_KEY",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_URL"
+      ],
+      "tables": [
+        "billing_profiles"
+      ]
+    },
+    "reels-post": {
+      "lines": 613,
+      "imports": [
+        "import \"jsr:@supabase/functions-js/edge-runtime.d.ts\";",
+        "import { createClient } from \"npm:@supabase/supabase-js@2.106.0\";"
+      ],
+      "environment": [
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+        "INSTAGRAM_APP_ID",
+        "INSTAGRAM_APP_SECRET",
+        "INSTAGRAM_GRAPH_VERSION",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_URL",
+        "TIKTOK_CLIENT_KEY",
+        "TIKTOK_CLIENT_SECRET"
+      ],
+      "tables": []
+    },
+    "sync-apple-subscription": {
+      "lines": 220,
+      "imports": [
+        "import \"jsr:@supabase/functions-js/edge-runtime.d.ts\";",
+        "import { createClient } from \"npm:@supabase/supabase-js@2.106.0\";",
+        "import {",
+        "import { Buffer } from \"node:buffer\";"
+      ],
+      "environment": [
+        "APPLE_APP_APPLE_ID",
+        "APPLE_BUNDLE_ID",
+        "APPLE_DISABLE_SIGNATURE_VERIFICATION",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_URL"
+      ],
+      "tables": [
+        "billing_profiles"
+      ]
+    },
+    "create-checkout-session": {
+      "lines": 95,
+      "imports": [
+        "import \"jsr:@supabase/functions-js/edge-runtime.d.ts\";",
+        "import Stripe from \"npm:stripe@17.7.0\";",
+        "import { createClient } from \"npm:@supabase/supabase-js@2.106.0\";"
+      ],
+      "environment": [
+        "SITE_URL",
+        "STRIPE_PRO_PRICE_ID",
+        "STRIPE_SECRET_KEY",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_URL"
+      ],
+      "tables": [
+        "billing_profiles"
+      ]
+    },
+    "tiktok-feed": {
+      "lines": 207,
+      "imports": [
+        "import \"jsr:@supabase/functions-js/edge-runtime.d.ts\";"
+      ],
+      "environment": [
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_URL",
+        "TIKTOK_CLIENT_KEY",
+        "TIKTOK_CLIENT_SECRET"
+      ],
+      "tables": []
+    }
+  },
+  "function_count": 19,
+  "migration_count": 23,
+  "frontend_dependencies": [
+    "auth",
+    "books",
+    "billing_profiles",
+    "reader_image_usage",
+    "reader_images",
+    "book_pages",
+    "epubs",
+    "reels"
+  ],
+  "current_dirty_files": [
+    "AGENTS.md",
+    "src/App.tsx",
+    "src/styles.css",
+    "illume-ios/src/screens/ReaderScreen.tsx",
+    "supabase/functions/generate-reader-image/index.ts",
+    "docs/",
+    "public/image-blur-demo.html"
+  ]
+}

@@ -16,9 +16,9 @@ const FADE_BANDS = Array.from({ length: 12 }, (_, i) => {
   return Math.round(0.8 * t * t * 100) / 100;
 });
 
-// Same chunking as the web app: ~750 words per generated image so mobile
+// Same chunking as the web app: ~200 words per generated image so mobile
 // requests hit the same server-side cache (user/book/style/start-end).
-const IMAGE_CHUNK_WORDS = 750;
+const IMAGE_CHUNK_WORDS = 200;
 
 function wordsOf(text: string | null | undefined): string[] {
   if (!text) return [];

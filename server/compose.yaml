@@ -1,0 +1,20 @@
+services:
+  database:
+    image: postgres:17-alpine
+    container_name: illume-database
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: illume
+      POSTGRES_USER: illume
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set the private runtime configuration}
+    ports:
+      - "127.0.0.1:55439:5432"
+    volumes:
+      - ${ILLUME_DATA_ROOT:?Set a persistent data directory}/postgres:/var/lib/postgresql/data
+    command: ["postgres", "-c", "shared_buffers=128MB", "-c", "max_connections=30"]
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U illume -d illume"]
+      interval: 5s
+      timeout: 5s
+      retries: 10

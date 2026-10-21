@@ -1,17 +1,51 @@
-import { createClient } from "@supabase/supabase-js";
+import { api } from "./api";
 
-const DEFAULT_SUPABASE_URL = "https://hiswlrweciottgskunlc.supabase.co";
-const DEFAULT_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_45QqkC64abbEjt2gS77xFw_kDHT1vcH";
+export const supabaseFunctionUrl = (name: string) => `/api/actions/${name}`;
+export const supabasePublishableKey = "";
 
-const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL as string | undefined) || DEFAULT_SUPABASE_URL;
-const supabaseKey = (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined) || DEFAULT_SUPABASE_PUBLISHABLE_KEY;
+const invoke = async (name: string, options?: { body?: unknown; headers?: Record<string, string>; method?: string }) => {
+  const method = options?.method || "POST";
+  const response = await fetch(supabaseFunctionUrl(name), {
+    body: options?.body !== undefined && method !== "GET" ? JSON.stringify(options.body) : undefined,
+    credentials: "include",
+    headers: {
+      ...(options?.body !== undefined && method !== "GET" ? { "content-type": "application/json" } : {}),
+      ...options?.headers
+    },
+    method
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    return { data: null, error: { message: data?.error || data?.message || `Request failed (${response.status})` } };
+  }
+  return { data, error: null };
+};
 
-if (!supabaseUrl || !supabaseKey) {
-  throw new Error("Missing VITE_SUPABASE_URL or VITE_SUPABASE_PUBLISHABLE_KEY.");
-}
-
-export const supabase = createClient(supabaseUrl, supabaseKey);
-
-export const supabaseFunctionUrl = (name: string) => `${supabaseUrl}/functions/v1/${name}`;
-
-export const supabasePublishableKey = supabaseKey;
+export const supabase = {
+  auth: {
+    getSession: () => api.auth.getSession(),
+    async getUser() {
+      const { data, error } = await api.auth.getSession();
+      return { data: { user: data.session?.user ?? null }, error };
+    },
+    onAuthStateChange: api.auth.onAuthStateChange.bind(api.auth),
+    signInWithOAuth: api.auth.signInWithOAuth.bind(api.auth),
+    signInWithPassword: api.auth.signInWithPassword.bind(api.auth),
+    signOut: () => api.auth.signOut(),
+    signUp: (credentials: { email: string; password: string }) => api.auth.signUp(credentials)
+  },
+  functions: { invoke },
+  storage: {
+    from(bucket: string) {
+      return {
+        getPublicUrl(path: string) {
+          const encoded = path.split("/").map(encodeURIComponent).join("/");
+          return { data: { publicUrl: `/api/files/${bucket}/${encoded}` } };
+        },
+        async upload(_path: string, _file: Blob, _options?: { cacheControl?: string; contentType?: string; upsert?: boolean }) {
+          return { data: null, error: { message: "Reel uploads stay on this computer, but that transfer is not wired yet." } };
+        }
+      };
+    }
+  }
+};
