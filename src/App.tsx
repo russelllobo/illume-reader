@@ -8845,6 +8845,17 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const authError = params.get("auth_error");
+    if (!authError) return;
+
+    setNotice(authError.slice(0, 240));
+    params.delete("auth_error");
+    const remaining = params.toString();
+    window.history.replaceState(window.history.state, "", window.location.pathname + (remaining ? `?${remaining}` : ""));
+  }, []);
+
+  useEffect(() => {
     if (checkoutResult !== "success" || !user) return;
 
     let attempts = 0;

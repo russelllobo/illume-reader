@@ -76,7 +76,7 @@ function failure(error) {
   if (error.code === '23505') return { statusCode: 409, message: 'That record already exists.' };
   if (error.code === '23514') return { statusCode: 400, message: 'That change is not allowed.' };
   const statusCode = error.statusCode || 500;
-  return { statusCode, message: statusCode >= 500 ? 'Something went wrong.' : error.message };
+  return { statusCode, message: statusCode >= 500 && !error.expose ? 'Something went wrong.' : error.message };
 }
 
 export async function buildApp() {
@@ -91,6 +91,11 @@ export async function buildApp() {
     } catch (error) {
       done(Object.assign(new Error('Request body is invalid.'), { statusCode: 400 }));
     }
+  });
+  // Google posts the sign-in identity back as a form, so keep its exact bytes.
+  app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'buffer' }, (request, body, done) => {
+    request.rawForm = body.toString('utf8');
+    done(null, Object.fromEntries(new URLSearchParams(request.rawForm)));
   });
   app.setErrorHandler((error, request, reply) => {
     const mapped = failure(error);
@@ -115,6 +120,7 @@ export async function buildApp() {
   app.post('/api/auth/id-token', authRoute('id-token'));
   app.post('/api/auth/oauth/google', async (request, reply) => sendResponse(reply, await googleOAuth(webRequest(request), false)));
   app.get('/api/auth/oauth/google/callback', async (request, reply) => sendResponse(reply, await googleOAuth(webRequest(request), true)));
+  app.post('/api/auth/oauth/google/callback', async (request, reply) => sendResponse(reply, await googleOAuth(webRequest(request, request.rawForm ?? ''), true)));
 
   app.get('/api/account/summary', async request => accountSummary((await requireUser(webRequest(request))).id));
   app.get('/api/library', async request => ({ books: await listBooks((await requireUser(webRequest(request))).id) }));

@@ -129,15 +129,15 @@ async function identityUser(provider, payload) {
   if (!payload.sub) throw new Error('Identity provider did not return an account ID');
   const { rows } = await pool.query('SELECT u.* FROM identities i JOIN users u ON u.id=i.user_id WHERE i.provider=$1 AND i.subject=$2', [provider, payload.sub]);
   if (rows[0]) {
-    if (rows[0].banned_until && new Date(rows[0].banned_until).getTime() > Date.now()) throw new Error('Account unavailable');
+    if (rows[0].banned_until && new Date(rows[0].banned_until).getTime() > Date.now()) throw Object.assign(new Error('This account is unavailable.'), { statusCode: 403 });
     return rows[0];
   }
   const email = typeof payload.email === 'string' ? payload.email.toLowerCase() : null;
-  if (!email || (payload.email_verified !== true && payload.email_verified !== 'true')) throw new Error('A verified email is required to create an account');
-  if (process.env.ALLOW_SIGNUP !== 'true') throw new Error('New account registration is temporarily unavailable during migration.');
+  if (!email || (payload.email_verified !== true && payload.email_verified !== 'true')) throw Object.assign(new Error('A verified email is required to create an account.'), { statusCode: 403 });
+  if (process.env.ALLOW_SIGNUP !== 'true') throw Object.assign(new Error('New account registration is temporarily unavailable during migration.'), { statusCode: 503 });
   return transaction(async db => {
     const existing = await db.query('SELECT id FROM users WHERE lower(email)=$1', [email]);
-    if (existing.rows.length) throw new Error('Please sign in to your existing account before linking another sign-in provider.');
+    if (existing.rows.length) throw Object.assign(new Error('Please sign in to your existing account before linking another sign-in provider.'), { statusCode: 409 });
     const result = await db.query(`INSERT INTO users(id,email,confirmed_at,user_metadata,app_metadata,role,source)
       VALUES($1,$2,now(),$3,$4,'authenticated','{"local":true}') RETURNING *`,
     [randomUUID(), email, JSON.stringify({ full_name: payload.name || '', avatar_url: payload.picture || '' }), JSON.stringify({ provider })]);
@@ -146,10 +146,31 @@ async function identityUser(provider, payload) {
   });
 }
 
+const googleErrors = new Map([
+  ['access_denied', 'Google sign-in was cancelled.'],
+  ['interaction_required', 'Google needs you to sign in again. Please try again.']
+]);
+
+function oauthCookie(publicUrl, state) {
+  // Google posts the identity token back from accounts.google.com, so the state
+  // cookie has to survive a cross-site POST whenever the site runs on HTTPS.
+  const secure = publicUrl.startsWith('https:');
+  return `illume_oauth=${state}; HttpOnly; SameSite=${secure ? 'None' : 'Lax'}; Path=/api/auth/oauth; Max-Age=600${secure ? '; Secure' : ''}`;
+}
+
+function clearOauthCookie(publicUrl) {
+  const secure = publicUrl.startsWith('https:');
+  return `illume_oauth=; HttpOnly; SameSite=${secure ? 'None' : 'Lax'}; Path=/api/auth/oauth; Max-Age=0${secure ? '; Secure' : ''}`;
+}
+
+// Google sign-in never shows a raw error page: the browser lands back on the app
+// with a readable message instead of a JSON body.
 export async function googleOAuth(request, callback = false) {
   const publicUrl = process.env.PUBLIC_URL;
-  if (!publicUrl || !process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) throw new Error('Google sign-in is not configured');
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  if (!publicUrl || !clientId) throw Object.assign(new Error('Google sign-in is not configured.'), { statusCode: 503, expose: true });
   const redirectUri = `${publicUrl}/api/auth/oauth/google/callback`;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
   if (!callback) {
     const state = randomBytes(32).toString('base64url');
     const verifier = randomBytes(48).toString('base64url');
@@ -158,24 +179,68 @@ export async function googleOAuth(request, callback = false) {
     const supplied = typeof body.redirectTo === 'string' ? new URL(body.redirectTo, publicUrl) : new URL('/', publicUrl);
     if (supplied.origin !== new URL(publicUrl).origin) throw new Error('Invalid return address');
     await pool.query("INSERT INTO oauth_attempts(state_hash,verifier,nonce,return_path,expires_at) VALUES($1,$2,$3,$4,now()+interval '10 minutes')", [hash(state), verifier, nonce, supplied.pathname + supplied.search]);
-    const params = new URLSearchParams({ client_id: process.env.GOOGLE_CLIENT_ID, redirect_uri: redirectUri, response_type: 'code', scope: 'openid email profile', state, nonce,
-      code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256' });
-    return json({ url: 'https://accounts.google.com/o/oauth2/v2/auth?' + params }, 200,
-      { 'Set-Cookie': `illume_oauth=${state}; HttpOnly; SameSite=Lax; Path=/api/auth/oauth; Max-Age=600${publicUrl.startsWith('https:') ? '; Secure' : ''}` });
+    const params = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, scope: 'openid email profile', state, nonce });
+    if (clientSecret) {
+      params.set('response_type', 'code');
+      params.set('code_challenge', createHash('sha256').update(verifier).digest('base64url'));
+      params.set('code_challenge_method', 'S256');
+    } else {
+      // Without a client secret Google still hands back a signed identity token,
+      // which is all this server needs to recognise the reader.
+      params.set('response_type', 'id_token');
+      params.set('response_mode', 'form_post');
+    }
+    return json({ url: 'https://accounts.google.com/o/oauth2/v2/auth?' + params }, 200, { 'Set-Cookie': oauthCookie(publicUrl, state) });
   }
-  const url = new URL(request.url);
-  const state = url.searchParams.get('state') || '';
+  const params = request.method === 'POST'
+    ? new URLSearchParams(await request.text().catch(() => ''))
+    : new URL(request.url).searchParams;
+  const state = params.get('state') || '';
   const browserState = request.headers.get('cookie')?.split(';').map(value => value.trim()).find(value => value.startsWith('illume_oauth='))?.slice(13);
-  if (!state || state !== browserState) throw new Error('Google sign-in state did not match this browser');
-  const attempt = await pool.query('DELETE FROM oauth_attempts WHERE state_hash=$1 AND expires_at>now() RETURNING *', [hash(state)]);
-  if (!attempt.rows[0]) throw new Error('Google sign-in expired. Please try again.');
-  const response = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', body: new URLSearchParams({ code: url.searchParams.get('code') || '', client_id: process.env.GOOGLE_CLIENT_ID,
-    client_secret: process.env.GOOGLE_CLIENT_SECRET, redirect_uri: redirectUri, grant_type: 'authorization_code', code_verifier: attempt.rows[0].verifier }) });
-  const tokens = await response.json();
-  if (!response.ok || typeof tokens.id_token !== 'string') throw new Error('Google sign-in could not be completed');
-  const { payload } = await jwtVerify(tokens.id_token, googleKeys, { issuer: ['https://accounts.google.com', 'accounts.google.com'], audience: process.env.GOOGLE_CLIENT_ID });
-  if (payload.nonce !== attempt.rows[0].nonce) throw new Error('Google identity nonce did not match');
-  const user = await identityUser('google', payload);
+  const attempt = state && state === browserState
+    ? (await pool.query('DELETE FROM oauth_attempts WHERE state_hash=$1 AND expires_at>now() RETURNING *', [hash(state)])).rows[0]
+    : null;
+  const finish = (target, message) => {
+    const location = new URL(target, publicUrl);
+    if (message) location.searchParams.set('auth_error', message);
+    const headers = new Headers({ Location: location.toString(), 'Cache-Control': 'no-store' });
+    headers.append('Set-Cookie', clearOauthCookie(publicUrl));
+    return new Response(null, { status: 302, headers });
+  };
+  if (!state || state !== browserState) return finish('/', 'Google sign-in did not match this browser. Please try again.');
+  if (!attempt) return finish('/', 'That Google sign-in link expired. Please try again.');
+  if (params.get('error')) return finish(attempt.return_path, googleErrors.get(params.get('error')) ?? 'Google sign-in was cancelled.');
+  let payload;
+  try {
+    if (clientSecret) {
+      const response = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', body: new URLSearchParams({ code: params.get('code') || '', client_id: clientId,
+        client_secret: clientSecret, redirect_uri: redirectUri, grant_type: 'authorization_code', code_verifier: attempt.verifier }) });
+      const tokens = await response.json().catch(() => ({}));
+      if (!response.ok || typeof tokens.id_token !== 'string') throw new Error(`token exchange failed (${response.status}): ${tokens.error_description || tokens.error || 'no identity token'}`);
+      payload = (await jwtVerify(tokens.id_token, googleKeys, { issuer: ['https://accounts.google.com', 'accounts.google.com'], audience: clientId })).payload;
+    } else {
+      const identity = params.get('id_token');
+      if (!identity) throw new Error('Google did not return an identity token');
+      payload = (await jwtVerify(identity, googleKeys, { issuer: ['https://accounts.google.com', 'accounts.google.com'], audience: clientId })).payload;
+    }
+  } catch (error) {
+    console.error('Google sign-in failed:', error.message);
+    return finish(attempt.return_path, 'Google sign-in could not be completed. Please try again.');
+  }
+  if (payload.nonce !== attempt.nonce) {
+    console.error('Google sign-in failed: identity nonce did not match');
+    return finish(attempt.return_path, 'Google sign-in could not be completed. Please try again.');
+  }
+  let user;
+  try {
+    user = await identityUser('google', payload);
+  } catch (error) {
+    console.error('Google sign-in failed:', error.message);
+    return finish(attempt.return_path, error.statusCode ? error.message : 'Google sign-in could not be completed. Please try again.');
+  }
   const result = await issueSession(user);
-  return new Response(null, { status: 302, headers: { Location: publicUrl + attempt.rows[0].return_path, 'Set-Cookie': result.cookie, 'Cache-Control': 'no-store' } });
+  const headers = new Headers({ Location: publicUrl + attempt.return_path, 'Cache-Control': 'no-store' });
+  headers.append('Set-Cookie', result.cookie);
+  headers.append('Set-Cookie', clearOauthCookie(publicUrl));
+  return new Response(null, { status: 302, headers });
 }

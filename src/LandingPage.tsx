@@ -81,6 +81,12 @@ export function LandingPage({
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [authPane, setAuthPane] = useState<"choice" | "email">("choice");
 
+  useEffect(() => {
+    // A message that arrives with the page (for example after a Google sign-in
+    // that came back without a session) belongs in the sign-in dialog.
+    if (notice) setIsAuthOpen(true);
+  }, [notice]);
+
   const paragraphs = useMemo(() => {
     let i = 0;
     return PASSAGE_PARAGRAPHS.map((p) => p.split(/\s+/).map((w) => ({ w, i: i++ })));
