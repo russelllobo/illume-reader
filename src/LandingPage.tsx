@@ -10,23 +10,15 @@ import {
   Loader2,
   Mail,
   Pause,
-  Play,
-  RotateCcw,
-  Sparkles,
   X
 } from "lucide-react";
 import { COVERS, LOGO, PASSAGE_BOOK, PASSAGE_PARAGRAPHS } from "./concepts/shared";
 import "./concepts/Concept2.css";
 
-const STEPS = ["The page", "Narration", "Word tracking", "Image Mode"];
-const STEP_TIMES = [0, 1200, 2800, 5600];
-const WORD_MS = 260;
-const DURATION_MS = 11200;
 const BARS = 28;
-
-const clamp = (v: number, a = 0, b = 1) => Math.min(b, Math.max(a, v));
-const seg = (p: number, a: number, b: number) => clamp((p - a) / (b - a));
-const ease = (t: number) => t * t * (3 - 2 * t);
+const WAVE_HEIGHTS = [0.32, 0.68, 0.44, 0.92, 0.56, 0.78, 0.36, 0.62, 0.48, 0.86, 0.4, 0.72, 0.3, 0.58];
+// Static snapshot of the word being read, so the demo reads as a live page.
+const NOW_WORD = 11;
 
 interface LandingPageProps {
   handleAuth: (event: FormEvent<HTMLFormElement>) => Promise<void>;
@@ -79,19 +71,9 @@ export function LandingPage({
   notice
 }: LandingPageProps) {
   const storyRef = useRef<HTMLElement>(null);
-  const stageRef = useRef<HTMLDivElement>(null);
-  const textRef = useRef<HTMLDivElement>(null);
-  const viewportRef = useRef<HTMLDivElement>(null);
-  const heroRef = useRef<HTMLElement>(null);
-  const wordRefs = useRef<HTMLSpanElement[]>([]);
-  const stepRefs = useRef<HTMLButtonElement[]>([]);
   const shelfRef = useRef<HTMLDivElement>(null);
   const shelfLightRef = useRef<HTMLDivElement>(null);
   const finaleRef = useRef<HTMLElement>(null);
-  const replayRef = useRef<() => void>(() => {});
-  const seekRef = useRef<(ms: number) => void>(() => {});
-  const pausedRef = useRef(false);
-  const [playback, setPlayback] = useState<"playing" | "paused" | "finished">("playing");
   const [reduced, setReduced] = useState(
     () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
   );
@@ -131,95 +113,6 @@ export function LandingPage({
     );
     io.observe(el);
     return () => io.disconnect();
-  }, [reduced]);
-
-  useEffect(() => {
-    const story = storyRef.current;
-    const stage = stageRef.current;
-    const text = textRef.current;
-    const viewport = viewportRef.current;
-    const hero = heroRef.current;
-    if (!story || !stage || !text || !viewport || !hero) return;
-
-    let elapsed = 0;
-    let started = reduced;
-    let visible = false;
-    let previous = performance.now();
-    let current = -2;
-    let chapter = -1;
-    let finished = false;
-    let raf = 0;
-
-    const setWord = (index: number) => {
-      if (index === current) return;
-      wordRefs.current.forEach((word, k) => {
-        word.classList.toggle("c2-w--read", k < index);
-        word.classList.toggle("c2-w--now", k === index);
-      });
-      current = index;
-    };
-    const draw = () => {
-      const time = reduced ? DURATION_MS : elapsed;
-      const narration = ease(seg(time, 1200, 2200));
-      const follow = ease(seg(time, 2800, 3500));
-      const image = ease(seg(time, 5600, 7300));
-      stage.style.setProperty("--narr", String(narration));
-      stage.style.setProperty("--follow", String(follow));
-      stage.style.setProperty("--image", String(image));
-      stage.style.setProperty("--settle", String(ease(seg(time, 500, 1800))));
-      stage.style.setProperty("--p", String(clamp(time / DURATION_MS)));
-      const nextChapter = time >= 5600 ? 3 : time >= 2800 ? 2 : time >= 1200 ? 1 : 0;
-      if (nextChapter !== chapter) {
-        chapter = nextChapter;
-        stage.dataset.chapter = String(chapter);
-        stepRefs.current.forEach((step, k) => {
-          step.classList.toggle("c2-step--on", k <= chapter);
-          if (k === chapter) step.setAttribute("aria-current", "step");
-          else step.removeAttribute("aria-current");
-        });
-      }
-      stage.classList.toggle("c2-is-speaking", time >= 1200 && time < DURATION_MS && !pausedRef.current && visible && !reduced);
-      const index = time >= 2800 ? Math.min(31, Math.floor((time - 2800) / WORD_MS)) : -1;
-      setWord(index);
-      // Keep the same passage in view throughout the reveal.
-      text.style.transform = "none";
-      if (time >= DURATION_MS && !finished) {
-        finished = true;
-        setPlayback("finished");
-      }
-    };
-    const frame = (now: number) => {
-      const delta = now - previous;
-      previous = now;
-      if (started && visible && !pausedRef.current && !reduced) elapsed = Math.min(DURATION_MS, elapsed + delta);
-      draw();
-      const rect = hero.getBoundingClientRect();
-      hero.style.setProperty("--hero", String(clamp(-rect.top / Math.max(1, rect.height))));
-      raf = requestAnimationFrame(frame);
-    };
-    const seek = (ms: number) => {
-      elapsed = ms;
-      previous = performance.now();
-      started = true;
-      finished = false;
-      pausedRef.current = false;
-      setPlayback("playing");
-      draw();
-    };
-    seekRef.current = seek;
-    replayRef.current = () => seek(0);
-    const observer = new IntersectionObserver(([entry]) => {
-      visible = entry.isIntersecting;
-      if (visible) started = true;
-      previous = performance.now();
-    }, { threshold: 0.35 });
-    observer.observe(stage);
-    draw();
-    raf = requestAnimationFrame(frame);
-    return () => {
-      cancelAnimationFrame(raf);
-      observer.disconnect();
-    };
   }, [reduced]);
 
   useEffect(() => {
@@ -285,7 +178,7 @@ export function LandingPage({
       </header>
 
       <main>
-        <section className="c2-hero" ref={heroRef} aria-labelledby="c2-hero-title">
+        <section className="c2-hero" aria-labelledby="c2-hero-title">
           <div className="c2-hero-wall" aria-hidden="true">
             <div className="c2-hero-wall-inner">
               {[0, 1, 2].map((r) =>
@@ -321,22 +214,11 @@ export function LandingPage({
         </section>
 
         <section className="c2-story" ref={storyRef} aria-label="How Illume transforms a page">
-          <div className="c2-stage" ref={stageRef} data-chapter="0">
+          <div className="c2-stage">
             <div className="c2-stage-glow" aria-hidden="true" />
             <div className="c2-stage-grid">
               <div className="c2-demo-heading">
                 <h2>A page, brought to life.</h2>
-                <ol className="c2-steps" aria-label="Demo stages">
-                  {STEPS.map((label, k) => (
-                    <li key={label}>
-                      <button type="button" disabled={reduced}
-                        onClick={() => seekRef.current(STEP_TIMES[k])}
-                        ref={(el) => { if (el) stepRefs.current[k] = el; }}>
-                        <span className="c2-step-dot" aria-hidden="true" />{label}
-                      </button>
-                    </li>
-                  ))}
-                </ol>
               </div>
 
               <div className="c2-visual">
@@ -348,24 +230,18 @@ export function LandingPage({
                       <strong>{PASSAGE_BOOK.title}</strong>
                       <span>{PASSAGE_BOOK.author} · Chapter 9</span>
                     </div>
-                    <span className="c2-topbar-pill">
-                      <Sparkles size={13} /> Image Mode
-                    </span>
                   </div>
                   <div className="c2-device-body">
                     <article className="c2-page" aria-label={`Excerpt from ${PASSAGE_BOOK.title}`}>
                       <p className="c2-page-chapter">Chapter IX</p>
-                      <div className="c2-page-view" ref={viewportRef}>
-                        <div className="c2-text" ref={textRef}>
+                      <div className="c2-page-view">
+                        <div className="c2-text">
                           {paragraphs.map((para, pk) => (
                             <p key={pk}>
                               {para.map(({ w, i }) => (
                                 <Fragment key={i}>
                                   <span
-                                    className="c2-w"
-                                    ref={(el) => {
-                                      if (el) wordRefs.current[i] = el;
-                                    }}
+                                    className={`c2-w${i < NOW_WORD ? " c2-w--read" : i === NOW_WORD ? " c2-w--now" : ""}`}
                                   >
                                     {w}
                                   </span>{" "}
@@ -381,15 +257,11 @@ export function LandingPage({
                         </span>
                         <span className="c2-wave" aria-hidden="true">
                           {Array.from({ length: BARS }, (_, k) => (
-                            <i key={k} style={{ animationDelay: `${(k * 97) % 900}ms` }} />
+                            <i
+                              key={k}
+                              style={{ transform: `scaleY(${WAVE_HEIGHTS[k % WAVE_HEIGHTS.length]})` }}
+                            />
                           ))}
-                        </span>
-                        <span className="c2-voice">
-                          <span className="c2-voice-dot" aria-hidden="true" />
-                          Geffen
-                        </span>
-                        <span className="c2-speed" aria-hidden="true">
-                          1.0×
                         </span>
                       </div>
                     </article>
@@ -398,30 +270,11 @@ export function LandingPage({
                       <div className="c2-art-frame">
                         <img src="/landing/reader-cartoon-1.webp"
                           alt="Cartoon illustration of characters from Pride and Prejudice" />
-                        <figcaption className="c2-art-tag">
-                          <Sparkles size={12} aria-hidden="true" /> Image Mode · Cartoon
-                        </figcaption>
                       </div>
                     </figure>
                   </div>
                 </div>
               </div>
-              {!reduced && (
-                <div className="c2-demo-controls">
-                  {playback !== "finished" && (
-                    <button type="button" className="c2-replay" onClick={() => {
-                      pausedRef.current = !pausedRef.current;
-                      setPlayback(pausedRef.current ? "paused" : "playing");
-                    }}>
-                      {playback === "paused" ? <Play size={14} /> : <Pause size={14} />}
-                      {playback === "paused" ? "Resume" : "Pause"}
-                    </button>
-                  )}
-                  <button type="button" className="c2-replay" onClick={() => replayRef.current()}>
-                    <RotateCcw size={14} aria-hidden="true" /> Replay
-                  </button>
-                </div>
-              )}
             </div>
           </div>
         </section>
