@@ -1,16 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import {
-  ArrowRight,
-  AudioLines,
-  BookOpen,
-  ChevronDown,
-  Highlighter,
-  ImageIcon,
-  Loader2,
-  Mail,
-  X
-} from "lucide-react";
+import { ArrowRight, ChevronDown, Loader2, Mail, X } from "lucide-react";
 import { COVERS, LOGO, PASSAGE_PARAGRAPHS } from "./concepts/shared";
 import { PersuasionDemo } from "./PersuasionDemo";
 import "./concepts/Concept2.css";
@@ -317,34 +307,6 @@ export function LandingPage({
 
         <section className="c2-story" ref={storyRef} aria-label="How Illume transforms a page">
           <PersuasionDemo />
-        </section>
-
-        <section className="c2-recap" aria-labelledby="c2-recap-title">
-          <h2 id="c2-recap-title" className="c2-section-title">
-            Everything lit. <span>Nothing lost.</span>
-          </h2>
-          <ul className="c2-recap-list">
-            <li>
-              <AudioLines aria-hidden="true" />
-              <h3>Natural narration</h3>
-              <p>Geffen reads any chapter aloud with real warmth and rhythm.</p>
-            </li>
-            <li>
-              <Highlighter aria-hidden="true" />
-              <h3>Live word tracking</h3>
-              <p>Each word glows as it&apos;s spoken, so your place is never lost.</p>
-            </li>
-            <li>
-              <ImageIcon aria-hidden="true" />
-              <h3>Image Mode</h3>
-              <p>An illustration for every section keeps the story in sight.</p>
-            </li>
-            <li>
-              <BookOpen aria-hidden="true" />
-              <h3>Your whole library</h3>
-              <p>EPUB and PDF, picked up exactly where you left off.</p>
-            </li>
-          </ul>
         </section>
 
         <section className="c2-shelf-section" aria-labelledby="c2-shelf-title">

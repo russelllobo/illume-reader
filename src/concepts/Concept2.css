@@ -696,69 +696,6 @@
   text-shadow: 0 0 40px rgba(230, 168, 33, 0.4);
 }
 
-.c2-recap {
-  max-width: 1240px;
-  margin: 0 auto;
-  padding: clamp(90px, 12vw, 150px) clamp(24px, 4vw, 56px) clamp(30px, 4vw, 50px);
-}
-
-.c2-recap-list {
-  list-style: none;
-  margin: 64px 0 0;
-  padding: 0;
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 0;
-  border-top: 1px solid rgba(244, 234, 212, 0.12);
-}
-
-.c2-recap-list li {
-  padding: 34px 28px 10px 0;
-  position: relative;
-}
-
-.c2-recap-list li + li {
-  padding-left: 28px;
-  border-left: 1px solid rgba(244, 234, 212, 0.08);
-}
-
-.c2-recap-list li::before {
-  content: "";
-  position: absolute;
-  top: -1px;
-  left: 0;
-  width: 44px;
-  height: 1px;
-  background: var(--c2-gold);
-  box-shadow: 0 0 12px var(--c2-gold);
-}
-
-.c2-recap-list li + li::before {
-  left: 28px;
-}
-
-.c2-recap-list svg {
-  width: 26px;
-  height: 26px;
-  color: var(--c2-gold-hi);
-  filter: drop-shadow(0 0 10px rgba(230, 168, 33, 0.55));
-}
-
-.c2-recap-list h3 {
-  margin: 22px 0 8px;
-  font-family: var(--c2-head);
-  font-weight: 400;
-  font-size: 22px;
-  color: var(--c2-cream);
-}
-
-.c2-recap-list p {
-  margin: 0;
-  font-size: 15.5px;
-  line-height: 1.55;
-  color: rgba(244, 234, 212, 0.58);
-}
-
 /* ---------- Shelf ---------- */
 .c2-shelf-section {
   padding: clamp(60px, 8vw, 110px) 0 clamp(40px, 5vw, 70px);
@@ -1075,16 +1012,6 @@
 
 /* ---------- Tablet / mobile ---------- */
 @media (max-width: 1080px) {
-  .c2-recap-list {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  .c2-recap-list li:nth-child(3) {
-    border-left: 0;
-    padding-left: 0;
-  }
-  .c2-recap-list li:nth-child(3)::before {
-    left: 0;
-  }
 }
 
 @media (max-width: 860px) {
@@ -1098,17 +1025,6 @@
 }
 
 @media (max-width: 560px) {
-  .c2-recap-list {
-    grid-template-columns: 1fr;
-  }
-  .c2-recap-list li,
-  .c2-recap-list li + li {
-    padding: 26px 0 18px;
-    border-left: 0;
-  }
-  .c2-recap-list li + li::before {
-    left: 0;
-  }
   .c2-hero-ctas .c2-btn--ghost {
     display: none;
   }
