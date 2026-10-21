@@ -138,7 +138,7 @@ export function PersuasionDemo() {
     <section className="c2-persuasion" aria-label="Persuasion reading demo">
       <audio
         ref={audioRef}
-        src="/landing/persuasion/combined.mp3"
+        src="/landing/persuasion/combined.mp3?v=2"
         preload="auto"
         onEnded={handleEnded}
       />
@@ -182,7 +182,7 @@ export function PersuasionDemo() {
         {sentences.map((sentence, index) => (
           <img
             key={index}
-            src={`/landing/persuasion/sentences/${String(index + 1).padStart(2, "0")}.webp`}
+            src={`/landing/persuasion/sentences/${String(index + 1).padStart(2, "0")}.webp?v=2`}
             alt=""
             className={index === activeSentence ? "is-active" : ""}
             loading={index < 2 ? "eager" : "lazy"}
