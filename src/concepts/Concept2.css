@@ -256,6 +256,10 @@
 .c2-hero-title span {
   display: block;
   color: #fff4d8;
+  /* The tight line-height leaves the descenders outside the box; the gradient
+     background is clipped to that box, so pad it out to keep the tails painted. */
+  padding-bottom: 0.14em;
+  margin-bottom: -0.14em;
   background: linear-gradient(100deg, #fff6df 15%, #ffd56e 50%, #f0a52a 85%);
   -webkit-background-clip: text;
   background-clip: text;
