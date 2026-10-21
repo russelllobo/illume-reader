@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import {
   ArrowRight,
@@ -9,16 +9,11 @@ import {
   ImageIcon,
   Loader2,
   Mail,
-  Pause,
   X
 } from "lucide-react";
-import { COVERS, LOGO, PASSAGE_BOOK, PASSAGE_PARAGRAPHS } from "./concepts/shared";
+import { COVERS, LOGO, PASSAGE_PARAGRAPHS } from "./concepts/shared";
+import { PersuasionDemo } from "./PersuasionDemo";
 import "./concepts/Concept2.css";
-
-const BARS = 28;
-const WAVE_HEIGHTS = [0.32, 0.68, 0.44, 0.92, 0.56, 0.78, 0.36, 0.62, 0.48, 0.86, 0.4, 0.72, 0.3, 0.58];
-// Static snapshot of the word being read, so the demo reads as a live page.
-const NOW_WORD = 11;
 
 interface LandingPageProps {
   handleAuth: (event: FormEvent<HTMLFormElement>) => Promise<void>;
@@ -86,11 +81,6 @@ export function LandingPage({
     // that came back without a session) belongs in the sign-in dialog.
     if (notice) setIsAuthOpen(true);
   }, [notice]);
-
-  const paragraphs = useMemo(() => {
-    let i = 0;
-    return PASSAGE_PARAGRAPHS.map((p) => p.split(/\s+/).map((w) => ({ w, i: i++ })));
-  }, []);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -220,69 +210,7 @@ export function LandingPage({
         </section>
 
         <section className="c2-story" ref={storyRef} aria-label="How Illume transforms a page">
-          <div className="c2-stage">
-            <div className="c2-stage-glow" aria-hidden="true" />
-            <div className="c2-stage-grid">
-              <div className="c2-demo-heading">
-                <h2>A page, brought to life.</h2>
-              </div>
-
-              <div className="c2-visual">
-                <div className="c2-device">
-                  <div className="c2-device-shell" aria-hidden="true" />
-                  <div className="c2-topbar" aria-hidden="true">
-                    <img src={PASSAGE_BOOK.cover} alt="" />
-                    <div>
-                      <strong>{PASSAGE_BOOK.title}</strong>
-                      <span>{PASSAGE_BOOK.author} · Chapter 9</span>
-                    </div>
-                  </div>
-                  <div className="c2-device-body">
-                    <article className="c2-page" aria-label={`Excerpt from ${PASSAGE_BOOK.title}`}>
-                      <p className="c2-page-chapter">Chapter IX</p>
-                      <div className="c2-page-view">
-                        <div className="c2-text">
-                          {paragraphs.map((para, pk) => (
-                            <p key={pk}>
-                              {para.map(({ w, i }) => (
-                                <Fragment key={i}>
-                                  <span
-                                    className={`c2-w${i < NOW_WORD ? " c2-w--read" : i === NOW_WORD ? " c2-w--now" : ""}`}
-                                  >
-                                    {w}
-                                  </span>{" "}
-                                </Fragment>
-                              ))}
-                            </p>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="c2-player">
-                        <span className="c2-player-btn" aria-hidden="true">
-                          <Pause size={15} />
-                        </span>
-                        <span className="c2-wave" aria-hidden="true">
-                          {Array.from({ length: BARS }, (_, k) => (
-                            <i
-                              key={k}
-                              style={{ transform: `scaleY(${WAVE_HEIGHTS[k % WAVE_HEIGHTS.length]})` }}
-                            />
-                          ))}
-                        </span>
-                      </div>
-                    </article>
-                    <figure className="c2-art">
-                      <div className="c2-art-bloom" aria-hidden="true" />
-                      <div className="c2-art-frame">
-                        <img src="/landing/reader-cartoon-1.webp"
-                          alt="Cartoon illustration of characters from Pride and Prejudice" />
-                      </div>
-                    </figure>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+          <PersuasionDemo />
         </section>
 
         <section className="c2-recap" aria-labelledby="c2-recap-title">
