@@ -799,15 +799,12 @@
   height: 100%;
   object-fit: cover;
   display: block;
-  filter: brightness(0.62) sepia(0.3) saturate(0.95);
-  transition: filter 0.5s ease;
 }
 
 .c2-cover-sheen {
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, rgba(0, 0, 0, 0.35) 0%, rgba(255, 255, 255, 0.1) 4%, transparent 10%, transparent 85%, rgba(0, 0, 0, 0.25)),
-    linear-gradient(0deg, rgba(255, 170, 60, 0.28), transparent 45%);
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.22) 0%, rgba(255, 255, 255, 0.07) 4%, transparent 10%, transparent 88%, rgba(0, 0, 0, 0.18));
   pointer-events: none;
 }
 
@@ -816,11 +813,6 @@
   transform: translate3d(0, -14px, 0) scale(1.05);
   box-shadow: 0 30px 40px -16px rgba(0, 0, 0, 0.95), 0 0 0 1px rgba(255, 220, 150, 0.55),
     0 0 60px -2px rgba(230, 168, 33, 0.7);
-}
-
-.c2-cover:hover img,
-.c2-cover:focus-visible img {
-  filter: brightness(1.05) sepia(0.05) saturate(1.05);
 }
 
 .c2-shelf-foot {
