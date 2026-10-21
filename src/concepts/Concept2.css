@@ -1095,6 +1095,21 @@
   color: var(--text-primary);
 }
 
+/* The landing resets button fonts for its own controls; put the modal's
+   typography back. */
+.c2-root .auth-modal-card .auth-oauth-btn,
+.c2-root .auth-modal-card .auth-submit-btn {
+  font: 600 0.88rem/1 var(--font-sans);
+}
+
+.c2-root .auth-modal-card .auth-back-btn {
+  font: 700 0.78rem/1.2 var(--font-sans);
+}
+
+.c2-root .auth-modal-card .auth-switch-btn {
+  font: 400 0.8rem/1.2 var(--font-sans);
+}
+
 .c2-root .auth-modal-card .auth-oauth-btn {
   background: #fffdf7;
   color: #1c130a;
@@ -1108,4 +1123,62 @@
 
 .c2-root .auth-modal-card .auth-switch-btn {
   color: #6b5c46;
+}
+
+/* The landing stays dark, so its modal keeps the cream theme even when the
+   app itself is in dark mode. */
+html[data-color-scheme="dark"] .c2-root .auth-modal-card {
+  --text-primary: #1c130a;
+  --text-secondary: #6b5c46;
+  --text-muted: #8a7a63;
+  --border-color: rgba(28, 19, 10, 0.16);
+  --bg-neutral: #f3e8d2;
+  background: rgba(255, 248, 233, 0.98);
+  border-color: rgba(158, 52, 22, 0.2);
+  box-shadow: 0 24px 50px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(28, 19, 10, 0.06);
+  color: var(--text-primary);
+}
+
+html[data-color-scheme="dark"] .c2-root .auth-modal-close {
+  background: #fffdf7;
+  border-color: rgba(28, 19, 10, 0.18);
+  color: #6b5c46;
+}
+
+html[data-color-scheme="dark"] .c2-root .auth-modal-close:hover {
+  background: #f3e8d2;
+  color: #1c130a;
+}
+
+html[data-color-scheme="dark"] .c2-root .auth-input-field {
+  background: #fffdf7;
+  border-color: rgba(28, 19, 10, 0.18);
+  color: #1c130a;
+}
+
+html[data-color-scheme="dark"] .c2-root .auth-input-field:focus {
+  border-color: #9e3416;
+}
+
+html[data-color-scheme="dark"] .c2-root .auth-input-field::placeholder {
+  color: #8a7a63;
+}
+
+html[data-color-scheme="dark"] .c2-root .auth-submit-btn {
+  background: #14100b;
+  color: #fff8e9;
+}
+
+html[data-color-scheme="dark"] .c2-root .auth-submit-btn:hover {
+  background: #2b1d10;
+}
+
+html[data-color-scheme="dark"] .c2-root .auth-switch-btn:hover {
+  color: #9e3416;
+}
+
+html[data-color-scheme="dark"] .c2-root .auth-notice-toast {
+  background: #fef2f2;
+  border-color: rgba(239, 68, 68, 0.2);
+  color: #b91c1c;
 }
