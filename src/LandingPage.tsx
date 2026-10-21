@@ -65,6 +65,10 @@ export function LandingPage({
   busy,
   notice
 }: LandingPageProps) {
+  const heroRef = useRef<HTMLElement>(null);
+  const heroGlowRef = useRef<HTMLDivElement>(null);
+  const heroWallLitRef = useRef<HTMLDivElement>(null);
+  const heroTitleLitRef = useRef<HTMLHeadingElement>(null);
   const storyRef = useRef<HTMLElement>(null);
   const shelfRef = useRef<HTMLDivElement>(null);
   const shelfLightRef = useRef<HTMLDivElement>(null);
@@ -112,6 +116,97 @@ export function LandingPage({
   }, [reduced]);
 
   useEffect(() => {
+    const hero = heroRef.current;
+    const glow = heroGlowRef.current;
+    const wallLit = heroWallLitRef.current;
+    const titleLit = heroTitleLitRef.current;
+    if (!hero || !glow || reduced) return;
+    if (!window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
+
+    let raf = 0;
+    let targetX = 0;
+    let targetY = 0;
+    let x = 0;
+    let y = 0;
+    let primed = false;
+    let wallOffsetX = 0;
+    let wallOffsetY = 0;
+    let titleOffsetX = 0;
+    let titleOffsetY = 0;
+
+    const render = () => {
+      raf = 0;
+      x += (targetX - x) * 0.2;
+      y += (targetY - y) * 0.2;
+      glow.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+      if (wallLit) {
+        wallLit.style.setProperty("--c2-lit-x", `${x + wallOffsetX}px`);
+        wallLit.style.setProperty("--c2-lit-y", `${y + wallOffsetY}px`);
+      }
+      if (titleLit) {
+        titleLit.style.setProperty("--c2-title-x", `${x + titleOffsetX}px`);
+        titleLit.style.setProperty("--c2-title-y", `${y + titleOffsetY}px`);
+      }
+      if (Math.abs(targetX - x) > 0.15 || Math.abs(targetY - y) > 0.15) {
+        raf = requestAnimationFrame(render);
+      }
+    };
+
+    const onMove = (e: PointerEvent) => {
+      if (e.pointerType === "touch") return;
+      const rect = hero.getBoundingClientRect();
+      const insideHero =
+        e.clientX >= rect.left &&
+        e.clientX <= rect.right &&
+        e.clientY >= rect.top &&
+        e.clientY <= rect.bottom;
+      // The nav floats over the hero; keep the light alive there, but let go
+      // once the pointer reaches the demo or an open dialog covers the page.
+      if (!insideHero || document.querySelector(".auth-modal-overlay")) {
+        onLeave();
+        return;
+      }
+      targetX = e.clientX - rect.left;
+      targetY = e.clientY - rect.top;
+      // Enter the section where the pointer actually is rather than sweeping
+      // the light across from wherever it was last seen.
+      if (!primed) {
+        x = targetX;
+        y = targetY;
+        primed = true;
+      }
+      if (wallLit) {
+        const wallRect = wallLit.getBoundingClientRect();
+        wallOffsetX = wallRect.left - rect.left;
+        wallOffsetY = wallRect.top - rect.top;
+      }
+      if (titleLit) {
+        const titleRect = titleLit.getBoundingClientRect();
+        titleOffsetX = titleRect.left - rect.left;
+        titleOffsetY = titleRect.top - rect.top;
+      }
+      hero.classList.add("is-lit");
+      if (!raf) raf = requestAnimationFrame(render);
+    };
+
+    const onLeave = () => {
+      hero.classList.remove("is-lit");
+      primed = false;
+      cancelAnimationFrame(raf);
+      raf = 0;
+    };
+
+    window.addEventListener("pointermove", onMove, { passive: true });
+    window.addEventListener("scroll", onLeave, { passive: true });
+    return () => {
+      cancelAnimationFrame(raf);
+      hero.classList.remove("is-lit");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("scroll", onLeave);
+    };
+  }, [reduced]);
+
+  useEffect(() => {
     const shelf = shelfRef.current;
     const light = shelfLightRef.current;
     if (!shelf || !light || reduced) return;
@@ -153,6 +248,10 @@ export function LandingPage({
     setIsAuthOpen(false);
   };
 
+  const wallParagraphs = [0, 1, 2].map((row) =>
+    PASSAGE_PARAGRAPHS.map((paragraph, index) => <p key={`${row}-${index}`}>{paragraph}</p>)
+  );
+
   return (
     <div className={`c2-root${reduced ? " c2-static" : ""}`}>
       <header className="c2-nav">
@@ -174,12 +273,11 @@ export function LandingPage({
       </header>
 
       <main>
-        <section className="c2-hero" aria-labelledby="c2-hero-title">
+        <section className="c2-hero" ref={heroRef} aria-labelledby="c2-hero-title">
           <div className="c2-hero-wall" aria-hidden="true">
-            <div className="c2-hero-wall-inner">
-              {[0, 1, 2].map((r) =>
-                PASSAGE_PARAGRAPHS.map((p, k) => <p key={`${r}-${k}`}>{p}</p>)
-              )}
+            <div className="c2-hero-wall-inner">{wallParagraphs}</div>
+            <div className="c2-hero-wall-inner c2-hero-wall-lit" ref={heroWallLitRef}>
+              {wallParagraphs}
             </div>
           </div>
           <div className="c2-hero-flame" aria-hidden="true" />
@@ -187,9 +285,14 @@ export function LandingPage({
             <p className="c2-eyebrow">
               <span>illume</span> <em>/ɪˈluːm/</em> — to light up
             </p>
-            <h1 id="c2-hero-title" className="c2-hero-title">
-              Light up <span>every page.</span>
-            </h1>
+            <div className="c2-hero-title-wrap">
+              <h1 id="c2-hero-title" className="c2-hero-title">
+                Light up <span>every page.</span>
+              </h1>
+              <h1 className="c2-hero-title c2-hero-title-lit" aria-hidden="true" ref={heroTitleLitRef}>
+                Light up <span>every page.</span>
+              </h1>
+            </div>
             <p className="c2-hero-sub">
               For minds that wander. Illume reads your books aloud, lights each word as it&apos;s spoken,
               and paints every scene — so you never lose the thread.
@@ -202,6 +305,9 @@ export function LandingPage({
                 See it happen
               </button>
             </div>
+          </div>
+          <div className="c2-hero-glow" ref={heroGlowRef} aria-hidden="true">
+            <span className="c2-hero-glow-core" />
           </div>
           <button type="button" className="c2-scroll-cue" onClick={scrollToStory} aria-label="Scroll to the demo">
             <span>Watch it light up</span>

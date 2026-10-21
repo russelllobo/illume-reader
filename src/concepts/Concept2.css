@@ -171,6 +171,51 @@
   margin: 0 0 0.9em;
 }
 
+.c2-hero-wall-lit {
+  position: absolute;
+  inset: 0 0 auto;
+  color: rgba(255, 210, 132, 0.62);
+  opacity: 0;
+  transition: opacity 420ms ease;
+  pointer-events: none;
+  text-shadow: 0 0 22px rgba(255, 188, 66, 0.22);
+  /* Intersect the cursor spotlight with a soft fade under the fixed nav, so
+     the lit words never smear through its backdrop blur. The wall is inset
+     -10% of the hero, hence the 8.333% offset (10% of a 120%-tall box). */
+  -webkit-mask-image:
+    linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent calc(8.333% + 78px),
+      #000 calc(8.333% + 170px)
+    ),
+    radial-gradient(
+      circle 310px at var(--c2-lit-x, -999px) var(--c2-lit-y, -999px),
+      #000 0%,
+      rgba(0, 0, 0, 0.7) 42%,
+      transparent 75%
+    );
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent calc(8.333% + 78px),
+      #000 calc(8.333% + 170px)
+    ),
+    radial-gradient(
+      circle 310px at var(--c2-lit-x, -999px) var(--c2-lit-y, -999px),
+      #000 0%,
+      rgba(0, 0, 0, 0.7) 42%,
+      transparent 75%
+    );
+  mask-composite: intersect;
+}
+
+.c2-hero.is-lit .c2-hero-wall-lit {
+  opacity: 1;
+}
+
 .c2-hero-flame {
   position: absolute;
   z-index: -1;
@@ -196,6 +241,75 @@
   61% {
     opacity: 0.78;
     transform: translate(-50%, -50%) scale(0.985);
+  }
+}
+
+.c2-hero-glow {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 3;
+  width: 1500px;
+  height: 1500px;
+  margin: -750px 0 0 -750px;
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 480ms ease;
+  background: radial-gradient(
+    closest-side,
+    rgba(255, 200, 82, 0.2) 0%,
+    rgba(255, 180, 46, 0.11) 34%,
+    rgba(230, 168, 33, 0.045) 58%,
+    transparent 78%
+  );
+  mix-blend-mode: screen;
+  will-change: transform, opacity;
+}
+
+.c2-hero.is-lit .c2-hero-glow {
+  opacity: 1;
+}
+
+.c2-hero-glow-core {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 420px;
+  height: 420px;
+  margin: -210px 0 0 -210px;
+  border-radius: 50%;
+  background: radial-gradient(
+    closest-side,
+    rgba(255, 244, 212, 0.33) 0%,
+    rgba(255, 216, 128, 0.17) 42%,
+    transparent 72%
+  );
+  animation: c2-glow-breathe 5.4s ease-in-out infinite;
+}
+
+@keyframes c2-glow-breathe {
+  0%,
+  100% {
+    opacity: 0.88;
+    transform: scale(1);
+  }
+  38% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+  68% {
+    opacity: 0.8;
+    transform: scale(0.97);
+  }
+}
+
+/* The light only makes sense for a mouse or trackpad; leave touch alone. */
+@media not all and (hover: hover) and (pointer: fine) {
+  .c2-hero-glow,
+  .c2-hero-wall-lit,
+  .c2-hero-title-lit {
+    display: none;
   }
 }
 
@@ -252,6 +366,47 @@
   background-clip: text;
   -webkit-text-fill-color: transparent;
   filter: drop-shadow(0 0 28px rgba(230, 168, 33, 0.45)) drop-shadow(0 0 70px rgba(230, 140, 33, 0.3));
+}
+
+.c2-hero-title-wrap {
+  position: relative;
+}
+
+/* A second copy of the headline, revealed only where the pointer light falls,
+   so the words themselves catch the gold instead of just the haze behind them. */
+.c2-hero-title-lit {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  animation: none;
+  color: #ffe6ab;
+  opacity: 0;
+  transition: opacity 420ms ease;
+  pointer-events: none;
+  -webkit-text-fill-color: #ffe6ab;
+  -webkit-mask-image: radial-gradient(
+    circle 330px at var(--c2-title-x, -999px) var(--c2-title-y, -999px),
+    #000 0%,
+    rgba(0, 0, 0, 0.6) 46%,
+    transparent 76%
+  );
+  mask-image: radial-gradient(
+    circle 330px at var(--c2-title-x, -999px) var(--c2-title-y, -999px),
+    #000 0%,
+    rgba(0, 0, 0, 0.6) 46%,
+    transparent 76%
+  );
+}
+
+.c2-hero.is-lit .c2-hero-title-lit {
+  opacity: 1;
+}
+
+.c2-hero-title-lit span {
+  background: none;
+  color: #ffe08f;
+  -webkit-text-fill-color: #ffe08f;
+  filter: drop-shadow(0 0 34px rgba(255, 200, 90, 0.65));
 }
 
 .c2-hero-sub {
