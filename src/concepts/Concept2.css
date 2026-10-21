@@ -725,7 +725,9 @@
   position: relative;
   margin-top: 40px;
   padding-bottom: 30px;
-  overflow: hidden;
+  /* Let the hover lift and its glow breathe; the root clips the marquee
+     horizontally, so the shelf itself must not clip vertically. */
+  overflow: visible;
   isolation: isolate;
 }
 
