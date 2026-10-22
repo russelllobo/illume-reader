@@ -1,132 +1,140 @@
 # Illume Reader
 
-Full-stack EPUB/PDF reading library (React 19 + Vite + TypeScript + Supabase): per-user auth, synced catalogue, private document storage with RLS, reading-progress sync, narration, and an optional AI image mode backed by Supabase Edge Functions. Includes Stripe Pro billing and an owner analytics dashboard.
+**A reading app that makes books feel lit from within.**
 
-## Run locally
+Illume is a full-stack EPUB and PDF reader with a private, per-user library, synced reading progress, natural narration that highlights each word as it is spoken, and an optional Image Mode that illustrates what you are reading. It runs as a web app (React + Supabase) with a companion iOS app in [`illume-ios/`](illume-ios/).
+
+Live at **[illumereader.com](https://illumereader.com)**
+
+<p align="center">
+  <img src="docs/screenshots/library.webp" alt="Illume library view showing book covers and an Explore Classics shelf" width="49%" />
+  <img src="docs/screenshots/reading.webp" alt="Illume reading view with chapter sidebar, narration controls and an AI illustration" width="49%" />
+</p>
+
+## What it does
+
+**Your own library.** Upload EPUBs and PDFs, or pick from a shelf of public-domain classics. Every book belongs to one account, with row-level security in Postgres and private storage buckets, so nobody else can list, read, or download your files.
+
+**Read, or listen.** Narration runs through a Supabase Edge Function that keeps the speech provider's key server-side. The reader tracks the spoken word and highlights it in the text, follows along across chapters, and lets you jump by clicking a word.
+
+**Image Mode.** Ask for a scene and Illume writes a standalone illustration prompt for the current passage, renders it, and caches it against that section so re-reads reuse the image instead of paying to generate it again. Generated images live in a private bucket.
+
+**Progress that follows you.** Position, percentage read, and time left sync per book, so the web reader and the iOS app pick up where you stopped.
+
+**Pro.** A Stripe-backed subscription raises the storage quota and the monthly image allowance, and unlocks the billing portal for self-service changes.
+
+**Owner dashboard.** A separate `/dashboard` route aggregates users, books, generated images, storage use, and content integrations. It is gated behind an allowlisted Google account and reads through an Edge Function rather than exposing privileged database access to the browser.
+
+## Stack
+
+| Layer | Choice |
+| --- | --- |
+| Web client | React 19, Vite, TypeScript |
+| Reading engine | Custom EPUB parser, `pdfjs-dist` for PDFs |
+| Backend | Supabase: Auth, Postgres with RLS, Storage, Edge Functions |
+| Payments | Stripe Checkout, Billing Portal, webhooks |
+| Narration | Edge Function wrapping the speech provider |
+| Images | Edge Function calling the image model, private bucket + usage ledger |
+| iOS | Expo / React Native in [`illume-ios/`](illume-ios/) |
+
+## Run it locally
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open the Vite URL, usually `http://localhost:5173`.
+Vite serves the app on `http://localhost:5173`.
 
-## Supabase
-
-The app expects these Vite environment variables:
+Copy `.env.example` to `.env.local` and fill in your own Supabase project:
 
 ```bash
-VITE_SUPABASE_URL=
-VITE_SUPABASE_PUBLISHABLE_KEY=
-VITE_FREE_USER_STORAGE_QUOTA_BYTES=104857600
-VITE_PRO_USER_STORAGE_QUOTA_BYTES=5368709120
+VITE_SUPABASE_URL=https://<project-ref>.supabase.co
+VITE_SUPABASE_PUBLISHABLE_KEY=<publishable-key>
+VITE_FREE_USER_STORAGE_QUOTA_BYTES=104857600    # 100 MB
+VITE_PRO_USER_STORAGE_QUOTA_BYTES=5368709120    # 5 GB
 ```
 
-The default library quota is 100 MB for free users and 5 GB for Pro users. `VITE_USER_STORAGE_QUOTA_BYTES` is still accepted as the free-plan quota for older local env files.
-
-Image mode uses a Supabase Edge Function so the API keys stay server-side. Meta Muse Spark (via the OpenCode Go subscription, low reasoning) writes a standalone image prompt for each book section, then GPT Image 2.5 Sunburst at low quality renders it (falling back to Flare when Sunburst's safety filter vetoes a scene). Images are stored in the private `reader-images` storage bucket and metadata recorded in `public.reader_images` so future reads reuse existing images instead of generating again. Free users can generate 25 lifetime images; Pro users get 1,000 images per month. Lifetime and monthly usage are tracked in `public.reader_image_usage`.
-
-Narration uses Speechify (`simba-3.2`, default voice `geffen_32`) through the `edge-tts` Supabase Edge Function, so the Speechify key also stays server-side. The web reader offers Geffen as the default voice with the previous Microsoft Edge voices kept as fallback options; the Edge Function maps any legacy voice id to Geffen.
-
-Set these function secrets:
+Other scripts:
 
 ```bash
-supabase secrets set OPENAI_API_KEY=sk-...
-supabase secrets set OPENCODE_GO_API_KEY=sk-...
-supabase secrets set SPEECHIFY_API_KEY=sk_...
+npm run build       # typecheck and production build
+npm run typecheck   # TypeScript only
+npm run preview     # serve the production build
 ```
 
-Deploy the reader Edge Functions:
+## Database and storage
+
+Apply the migrations in [`supabase/migrations`](supabase/migrations) with the Supabase CLI. They create:
+
+- `public.books` — one row per book, scoped to its owner
+- `public.billing_profiles` — plan and subscription state
+- `public.reader_images` and `public.reader_image_usage` — generated images and quota tracking
+- a private `epubs` bucket for EPUB/PDF uploads and a private `reader-images` bucket
+- RLS policies so a user can only reach their own rows and files
+
+## Edge Functions
+
+All privileged work happens in [`supabase/functions`](supabase/functions). Set secrets with `supabase secrets set` — never in the client:
+
+```bash
+supabase secrets set OPENROUTER_API_KEY=...
+supabase secrets set SPEECHIFY_API_KEY=...
+supabase secrets set STRIPE_SECRET_KEY=...
+supabase secrets set STRIPE_PRO_PRICE_ID=...
+supabase secrets set STRIPE_WEBHOOK_SECRET=...
+supabase secrets set SITE_URL=https://your-domain
+```
+
+Then deploy:
 
 ```bash
 supabase functions deploy generate-reader-image
 supabase functions deploy edge-tts
 supabase functions deploy delete-reader-book
 supabase functions deploy reader-dashboard
-supabase functions deploy youtube-token-exchange --no-verify-jwt
-supabase functions deploy youtube-feed
-supabase functions deploy youtube-analytics
-supabase functions deploy instagram-token-exchange
-supabase functions deploy instagram-feed
-supabase functions deploy reels-post
-```
-
-## Owner dashboard
-
-The owner dashboard is available at `/dashboard`.
-It requires Google authentication and only allows `r.lobo2003@gmail.com`. The dashboard uses the
-`reader-dashboard` Edge Function to read aggregate user, book, generated image, and Supabase Storage usage
-without exposing privileged database access to the browser.
-
-The Content Integrations tab can connect YouTube through Google OAuth. Set the OAuth client secret as a
-Supabase Edge Function secret before deploying the token exchange function:
-
-```bash
-supabase secrets set GOOGLE_CLIENT_SECRET=...
-supabase secrets set GOOGLE_CLIENT_ID=...
-supabase secrets set YOUTUBE_API_KEY=...
-supabase secrets set YOUTUBE_CHANNEL_ID=@ilumereader
-supabase secrets set INSTAGRAM_PLATFORM_APP_ID=...
-supabase secrets set INSTAGRAM_PLATFORM_APP_SECRET=...
-supabase secrets set INSTAGRAM_ACCESS_TOKEN=...
-```
-
-Instagram relinking uses Meta's Instagram API with Instagram Login. Set `VITE_INSTAGRAM_PLATFORM_APP_ID`
-and the Supabase `INSTAGRAM_PLATFORM_APP_ID` secret to the Instagram app ID from Meta > Products >
-Instagram > API setup, not the Facebook App ID. For local testing, add
-`http://localhost:5173/auth/instagram/callback` to that Instagram app's valid OAuth redirect URIs,
-then restart Vite so `VITE_` env changes are loaded.
-
-The database migrations create:
-
-- `public.books`
-- `public.billing_profiles`
-- `public.reader_image_usage`
-- a private `epubs` storage bucket for EPUB and PDF uploads
-- RLS policies for per-user book rows and files
-
-## Stripe Billing
-
-The app includes a Pro subscription checkout flow backed by Supabase Edge Functions. Pro status is stored in `public.billing_profiles` and raises the image generation limit from 25 lifetime images to 1,000 images per month, with 5 GB of library storage.
-
-The current Stripe Pro product and price are:
-
-```text
-Product: Illume Pro (prod_UYCCYmewCaj2oE)
-Price: price_1TZ5v9LZ9T22BHizLUFDsKjM (£12.99/month)
-```
-
-Set these Supabase Edge Function secrets:
-
-```bash
-supabase secrets set \
-  STRIPE_SECRET_KEY=sk_... \
-  STRIPE_PRO_PRICE_ID=price_1TZ5v9LZ9T22BHizLUFDsKjM \
-  STRIPE_WEBHOOK_SECRET=whsec_... \
-  SITE_URL=https://illumereader.com
-```
-
-Deploy the functions:
-
-```bash
 supabase functions deploy create-checkout-session
 supabase functions deploy create-billing-portal
 supabase functions deploy delete-account
 supabase functions deploy stripe-webhook --no-verify-jwt
 ```
 
-In Stripe, point a webhook endpoint at:
+The content integrations (YouTube, Instagram, TikTok feeds and posting) are optional and each needs its own OAuth app credentials; skip those functions if you do not want the dashboard's publishing tools.
 
-```text
+## Stripe
+
+Create a recurring Pro price, point `STRIPE_PRO_PRICE_ID` at it, and add a webhook endpoint at:
+
+```
 https://<project-ref>.supabase.co/functions/v1/stripe-webhook
 ```
 
-Subscribe it to `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, and `customer.subscription.deleted`.
+Subscribe it to `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, and `customer.subscription.deleted`. The webhook is the only thing that grants Pro, so keep the signing secret set.
 
-## Production checklist
+## iOS app
 
-- Add the production domain to Supabase Auth redirect URLs.
-- Keep `SITE_URL` set to the production app URL before deploying live billing.
-- Configure email templates or SMTP before inviting real users.
-- Confirm the Supabase `epubs` bucket file size limit is at least 5 GB before promoting Pro storage.
-- Add Terms and Privacy pages before public launch.
+`illume-ios/` is an Expo app that shares the same Supabase project and API surface:
+
+```bash
+cd illume-ios
+npm install
+npm run ios
+```
+
+It uses native Apple sign-in and a `illumereader.com/auth/native-callback` redirect, so add that URL to your Supabase Auth redirect allowlist if you point it at your own deployment.
+
+## Project layout
+
+```
+src/            web client: reader, library, dashboard, EPUB/PDF parsers
+supabase/       migrations, Edge Functions, local config
+illume-ios/     Expo iOS client
+public/         landing art, classic covers, static assets
+docs/           self-hosting notes and screenshots
+```
+
+## Notes
+
+- The reader is designed around a single-user-per-library model. Sharing a book means exporting the file, not sharing a link.
+- Image Mode is optional; without the image function the reader works exactly as before.
+- Before going live with real users, configure SMTP or email templates in Supabase Auth and add Terms and Privacy pages.
