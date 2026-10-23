@@ -5,6 +5,8 @@ import { COVERS, LOGO, PASSAGE_PARAGRAPHS } from "./concepts/shared";
 import { PersuasionDemo } from "./PersuasionDemo";
 import "./concepts/Concept2.css";
 
+const SHELF_ROW_SIZE = Math.ceil(COVERS.length / 2);
+
 interface LandingPageProps {
   handleAuth: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   signInWithGoogle: () => Promise<void>;
@@ -56,12 +58,9 @@ export function LandingPage({
   notice
 }: LandingPageProps) {
   const heroRef = useRef<HTMLElement>(null);
-  const heroGlowRef = useRef<HTMLDivElement>(null);
   const heroWallLitRef = useRef<HTMLDivElement>(null);
   const heroTitleLitRef = useRef<HTMLHeadingElement>(null);
   const storyRef = useRef<HTMLElement>(null);
-  const shelfRef = useRef<HTMLDivElement>(null);
-  const shelfLightRef = useRef<HTMLDivElement>(null);
   const finaleRef = useRef<HTMLElement>(null);
   const [reduced, setReduced] = useState(
     () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
@@ -107,10 +106,9 @@ export function LandingPage({
 
   useEffect(() => {
     const hero = heroRef.current;
-    const glow = heroGlowRef.current;
     const wallLit = heroWallLitRef.current;
     const titleLit = heroTitleLitRef.current;
-    if (!hero || !glow || reduced) return;
+    if (!hero || reduced) return;
     if (!window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
 
     let raf = 0;
@@ -128,14 +126,15 @@ export function LandingPage({
       raf = 0;
       x += (targetX - x) * 0.2;
       y += (targetY - y) * 0.2;
-      glow.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+      // The lit layers live inside parents that overhang the hero, so shift the
+      // pointer into each layer's own coordinate space before masking.
       if (wallLit) {
-        wallLit.style.setProperty("--c2-lit-x", `${x + wallOffsetX}px`);
-        wallLit.style.setProperty("--c2-lit-y", `${y + wallOffsetY}px`);
+        wallLit.style.setProperty("--c2-lit-x", `${x - wallOffsetX}px`);
+        wallLit.style.setProperty("--c2-lit-y", `${y - wallOffsetY}px`);
       }
       if (titleLit) {
-        titleLit.style.setProperty("--c2-title-x", `${x + titleOffsetX}px`);
-        titleLit.style.setProperty("--c2-title-y", `${y + titleOffsetY}px`);
+        titleLit.style.setProperty("--c2-title-x", `${x - titleOffsetX}px`);
+        titleLit.style.setProperty("--c2-title-y", `${y - titleOffsetY}px`);
       }
       if (Math.abs(targetX - x) > 0.15 || Math.abs(targetY - y) > 0.15) {
         raf = requestAnimationFrame(render);
@@ -196,35 +195,6 @@ export function LandingPage({
     };
   }, [reduced]);
 
-  useEffect(() => {
-    const shelf = shelfRef.current;
-    const light = shelfLightRef.current;
-    if (!shelf || !light || reduced) return;
-    let raf = 0;
-    let x = 0;
-    let y = 0;
-    const onMove = (e: PointerEvent) => {
-      const r = shelf.getBoundingClientRect();
-      x = e.clientX - r.left;
-      y = e.clientY - r.top;
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        light.style.transform = `translate3d(${x}px, ${y}px, 0) translate(-50%, -50%)`;
-        light.style.opacity = "1";
-      });
-    };
-    const onLeave = () => {
-      light.style.opacity = "0";
-    };
-    shelf.addEventListener("pointermove", onMove);
-    shelf.addEventListener("pointerleave", onLeave);
-    return () => {
-      cancelAnimationFrame(raf);
-      shelf.removeEventListener("pointermove", onMove);
-      shelf.removeEventListener("pointerleave", onLeave);
-    };
-  }, [reduced]);
-
   const scrollToStory = () => storyRef.current?.scrollIntoView({ behavior: reduced ? "auto" : "smooth" });
 
   const handleOpenAuth = (mode: "sign-in" | "sign-up") => {
@@ -250,9 +220,6 @@ export function LandingPage({
           <span>illume</span>
         </a>
         <nav className="c2-nav-links" aria-label="Primary">
-          <button type="button" className="c2-link" onClick={scrollToStory}>
-            How it works
-          </button>
           <button type="button" className="c2-link c2-hide-sm" onClick={() => handleOpenAuth("sign-in")}>
             Sign in
           </button>
@@ -284,8 +251,7 @@ export function LandingPage({
               </h1>
             </div>
             <p className="c2-hero-sub">
-              For minds that wander. Illume reads your books aloud, lights each word as it&apos;s spoken,
-              and paints every scene — so you never lose the thread.
+              For minds that wander. Illume narrates your books to you and illustrates every page.
             </p>
             <div className="c2-hero-ctas">
               <button type="button" className="c2-btn" onClick={() => handleOpenAuth("sign-up")}>
@@ -295,9 +261,6 @@ export function LandingPage({
                 See it happen
               </button>
             </div>
-          </div>
-          <div className="c2-hero-glow" ref={heroGlowRef} aria-hidden="true">
-            <span className="c2-hero-glow-core" />
           </div>
           <button type="button" className="c2-scroll-cue" onClick={scrollToStory} aria-label="Scroll to the demo">
             <span>Watch it light up</span>
@@ -316,26 +279,29 @@ export function LandingPage({
             </h2>
             <p>Start with timeless books ready to read, hear and see — or bring your own.</p>
           </div>
-          <div className="c2-shelf" ref={shelfRef}>
-            <div className="c2-shelf-light" ref={shelfLightRef} aria-hidden="true" />
+          <div className="c2-shelf">
             <div className="c2-shelf-track">
               {[0, 1].map((copy) => (
-                <ul className="c2-shelf-row" key={copy} aria-hidden={copy === 1 || undefined}>
-                  {COVERS.map((c) => (
-                    <li key={c.title}>
-                      <button
-                        type="button"
-                        className="c2-cover"
-                        onClick={() => handleOpenAuth("sign-up")}
-                        aria-label={`Read ${c.title} by ${c.author}`}
-                        tabIndex={copy === 1 ? -1 : undefined}
-                      >
-                        <img src={c.cover} alt="" loading="lazy" />
-                        <span className="c2-cover-sheen" aria-hidden="true" />
-                      </button>
-                    </li>
+                <div className="c2-shelf-pane" key={copy} aria-hidden={copy === 1 || undefined}>
+                  {[0, 1].map((row) => (
+                    <ul className="c2-shelf-row" key={row}>
+                      {COVERS.slice(row * SHELF_ROW_SIZE, (row + 1) * SHELF_ROW_SIZE).map((c) => (
+                        <li key={c.title}>
+                          <button
+                            type="button"
+                            className="c2-cover"
+                            onClick={() => handleOpenAuth("sign-up")}
+                            aria-label={`Read ${c.title} by ${c.author}`}
+                            tabIndex={copy === 1 ? -1 : undefined}
+                          >
+                            <img src={c.cover} alt="" loading="lazy" />
+                            <span className="c2-cover-sheen" aria-hidden="true" />
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
                   ))}
-                </ul>
+                </div>
               ))}
             </div>
             <div className="c2-shelf-ledge" aria-hidden="true" />
@@ -347,30 +313,30 @@ export function LandingPage({
           </div>
         </section>
 
-        <section className={`c2-finale${lit ? " c2-finale--lit" : ""}`} ref={finaleRef} aria-labelledby="c2-finale-title">
+        <div className={`c2-finale-shell${lit ? " c2-finale-shell--lit" : ""}`}>
           <div className="c2-finale-bloom" aria-hidden="true" />
-          <h2 id="c2-finale-title" className="c2-finale-title">
-            <span className="c2-finale-dim">Stop restarting the same chapter.</span>
-            <span className="c2-finale-lit" aria-hidden="true">
-              Stop restarting the same chapter.
-            </span>
-          </h2>
-          <p className="c2-finale-sub">Your mind will wander. Illume brings it back.</p>
-          <button type="button" className="c2-btn c2-btn--glow" onClick={() => handleOpenAuth("sign-up")}>
-            Light up your first book <ArrowRight size={18} aria-hidden="true" />
-          </button>
-          <p className="c2-finale-note">Free plan · Pro when you want more</p>
-        </section>
-      </main>
+          <section className={`c2-finale${lit ? " c2-finale--lit" : ""}`} ref={finaleRef} aria-labelledby="c2-finale-title">
+            <h2 id="c2-finale-title" className="c2-finale-title">
+              <span className="c2-finale-dim">Stop restarting the same chapter.</span>
+              <span className="c2-finale-lit" aria-hidden="true">
+                Stop restarting the same chapter.
+              </span>
+            </h2>
+            <button type="button" className="c2-btn c2-btn--glow" onClick={() => handleOpenAuth("sign-up")}>
+              Start reading <ArrowRight size={18} aria-hidden="true" />
+            </button>
+          </section>
 
-      <footer className="c2-footer">
-        <span className="c2-brand c2-brand--quiet">
-          <img src={LOGO} alt="" width={22} height={22} />
-          <span>illume</span>
-        </span>
-        <span>Made in London</span>
-        <span>© 2026 Illume Reader</span>
-      </footer>
+          <footer className="c2-footer">
+            <span className="c2-brand c2-brand--quiet">
+              <img src={LOGO} alt="" width={22} height={22} />
+              <span>illume</span>
+            </span>
+            <span>Made in London</span>
+            <span>© 2026 Illume Reader</span>
+          </footer>
+        </div>
+      </main>
 
       {isAuthOpen && (
         <div className="auth-modal-overlay" onClick={handleCloseAuth}>

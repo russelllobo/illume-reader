@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import narrationData from "./concepts/persuasion-narration.json";
 import sentenceData from "./concepts/persuasion-sentences.json";
 
@@ -29,22 +29,39 @@ sentences.forEach((sentence, sentenceIndex) => {
   }
 });
 
-type IntroPhase = "idle" | "armed" | "flipping" | "reading";
+// The demo opens on "Be it known then..." rather than the dry first sentence.
+const startSentenceIndex = Math.max(
+  0,
+  sentences.findIndex((sentence) => {
+    const base = paragraphOffsets[sentence.paragraph];
+    return (
+      words[base + sentence.startWord]?.w === "Be" &&
+      words[base + sentence.startWord + 1]?.w === "it" &&
+      words[base + sentence.startWord + 2]?.w === "known"
+    );
+  })
+);
+const startWordIndex = sentences[startSentenceIndex]
+  ? paragraphOffsets[sentences[startSentenceIndex].paragraph] + sentences[startSentenceIndex].startWord
+  : 0;
+
+type IntroPhase = "idle" | "flipping" | "reading";
 
 export function PersuasionDemo() {
   const sectionRef = useRef<HTMLElement>(null);
   const artRef = useRef<HTMLElement>(null);
   const copyRef = useRef<HTMLDivElement>(null);
   const wordRefs = useRef<(HTMLSpanElement | null)[]>([]);
-  const introArmedRef = useRef(false);
+  const loopEndRef = useRef(words.length);
   const introPlayedRef = useRef(false);
   const visibleRef = useRef(true);
-  const [phase, setPhase] = useState<IntroPhase>("idle");
+  const [phase, setPhase] = useState<IntroPhase>(() =>
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "reading" : "idle"
+  );
   const [introImage, setIntroImage] = useState(0);
-  // -1 means nothing read yet; every word at or before this index is lit.
-  const [progress, setProgress] = useState(-1);
-  const shownSentence =
-    phase === "flipping" ? introImage : (sentenceForWord[Math.max(0, progress)] ?? 0);
+  const progressRef = useRef(startWordIndex - 1);
+  const [shownSentence, setShownSentence] = useState(startSentenceIndex);
+  const activeSentence = phase === "flipping" ? introImage : shownSentence;
 
   // Warm the sentence art up while the reader is still on the hero, so the
   // opening flip never lands on an empty frame.
@@ -58,88 +75,72 @@ export function PersuasionDemo() {
     return () => window.clearTimeout(timer);
   }, []);
 
-  useEffect(() => {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  // The art rests at its spot in the layout but starts centred over the page.
+  // Measure the offset before paint and keep it in step with the layout, so
+  // the only movement is a slide to the side when the text comes in.
+  useLayoutEffect(() => {
     const section = sectionRef.current;
     const art = artRef.current;
     if (!section || !art) return;
 
-    let timer = 0;
-
-    const isVisible = (threshold: number) => {
-      const rect = section.getBoundingClientRect();
-      const viewport = window.innerHeight;
-      const visibleHeight = Math.max(0, Math.min(rect.bottom, viewport) - Math.max(rect.top, 0));
-      return visibleHeight / Math.min(rect.height, viewport) >= threshold;
-    };
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     const measure = () => {
-      const sectionRect = section.getBoundingClientRect();
-      const artRect = art.getBoundingClientRect();
-      if (!sectionRect.width || !sectionRect.height || !artRect.width || !artRect.height) return false;
-      section.style.setProperty(
-        "--c2-intro-x",
-        `${sectionRect.left + sectionRect.width / 2 - (artRect.left + artRect.width / 2)}px`
-      );
-      section.style.setProperty(
-        "--c2-intro-y",
-        `${sectionRect.top + sectionRect.height / 2 - (artRect.top + artRect.height / 2)}px`
-      );
-      return true;
+      if (!section.clientWidth || !art.offsetWidth) return;
+      const x = section.clientWidth / 2 - (art.offsetLeft + art.offsetWidth / 2);
+      // Only lift the art on the side-by-side layout. On stacked layouts it
+      // stays in its row so it never crosses the text.
+      const y =
+        art.offsetLeft > section.clientWidth / 2
+          ? section.clientHeight / 2 - (art.offsetTop + art.offsetHeight / 2)
+          : 0;
+      section.style.setProperty("--c2-intro-x", `${x}px`);
+      section.style.setProperty("--c2-intro-y", `${y}px`);
     };
 
-    // Clear the stage the moment the demo starts peeking into view, so the
-    // reader never sees the text layout flash before the pictures take over.
-    const arm = () => {
-      if (introArmedRef.current || introPlayedRef.current || !isVisible(0.03)) return;
-      if (!measure()) return;
-      introArmedRef.current = true;
-      setPhase("armed");
-    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(section);
+    observer.observe(art);
 
-    // Once the reader has settled on the demo, run the picture flip.
-    const begin = () => {
-      if (introPlayedRef.current || !isVisible(0.6)) return;
-      // Offsets are measured against the unshifted layout, so only measure
-      // here when arm hasn't run yet. Re-measuring after the art has moved
-      // would read the shifted position and snap the picture back.
-      if (!introArmedRef.current) {
-        arm();
-        if (!introArmedRef.current) return;
-      }
+    if (reduced) {
+      return () => observer.disconnect();
+    }
+
+    // Start the moment the demo fills the screen. No settle timer and no
+    // separate "armed" beat: the first flip frame lands as the reader arrives.
+    const maybeStart = () => {
+      if (introPlayedRef.current) return;
+      const rect = section.getBoundingClientRect();
+      const viewport = window.innerHeight;
+      if (rect.top > 1 || rect.bottom < viewport * 0.5) return;
       introPlayedRef.current = true;
       setPhase("flipping");
     };
 
-    const onScroll = () => {
-      arm();
-      window.clearTimeout(timer);
-      timer = window.setTimeout(begin, 320);
-    };
+    window.addEventListener("scroll", maybeStart, { passive: true });
+    window.addEventListener("resize", maybeStart);
+    maybeStart();
 
-    window.addEventListener("scroll", onScroll, { passive: true });
-    // In case the page loads already scrolled to the demo, clear the stage
-    // on the next frame instead of waiting out the timer.
-    const early = window.requestAnimationFrame(() => arm());
-    timer = window.setTimeout(() => {
-      arm();
-      begin();
-    }, 800);
     return () => {
-      window.clearTimeout(timer);
-      window.cancelAnimationFrame(early);
-      window.removeEventListener("scroll", onScroll);
+      observer.disconnect();
+      window.removeEventListener("scroll", maybeStart);
+      window.removeEventListener("resize", maybeStart);
     };
   }, []);
 
   useEffect(() => {
     if (phase !== "flipping") return;
-    const sequence = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0];
-    const delays = [260, 90, 100, 115, 135, 160, 195, 240, 300, 380, 470];
+    // Flip through the art, landing on the sentence the demo starts from.
+    const sequence = Array.from(
+      { length: sentences.length },
+      (_, index) => (startSentenceIndex + 1 + index) % sentences.length
+    );
+    const delays = [0, 90, 100, 115, 135, 160, 195, 240, 300, 380, 470];
     const timers: number[] = [];
     let elapsed = 0;
     sequence.forEach((image, index) => {
-      elapsed += delays[index];
+      elapsed += delays[index] ?? 200;
       timers.push(window.setTimeout(() => setIntroImage(image), elapsed));
     });
     timers.push(window.setTimeout(() => setPhase("reading"), elapsed + 520));
@@ -148,8 +149,43 @@ export function PersuasionDemo() {
 
   useEffect(() => {
     if (phase !== "reading") return;
-    copyRef.current?.scrollTo({ top: 0 });
+    progressRef.current = startWordIndex - 1;
+    wordRefs.current.forEach((word) => word?.classList.remove("is-read"));
+    setShownSentence(startSentenceIndex);
   }, [phase]);
+
+  // Only the words that fit the copy column take part in the demo. The column
+  // is the same height as the picture, so the loop runs to the last fully
+  // visible word and never needs to scroll.
+  useLayoutEffect(() => {
+    const copy = copyRef.current;
+    if (!copy) return;
+    let cancelled = false;
+
+    const measure = () => {
+      if (cancelled) return;
+      // Keep clear of the bottom fade so the last word stays readable.
+      const limit = copy.clientHeight - 64;
+      let end = startWordIndex;
+      for (let index = startWordIndex; index < wordRefs.current.length; index++) {
+        const word = wordRefs.current[index];
+        if (!word) continue;
+        if (word.offsetTop + word.offsetHeight <= limit) end = index + 1;
+        else break;
+      }
+      loopEndRef.current = end > startWordIndex ? end : startWordIndex + 1;
+    };
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(copy);
+    void document.fonts.ready.then(measure);
+
+    return () => {
+      cancelled = true;
+      observer.disconnect();
+    };
+  }, []);
 
   useEffect(() => {
     const section = sectionRef.current;
@@ -163,45 +199,41 @@ export function PersuasionDemo() {
 
   // The reading progress: words light up one by one, looping forever. The
   // lit word also drives which picture is shown, so the art follows along.
+  // Classes are toggled straight on the word spans: at this pace, re-rendering
+  // the whole passage on every step would melt the frame rate.
   useEffect(() => {
     if (phase !== "reading") return;
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const id = window.setInterval(() => {
       if (document.hidden || !visibleRef.current) return;
-      setProgress((current) => {
-        const next = current + 1 >= words.length ? -1 : current + 1;
-        const box = copyRef.current;
-        if (box) {
-          if (next === -1) {
-            box.scrollTo({ top: 0 });
-          } else {
-            const word = wordRefs.current[next];
-            if (word) {
-              const top = word.offsetTop;
-              const bottom = top + word.offsetHeight;
-              if (top < box.scrollTop + 32 || bottom > box.scrollTop + box.clientHeight - 96) {
-                box.scrollTo({ top: Math.max(0, top - box.clientHeight / 2) });
-              }
-            }
-          }
-        }
-        return next;
-      });
-    }, 130);
+      const current = progressRef.current;
+      const total = loopEndRef.current || words.length;
+      if (current + 1 >= total) {
+        progressRef.current = startWordIndex - 1;
+        wordRefs.current.forEach((word) => word?.classList.remove("is-read"));
+        setShownSentence(startSentenceIndex);
+        return;
+      }
+
+      const next = current + 1;
+      const word = wordRefs.current[next];
+      word?.classList.add("is-read");
+      progressRef.current = next;
+
+      const sentence = sentenceForWord[next] ?? 0;
+      setShownSentence((shown) => (shown === sentence ? shown : sentence));
+    }, 50);
     return () => window.clearInterval(id);
   }, [phase]);
 
   return (
     <section
       className={`c2-persuasion${
-        phase === "armed" ? " is-armed" : phase === "flipping" ? " is-intro" : phase === "reading" ? " is-reading" : ""
+        phase === "flipping" ? " is-intro" : phase === "reading" ? " is-reading" : ""
       }`}
       ref={sectionRef}
       aria-label="Persuasion reading demo"
     >
-      <div className="c2-persuasion-intro" aria-hidden="true" />
-      <div className="c2-persuasion-intro-glow" aria-hidden="true" />
-
       <header className="c2-persuasion-book">
         <img src="/landing/persuasion/cover.jpg" alt="" />
         <div>
@@ -219,12 +251,11 @@ export function PersuasionDemo() {
           <p key={paragraphIndex}>
             {paragraph.words.map((word, wordIndex) => {
               const index = paragraphOffsets[paragraphIndex] + wordIndex;
+              if (index < startWordIndex) return null;
               return (
                 <span key={wordIndex}>
                   <span
-                    className={`c2-persuasion-word${
-                      phase === "reading" && index <= progress ? " is-read" : ""
-                    }`}
+                    className="c2-persuasion-word"
                     ref={(element) => {
                       wordRefs.current[index] = element;
                     }}
@@ -244,7 +275,7 @@ export function PersuasionDemo() {
             key={index}
             src={`/landing/persuasion/sentences/${String(index + 1).padStart(2, "0")}.webp?v=2`}
             alt=""
-            className={index === shownSentence ? "is-active" : ""}
+            className={index === activeSentence ? "is-active" : ""}
             loading="eager"
           />
         ))}
